@@ -45,15 +45,28 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=["customtkinter", "tkinter"],
+    excludes=["customtkinter"],   # keep tkinter: the splash renderer uses Tcl/Tk
     noarchive=False,
 )
 
 pyz = PYZ(a.pure, a.zipped_data)
 
+# Splash shown the instant the onefile starts unpacking (~10-20s on first
+# launch) so a non-technical user gets immediate "it's loading" feedback.
+# Dismissed from ui/app.py run() via pyi_splash once the main window appears.
+splash = Splash(
+    "packaging/splash.png",
+    binaries=a.binaries,
+    datas=a.datas,
+    text_pos=None,
+    always_on_top=True,
+)
+
 exe = EXE(
     pyz,
     a.scripts,
+    splash,
+    splash.binaries,
     a.binaries,
     a.zipfiles,
     a.datas,

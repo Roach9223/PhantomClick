@@ -17,14 +17,14 @@ Everything runs locally — **no network, no telemetry, no auto-update.**
 
 ## Download & run
 
-> **[⬇ Download the latest PhantomClick.exe](https://github.com/Roach9223/PhantomClick/releases/latest/download/PhantomClick.exe)**
+**No Python, no installer, no setup — it's one file.**
 
-No Python install required — download, double-click, go. **Windows 10/11 only.**
+1. **[⬇ Download `PhantomClick.exe`](https://github.com/Roach9223/PhantomClick/releases/latest/download/PhantomClick.exe)** — on the [Releases](https://github.com/Roach9223/PhantomClick/releases/latest) page it's under **Assets**; click `PhantomClick.exe` (*not* "Source code").
+2. **Double-click** the downloaded file.
+3. A small **loading screen** appears for ~15 seconds on the first launch — wait for the window. (Later launches are quicker.)
+4. If Windows shows **"Windows protected your PC"**, click **More info → Run anyway**. The app is unsigned, so that prompt is normal.
 
-On first launch the app creates `config.json` and `phantomclick.log` next to the
-`.exe`. The first start of a single-file build is a little slow while it unpacks;
-subsequent runs are quicker. If Windows SmartScreen prompts, choose *More info →
-Run anyway* (the build is unsigned).
+**Windows 10/11 only.** On first run it creates `config.json` and `phantomclick.log` next to the `.exe`.
 
 ---
 

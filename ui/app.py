@@ -1448,6 +1448,13 @@ def run() -> None:
     # customize before show.
     window = App()
     window.show()
+    # Dismiss the PyInstaller onefile splash once the real window is up.
+    # pyi_splash only exists inside the frozen build; a no-op in dev.
+    try:
+        import pyi_splash
+        pyi_splash.close()
+    except Exception:
+        pass
     app.exec()
 
 
