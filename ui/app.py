@@ -1444,6 +1444,17 @@ class App(QMainWindow):
 def run() -> None:
     import sys
     app = QApplication.instance() or QApplication(sys.argv)
+    # Application icon for the running window (title bar / taskbar / alt-tab);
+    # the exe's own file icon is embedded by PyInstaller. Resolves both in dev
+    # and inside the frozen bundle via bundled_root().
+    try:
+        from PySide6.QtGui import QIcon
+        from utils.paths import bundled_root
+        _ico = bundled_root() / "packaging" / "phantomclick.ico"
+        if _ico.exists():
+            app.setWindowIcon(QIcon(str(_ico)))
+    except Exception:
+        pass
     # Stylesheet applied lazily inside App.__init__ so each spawned App can
     # customize before show.
     window = App()

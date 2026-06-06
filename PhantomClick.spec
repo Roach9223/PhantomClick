@@ -29,6 +29,7 @@ from PyInstaller.utils.hooks import collect_submodules
 datas = [
     ("ai/tasks/library", "ai/tasks/library"),
     ("rs3vision", "rs3vision"),
+    ("packaging/phantomclick.ico", "packaging"),
 ]
 
 binaries = [
@@ -77,6 +78,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,          # windowed GUI app, no console
+    icon="packaging/phantomclick.ico",
     disable_windowed_traceback=False,
     target_arch=None,
     codesign_identity=None,
