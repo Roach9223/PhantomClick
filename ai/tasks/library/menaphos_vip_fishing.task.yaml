@@ -1,0 +1,74 @@
+task: 1
+slug: menaphos_vip_fishing
+name: "Menaphos — VIP Fishing (Python bot)"
+goal: >-
+  Catch beltfish / desert sole / catfish at the Menaphos VIP skilling
+  area pool. Re-casts when the player stops animating, banks via
+  preset 1 when the inventory fills up, and verifies every click
+  against the RS3 cursor tooltip so a misclick on a similarly-coloured
+  HUD pixel can't sneak through.
+location:
+  region: "Menaphos — VIP Skilling Area"
+  coords: [3193, 2702]
+  notes: |
+    Logic lives in ``menaphos_vip_fishing.py``. Edit it directly to
+    paste your captured ROI rects and tune detection thresholds, or
+    have Claude do it for you via MCP.
+
+    PHASE 0 (one-time, no code):
+      - Open the AI tab → pick any bot bundle in the dropdown so the
+        Captures card's buttons un-grey.
+
+    PHASE 1 (in-game setup):
+      - Confirm Menaphos favour high enough for VIP access.
+      - Equip fishing rod, pull bait into inventory.
+      - Save Preset 1 = empty inv + N bait. Verify pressing ``1`` at
+        the chest swaps the inv AND auto-closes the bank.
+      - Stand on the WEST side of the pool (post-2017 spawn rule).
+      - LOCK the camera. Don't rotate it once captures are taken.
+      - Confirm ``key_input_backend = "serial_hid"`` and Arduino HID
+        is connected. Software keystroke paths are all NXT-filtered.
+
+    PHASE 2 (captures via the AI tab):
+      Calibrate Inventory ROI — required, otherwise banking no-ops.
+
+      Take + ★ Promote each of these into the global library:
+        snapshot     bank_open_vip      ← bank UI fully open (full screen)
+        color        vip_fishing_spot   ← bubbling water pixel
+        color        vip_bank_chest     ← distinctive chest pixel
+        color        seren_spirit_halo  (optional — boon collection)
+        color        brooch_divine_blessing (optional — boon collection)
+
+      Note the rects you used for:
+        PLAYER_ROI  — tight box around your character mid-cast
+        POOL_ROI    — west half of the pool only
+        POOL_ROI_WIDE — wider area for boon detection
+        CHEST_ROI   — bank chest from your stand position
+
+      Paste those four rects into the constants at the top of
+      ``menaphos_vip_fishing.py``.
+
+    PHASE 3 (run):
+      - Bot ships with ``dry_run=True``. Hit START and watch the phase
+        chip cycle (scanning → fishing → banking) without real clicks.
+      - Verify uptext verification fires by checking the log when
+        recast_when_idle / walk_to_bank_when_full run.
+      - Flip dry_run=False, run a 15-min trip, confirm fish accumulate
+        and the bank cycle works end-to-end.
+      - 90-min unattended test confirms the watchdog kicks in if bait
+        runs out (manifests as silent "click spot, no animation" loop).
+
+    Watchdogs (configured in the bot constructor):
+      - auto_stop_dry_ticks=120 — stop after 60 s with no rule firing
+        (typical sign: window lost focus or screen changed).
+      - watchdog_no_click_s=600 — stop after 10 minutes with no real
+        click (catches bait-out and any other deadlock).
+phases: [scanning, fishing, banking, collecting_boon]
+success_signals: [detection_chain]
+failure_signals: [no_match_5x, afk_watchdog, missing_capture]
+params:
+  monitor: 1
+author: phantomclick
+tags: [fishing, menaphos, vip-skilling-area, beltfish, desert-sole, catfish, python-bot]
+bot:
+  ref: "menaphos_vip_fishing.py"

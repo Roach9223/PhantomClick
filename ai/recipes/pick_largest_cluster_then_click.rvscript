@@ -1,0 +1,58 @@
+rvscript: 1
+name: Pick the largest cluster explicitly
+author: rs3vision
+input_mode: real
+description: |
+  Shows how the TPA blocks work. Find all yellow clusters → filter out
+  tiny ones → pick the largest → compute its centroid → click. More
+  verbose than "Find Color" but teaches the building-block approach —
+  swap Pick Largest for custom logic when the biggest cluster isn't
+  what you want.
+nodes:
+  - id: n1
+    type: flow.on_start
+    pos: [-700.0, 0.0]
+  - id: n2
+    type: vision.capture
+    pos: [-470.0, 0.0]
+  - id: n3
+    type: color.find_all
+    pos: [-220.0, 0.0]
+    params:
+      target: "0xFFFF00"
+      cts: "2"
+      tol: 25.0
+      min_cluster_size: 10
+  - id: n4
+    type: tpa.filter_size
+    pos: [50.0, 0.0]
+    params:
+      min_size: 20
+      max_size: 5000
+  - id: n5
+    type: flow.pick_largest
+    pos: [300.0, 0.0]
+  - id: n6
+    type: tpa.centroid
+    pos: [540.0, 0.0]
+  - id: n7
+    type: input.click
+    pos: [780.0, 0.0]
+  - id: n8
+    type: flow.wait
+    pos: [1020.0, 0.0]
+    params:
+      ms: 400
+edges:
+  - [n1, trigger,   n2, trigger]
+  - [n2, frame,     n3, frame]
+  - [n2, done,      n3, trigger]
+  - [n3, clusters,  n4, clusters]
+  - [n3, done,      n4, trigger]
+  - [n4, clusters,  n5, clusters]
+  - [n4, done,      n5, trigger]
+  - [n5, cluster,   n6, points]
+  - [n5, done,      n6, trigger]
+  - [n6, point,     n7, point]
+  - [n6, done,      n7, trigger]
+  - [n7, done,      n8, trigger]

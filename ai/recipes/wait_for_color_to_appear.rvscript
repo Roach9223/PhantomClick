@@ -1,0 +1,47 @@
+rvscript: 1
+name: Wait for a colour to appear
+author: rs3vision
+input_mode: real
+description: |
+  Poll the screen for a target colour. Log each tick whether it was
+  seen. Great scaffolding before you decide what action to trigger —
+  swap the Log Message block for Click / Press-Key when you know what
+  you want to happen.
+nodes:
+  - id: n1
+    type: flow.on_start
+    pos: [-600.0, 0.0]
+  - id: n2
+    type: vision.capture
+    pos: [-370.0, 0.0]
+  - id: n3
+    type: color.count
+    pos: [-100.0, 0.0]
+    params:
+      target: "0xFFFF00"
+      cts: "2"
+      tol: 25.0
+  - id: n4
+    type: flow.compare
+    pos: [160.0, 0.0]
+    params:
+      op: ">"
+  - id: n5
+    type: flow.log
+    pos: [420.0, -100.0]
+    params:
+      message: "target colour seen; pixel count"
+  - id: n6
+    type: flow.wait
+    pos: [420.0, 100.0]
+    params:
+      ms: 250
+edges:
+  - [n1, trigger, n2, trigger]
+  - [n2, frame,   n3, frame]
+  - [n2, done,    n3, trigger]
+  - [n3, count,   n4, a]
+  - [n3, done,    n4, trigger]
+  - [n4, true,    n5, trigger]
+  - [n3, count,   n5, value]
+  - [n4, false,   n6, trigger]

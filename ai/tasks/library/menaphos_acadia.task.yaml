@@ -1,0 +1,43 @@
+task: 1
+slug: menaphos_acadia
+name: "Menaphos — Acadia (Python bot)"
+goal: >-
+  Chop Acadia trees in Menaphos Imperial District, bank at the Imperial
+  District bank chest when full, grab Brooch-of-the-Gods + Grace-of-the-Elves
+  procs as they spawn. Python-DSL rewrite of the legacy graph version.
+location:
+  region: "Menaphos — Imperial District"
+  coords: [3189, 2787]
+  notes: |
+    Python-DSL version of the Menaphos Acadia bot. Logic lives in
+    ``menaphos_acadia.py`` — edit it directly in any Python editor,
+    or ask Claude via MCP to modify rules for you.
+
+    Tuning checklist:
+      1. Stand near the Acadia patch, graphics detail low-to-medium.
+      2. Equip Brooch of the Gods + Grace of the Elves (and confirm
+         charges — procs don't spawn without them).
+      3. F8 over each target to get a clean centroid colour. Paste
+         the four ``target=0x...`` values into the corresponding
+         ``find_color`` calls in menaphos_acadia.py.
+      4. Drag the inventory panel ROI and paste the rect into
+         ``INVENTORY_ROI`` near the top of the .py file.
+      5. Create a DTM of the Imperial District bank chest; save as
+         ``templates/dtm/menaphos_imperial_bank_chest.yaml``.
+      6. Start with dry_run=True in the bot constructor (already set).
+         Watch the Dashboard phase chip cycle through phases. When
+         happy, flip dry_run=False.
+
+    The bot watchdogs:
+      - Auto-stops after 60 consecutive ticks (~30 s at 2 Hz) with
+        nothing firing — usually means "logged out" or "screen changed".
+      - Stops after 10 minutes with no click — catch-all for stuck loops.
+phases: [scanning, chopping, collecting_boon, banking]
+success_signals: [detection_chain]
+failure_signals: [no_match_5x, afk_watchdog]
+params:
+  monitor: 1
+author: rs3vision
+tags: [woodcutting, menaphos, acadia, brooch-of-the-gods, grace-of-the-elves, python-bot]
+bot:
+  ref: "menaphos_acadia.py"

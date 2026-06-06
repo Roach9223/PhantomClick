@@ -1,0 +1,62 @@
+rvscript: 1
+name: Chop trees (simple)
+author: rs3vision
+input_mode: real
+description: |
+  Minimum-viable woodcutter. Loops:
+    Capture → Find tree-trunk colour → If found, click → Wait 6s → repeat
+    If not found, wait 500ms so we don't spin.
+
+  Setup (see Help → Woodcutting):
+    1. Stand near a tree on the screen the Studio is targeting.
+    2. Use the visualizer 🎯 pipette to click a brown trunk pixel —
+       it sets `target` on the selected color.find node automatically.
+    3. Drag a default ROI around just the patch of trees so we don't
+       false-match on logs or NPC gear elsewhere.
+    4. Tune `tol` (start at 15-25) until only trees light up.
+    5. Press 🧪 Dry-run, then F5. Confirm clicks land in the right place.
+    6. Untick Dry-run for the real thing.
+
+  Honest limits: no banking, no inventory check, no anti-bot pause.
+  The companion recipe 'Chop trees (with inventory check)' adds an OCR
+  branch that stops when the chatbox says inventory is full.
+nodes:
+  - id: n1
+    type: flow.on_start
+    pos: [-600.0, 0.0]
+  - id: n2
+    type: vision.capture
+    pos: [-360.0, 0.0]
+  - id: n3
+    type: color.find
+    pos: [-100.0, 0.0]
+    params:
+      target: "0x4A2E1A"
+      cts: "2"
+      tol: 22.0
+      min_cluster_size: 30
+  - id: n4
+    type: flow.if_else
+    pos: [180.0, 0.0]
+  - id: n5
+    type: input.click
+    pos: [440.0, -120.0]
+  - id: n6
+    type: flow.wait
+    pos: [700.0, -120.0]
+    params:
+      ms: 6000
+  - id: n7
+    type: flow.wait
+    pos: [440.0, 120.0]
+    params:
+      ms: 500
+edges:
+  - [n1, trigger, n2, trigger]
+  - [n2, frame,   n3, frame]
+  - [n2, done,    n3, trigger]
+  - [n3, found,   n4, condition]
+  - [n3, point,   n5, point]
+  - [n4, true,    n5, trigger]
+  - [n5, done,    n6, trigger]
+  - [n4, false,   n7, trigger]

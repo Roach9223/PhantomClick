@@ -1,0 +1,43 @@
+rvscript: 1
+name: Click the biggest yellow blob (loop)
+author: rs3vision
+input_mode: real
+description: |
+  The simplest real script: capture → find yellow pixels → click the centroid of
+  the biggest cluster → wait → loop. Try it on any UI with a recognisable
+  bright colour. Replace `target` with your real target hex (use the
+  visualizer pipette to pick it).
+nodes:
+  - id: n1
+    type: flow.on_start
+    pos: [-550.0, 0.0]
+  - id: n2
+    type: vision.capture
+    pos: [-320.0, 0.0]
+  - id: n3
+    type: color.find
+    pos: [-50.0, 0.0]
+    params:
+      target: "0xFFFF00"
+      cts: "2"
+      tol: 25.0
+      min_cluster_size: 20
+  - id: n4
+    type: flow.if_else
+    pos: [240.0, 0.0]
+  - id: n5
+    type: input.click
+    pos: [500.0, -100.0]
+  - id: n6
+    type: flow.wait
+    pos: [500.0, 100.0]
+    params:
+      ms: 300
+edges:
+  - [n1, trigger, n2, trigger]
+  - [n2, frame,   n3, frame]
+  - [n2, done,    n3, trigger]
+  - [n3, found,   n4, condition]
+  - [n3, point,   n5, point]
+  - [n4, true,    n5, trigger]
+  - [n4, false,   n6, trigger]

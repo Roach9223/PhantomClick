@@ -1,0 +1,27 @@
+PySide6>=6.6
+customtkinter>=5.2.2
+pynput>=1.7.7
+pyinstaller>=6.0.0
+opencv-python>=4.9.0
+numpy>=1.26.0
+mss>=9.0.1
+Pillow>=10.0.0
+
+# AI mode (rs3 bot framework) deps. The Rust vision wheel `rs3vision`
+# ships in-tree at ./rs3vision/ and is ABI-bound to Python 3.11 — pin
+# your venv accordingly.
+PyYAML>=6.0          # *.task.yaml + DTM template loading
+requests>=2.31       # ai/wiki scraper
+
+# Optional: install only when targeting RuneScape NXT (or any other game
+# that filters LLMHF_INJECTED keyboard events). Requires the Interception
+# driver to be installed first with admin privileges + reboot:
+#   https://github.com/oblitum/Interception
+# Then enable in Behavior → Key input method → Auto / Interception.
+# interception-python
+
+# Optional: install only when using the Serial HID backend (Arduino
+# bridge for keystrokes that NXT-style anti-cheat will accept — see
+# firmware/phantomhid/README.md). pyserial is the host-side talker;
+# the Arduino sketch is the device-side responder.
+# pyserial>=3.5

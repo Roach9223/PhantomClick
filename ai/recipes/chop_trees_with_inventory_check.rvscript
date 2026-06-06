@@ -1,0 +1,83 @@
+rvscript: 1
+name: Chop trees (with inventory-full check)
+author: rs3vision
+input_mode: real
+description: |
+  Chop trees, but every tick OCRs the chatbox for "inventory is full"
+  and stops the script when seen. Add banking later by hand.
+
+  This recipe needs a compiled `plain_11.rvf` font (chatbox font). If
+  you haven't built one yet, the OCR branch silently no-ops — see
+  Help → Woodcutting and Help → DTM + Bitmap → fonts.
+
+  Setup:
+    1. Same colour-tuning steps as the simple recipe.
+    2. Drag a default ROI around the visible game area (where trees are).
+    3. Set the OCR `roi` param to your chatbox region — drag-select on
+       the visualizer, then copy the rect from the log into the param.
+    4. Build a `plain_11.rvf` font (rs3vision-tools/glyph_labeler.py)
+       and confirm `font_path` resolves.
+    5. Dry-run, then real run.
+nodes:
+  - id: n1
+    type: flow.on_start
+    pos: [-720.0, 0.0]
+  - id: n2
+    type: vision.capture
+    pos: [-480.0, 0.0]
+  # — chop branch —
+  - id: n3
+    type: color.find
+    pos: [-220.0, -120.0]
+    params:
+      target: "0x4A2E1A"
+      cts: "2"
+      tol: 22.0
+      min_cluster_size: 30
+  - id: n4
+    type: flow.if_else
+    pos: [60.0, -120.0]
+  - id: n5
+    type: input.click
+    pos: [320.0, -200.0]
+  - id: n6
+    type: flow.wait
+    pos: [580.0, -200.0]
+    params:
+      ms: 6000
+  - id: n7
+    type: flow.wait
+    pos: [320.0, -40.0]
+    params:
+      ms: 500
+  # — chatbox OCR branch (parallel from capture) —
+  - id: n8
+    type: ocr.read
+    pos: [-220.0, 200.0]
+    params:
+      font_path: "plain_11.rvf"
+      target: "0xFF0000"
+      cts: "2"
+      tol: 30.0
+      roi: ""
+  - id: n9
+    type: flow.if_else
+    pos: [60.0, 200.0]
+  - id: n10
+    type: flow.stop
+    pos: [320.0, 200.0]
+edges:
+  - [n1, trigger, n2, trigger]
+  # chop branch
+  - [n2, frame,   n3, frame]
+  - [n2, done,    n3, trigger]
+  - [n3, found,   n4, condition]
+  - [n3, point,   n5, point]
+  - [n4, true,    n5, trigger]
+  - [n5, done,    n6, trigger]
+  - [n4, false,   n7, trigger]
+  # OCR branch
+  - [n2, frame,   n8, frame]
+  - [n2, done,    n8, trigger]
+  - [n8, line_count, n9, condition]
+  - [n9, true,    n10, trigger]

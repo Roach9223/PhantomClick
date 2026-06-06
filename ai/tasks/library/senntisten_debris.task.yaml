@@ -1,0 +1,24 @@
+task: 1
+slug: senntisten_debris
+name: "Senntisten Marketplace Debris"
+goal: "Excavate marketplace debris piles at the Senntisten Dig Site for Archaeology XP."
+location:
+  region: "Senntisten Dig Site"
+  notes: |
+    Min graphics detail recommended — solid flat colours on debris
+    piles make the DTM anchor very reliable. Camera: top-down.
+
+    Uses the DTM template captured during the Apr 13 tuning session
+    (templates/dtm/debris_marketplace_senn.yaml).
+phases: [searching, excavating, recovering]
+success_signals: [detection_chain]
+failure_signals: [no_match_3x]
+params:
+  tick_ms: 500
+  monitor: 1
+  dry_run: true
+  dtm_path: "templates/dtm/debris_marketplace_senn.yaml"
+script:
+  ref: "recipes/detect_via_dtm.rvscript"
+author: rs3vision
+tags: [archaeology, dtm]

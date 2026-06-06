@@ -1,0 +1,84 @@
+# rs3vision — chat color → event map.
+#
+# This file tells the chatbox parser:
+#   • which RS3 chat message colors to look for,
+#   • how to match meaningful lines, and
+#   • what typed event to emit to the bot FSM.
+#
+# Colors are 0xRRGGBB (as shown in RS3's chat customization dialog).
+# Patterns are standard regex (Python re.search, case-insensitive).
+#
+# Pair this file with the steps in
+#   rs3vision-tools/chat_setup_guide.md
+# so the in-game channel colors match what's listed here.
+#
+# Hot-reloadable: the parser stats this file on every call; edits take
+# effect on the next frame.
+
+[font]
+# Path relative to the rs3vision package root (i.e. where this TOML lives).
+path = "templates/fonts/plain_11.rvf"
+
+[chat_roi]
+# Pixel rectangle of the chatbox, relative to the RS3 game window's
+# top-left corner. Tune once for your layout; rs3vision-tools includes a
+# calibration helper (TODO in Phase 6).
+x = 3
+y = 1705
+w = 1066
+h = 383
+
+[defaults]
+# CTS mode used to filter each event color out of the chatbox ROI.
+# 1 = RGB box  ·  2 = HSL cylindrical (Recommended)  ·  3 = CIE Lab ΔE76
+cts = 2
+tol = 20.0
+hue_mod = 0.2
+sat_mod = 0.2
+# Regex flags applied to every [events.*].pattern. "i" = case-insensitive.
+regex_flags = "i"
+
+# ──────────────────────────────────────────────────────────────────────────
+# Event categories.
+# ──────────────────────────────────────────────────────────────────────────
+#
+# Every [events.<id>] entry is one event category:
+#   color   : 0xRRGGBB — must match the color the user set in RS3 for this
+#             channel/event. Multiple events can share a color; the parser
+#             OCRs each matching line and tries every pattern whose color
+#             matches.
+#   pattern : regex used against the OCRed line text. The first matching
+#             pattern wins; "emit" names the typed event.
+#   emit    : the event name delivered to the bot FSM.
+#
+# Keep this list focused on what your current FSM actually reacts to.
+
+[events.tree_cut_willow]
+color   = 0xFFFF00
+pattern = "(cut|swing).*willow.*(log|logs)"
+emit    = "TreeCutWillow"
+
+[events.tree_cut_generic]
+color   = 0xFFFF00
+pattern = "You (get|cut) some ([a-z]+) logs"
+emit    = "TreeCut"
+
+[events.inventory_full]
+color   = 0xFFFF00
+pattern = "your .{0,20}(inventory|backpack).{0,10}(full|contains)"
+emit    = "InventoryFull"
+
+[events.level_up]
+color   = 0xFFFFFF
+pattern = "congratulations.*advanced.*level"
+emit    = "LevelUp"
+
+[events.bank_deposit_all]
+color   = 0x00FFFF
+pattern = "deposited .* items?"
+emit    = "BankDepositAll"
+
+[events.bank_open]
+color   = 0x00FFFF
+pattern = "(bank of runescape|welcome to your bank)"
+emit    = "BankOpen"

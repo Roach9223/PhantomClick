@@ -1,0 +1,40 @@
+rvscript: 1
+name: Detect a UI element via DTM
+author: rs3vision
+input_mode: real
+description: |
+  Uses the Find DTM block — requires a .yaml template. Build one from
+  the visualizer with 🎯 Create DTM from ROI, then update this recipe's
+  template_path to its filename. Best for multi-colour UI elements
+  where single-colour matching false-positives.
+nodes:
+  - id: n1
+    type: flow.on_start
+    pos: [-500.0, 0.0]
+  - id: n2
+    type: vision.capture
+    pos: [-270.0, 0.0]
+  - id: n3
+    type: dtm.find
+    pos: [-10.0, 0.0]
+    params:
+      template_path: "YOUR_TEMPLATE.yaml"
+  - id: n4
+    type: flow.if_else
+    pos: [260.0, 0.0]
+  - id: n5
+    type: input.click
+    pos: [520.0, -100.0]
+  - id: n6
+    type: flow.wait
+    pos: [520.0, 100.0]
+    params:
+      ms: 500
+edges:
+  - [n1, trigger, n2, trigger]
+  - [n2, frame,   n3, frame]
+  - [n2, done,    n3, trigger]
+  - [n3, found,   n4, condition]
+  - [n3, point,   n5, point]
+  - [n4, true,    n5, trigger]
+  - [n4, false,   n6, trigger]

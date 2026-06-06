@@ -1,0 +1,24 @@
+task: 1
+slug: draynor_willows
+name: "Draynor Willows"
+goal: "Chop willow trees at Draynor Village for Woodcutting XP."
+location:
+  region: "Draynor Village"
+  coords: [3087, 3237]
+  notes: |
+    Stand near the willow patch south-west of Draynor bank. Camera
+    angle: top-down so trunks show clearly. Graphics detail can stay
+    at default — willow trunks are a distinctive brown.
+phases: [searching, chopping, recovering]
+success_signals: [detection_chain]
+failure_signals: [no_tree_3x]
+params:
+  tick_ms: 500
+  monitor: 1
+  dry_run: true
+  tree_color: "0x4A2E1A"
+  tolerance: 22
+script:
+  ref: "recipes/chop_trees_simple.rvscript"
+author: rs3vision
+tags: [woodcutting, beginner]

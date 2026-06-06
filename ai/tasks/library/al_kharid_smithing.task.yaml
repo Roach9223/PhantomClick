@@ -1,0 +1,23 @@
+task: 1
+slug: al_kharid_smithing
+name: "Al Kharid Anvil Smithing"
+goal: "Smith bars at the Al Kharid anvil — click anvil, pick bar dialog option, wait."
+location:
+  region: "Al Kharid"
+  coords: [3190, 3161]
+  notes: |
+    STUB task — detection chain needs tuning against your actual
+    smithing interface. Use the DTM workflow: drag an ROI around the
+    anvil, capture a DTM, wire it in, then duplicate for the dialog-
+    option colour. Inventory-full check not yet wired.
+phases: [approaching, interacting, smithing]
+success_signals: [detection_chain]
+failure_signals: [no_match_5x]
+params:
+  tick_ms: 500
+  monitor: 1
+  dry_run: true
+script:
+  ref: "recipes/detect_via_dtm.rvscript"
+author: rs3vision
+tags: [smithing, stub, customize-me]

@@ -1,0 +1,49 @@
+# Secrets / runtime state — NEVER commit
+# (config.json holds monitor_token + serial port + screen calibration)
+/config.json
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*$py.class
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# PyInstaller output (the .exe ships via Releases, not git)
+/build/
+/dist/
+
+# Native debug symbols
+# (rs3vision/_rs3vision.pyd next to it IS committed and required — do NOT ignore .pyd)
+rs3vision/_rs3vision.pdb
+
+# Runtime / user data (app recreates next to the .exe on demand).
+# Root-anchored so rs3vision/templates/ and tools/vm/templates/ stay tracked.
+/templates/
+/bots/
+/debug/
+
+# Local capture / trace cruft
+mouse_trace_*.jsonl
+Screenshot*.png
+
+# Docs / example screenshots (unused at runtime, ~10 MB, unreviewed)
+/assets/
+
+# Tooling / IDE / OS
+.claude/
+.vm/
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store

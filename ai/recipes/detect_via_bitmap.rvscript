@@ -1,0 +1,41 @@
+rvscript: 1
+name: Detect a sprite via Bitmap matching
+author: rs3vision
+input_mode: real
+description: |
+  Uses the Find Bitmap block — requires a reference PNG. Save one from
+  the visualizer with 💾 Save ROI as bitmap, then update this recipe's
+  bitmap_path to that filename. Good for UI icons that are
+  pixel-consistent.
+nodes:
+  - id: n1
+    type: flow.on_start
+    pos: [-500.0, 0.0]
+  - id: n2
+    type: vision.capture
+    pos: [-270.0, 0.0]
+  - id: n3
+    type: bitmap.find
+    pos: [-10.0, 0.0]
+    params:
+      bitmap_path: "YOUR_BITMAP.png"
+      tolerance: 8
+  - id: n4
+    type: flow.if_else
+    pos: [260.0, 0.0]
+  - id: n5
+    type: input.click
+    pos: [520.0, -100.0]
+  - id: n6
+    type: flow.wait
+    pos: [520.0, 100.0]
+    params:
+      ms: 500
+edges:
+  - [n1, trigger, n2, trigger]
+  - [n2, frame,   n3, frame]
+  - [n2, done,    n3, trigger]
+  - [n3, found,   n4, condition]
+  - [n3, point,   n5, point]
+  - [n4, true,    n5, trigger]
+  - [n4, false,   n6, trigger]
