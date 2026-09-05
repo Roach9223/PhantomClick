@@ -49,33 +49,34 @@ PANE_LABELS = {
 
 class EditorToggle(QToolButton):
     """Checkable pane button: pencil icon plus a mode-specific label
-    (SETUP / STEPS / BOT). Checked means the pane is open; ice border
-    and text, since open is a selection."""
+    (SETUP / STEPS / BOT). It is the loudest control after START, since
+    the pane is where a new user does everything: ice outline and text
+    while closed, solid ice while open."""
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setObjectName("deck-editor-toggle")
         self.setCheckable(True)
-        self.setFont(c.micro_font())
+        self.setFont(c.label_font(c.SIZE_SM, QFont.Bold, 1.0))
         self.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.setFixedHeight(c.BUTTON_H)
-        self.setMinimumWidth(92)
+        self.setMinimumWidth(118)
         self.setCursor(Qt.PointingHandCursor)
         self.set_mode("clicker")
         self.setStyleSheet(
             f"QToolButton#deck-editor-toggle {{ background: {c.SURFACE}; "
-            f"border: 1px solid {c.BORDER}; border-radius: {c.RADIUS_BUTTON}px; "
-            f"color: {c.TEXT_SECONDARY}; padding: 0 10px 0 8px; }}"
-            f"QToolButton#deck-editor-toggle:hover {{ background: {c.SURFACE_HIGH}; "
-            f"color: {c.TEXT_PRIMARY}; }}"
-            f"QToolButton#deck-editor-toggle:checked {{ border-color: {c.ACCENT}; "
-            f"color: {c.ACCENT}; }}"
+            f"border: 1px solid {c.ACCENT}; border-radius: {c.RADIUS_BUTTON}px; "
+            f"color: {c.ACCENT}; padding: 0 12px 0 10px; }}"
+            f"QToolButton#deck-editor-toggle:hover {{ background: {c.SURFACE_HIGH}; }}"
+            f"QToolButton#deck-editor-toggle:checked {{ background: {c.ACCENT}; "
+            f"border-color: {c.ACCENT}; color: {c.BG}; }}"
+            f"QToolButton#deck-editor-toggle:checked:hover {{ background: {c.ACCENT}; }}"
         )
         self.toggled.connect(self._sync_icon)
         self._sync_icon(False)
 
     def _sync_icon(self, checked: bool) -> None:
-        self.setIcon(c.icon_pixmap("edit", 14, c.ACCENT if checked else c.TEXT_SECONDARY))
+        self.setIcon(c.icon_pixmap("edit", 14, c.BG if checked else c.ACCENT))
 
     def set_mode(self, mode: str) -> None:
         label, what = PANE_LABELS.get(mode, PANE_LABELS["clicker"])
@@ -297,18 +298,21 @@ class DeckHeader(QFrame):
 
         row.addStretch(1)
 
-        # -- Center chips + pane switch -----------------------------------
+        # -- Center chips -------------------------------------------------
         self.session_chip = Chip("SESSION", getattr(app, "session_id", None) or c.session_id())
         row.addWidget(self.session_chip)
-        self.editor_btn = EditorToggle()
-        self.editor_btn.toggled.connect(self.editorToggled)
-        row.addWidget(self.editor_btn)
         self.status_chip = Chip("STATUS", "STANDBY", dot=True)
         row.addWidget(self.status_chip)
 
         row.addStretch(1)
 
-        # -- Subsystem strip + icon buttons ---------------------------------
+        # -- Pane switch, subsystem strip, icon buttons ---------------------
+        # The pane button leads the right-hand cluster so it reads as the
+        # first thing to press, ahead of the health squares.
+        self.editor_btn = EditorToggle()
+        self.editor_btn.toggled.connect(self.editorToggled)
+        row.addWidget(self.editor_btn)
+        row.addSpacing(6)
         self.subsystems = SubsystemStrip(app, shell)
         row.addWidget(self.subsystems)
         self.monitor_btn = c.IconButton("monitor", tooltip=tooltip(

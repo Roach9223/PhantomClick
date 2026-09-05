@@ -172,3 +172,31 @@ def test_idle_run_card_and_explicit_timing(window):
     QTest.qWait(250)
     assert window.click_page.timing_expander.is_open()
     assert window.click_page.timing_card.height() >= 280
+
+
+def test_viewport_drag_pans_the_zoomed_view(window):
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QImage
+    window.resize(1920, 1080)
+    window.show_page("click")
+    QTest.qWait(250)
+    vp = window.deck.viewport
+    # A frame the size of the target monitor stands in for the worker.
+    mx, my, mw, mh = vp._monitor_rect_dip()
+    vp._on_frame(QImage(64, 36, QImage.Format_ARGB32), (mx, my, mw, mh))
+    assert not vp.pannable()
+    vp.set_zoom_index(2)          # 2x
+    vp.tick()
+    QApplication.processEvents()
+    assert vp.pannable() and vp.pan() == (0.0, 0.0)
+    before = vp._target_rect_dip()
+    centre = vp._avail_rect().center()
+    QTest.mousePress(vp, Qt.LeftButton, Qt.NoModifier, centre)
+    QTest.mouseMove(vp, centre + QPoint(-120, -40))
+    QTest.mouseRelease(vp, Qt.LeftButton, Qt.NoModifier, centre + QPoint(-120, -40))
+    after = vp._target_rect_dip()
+    # Dragging the picture left moves the view right, never off the monitor.
+    assert vp.pan()[0] > 0 and after[0] > before[0]
+    assert after[0] + after[2] <= mx + mw and after[1] >= my
+    vp.set_zoom_index(0)
+    assert vp.pan() == (0.0, 0.0)

@@ -19,6 +19,15 @@ Zoom (1x, 1.5x, 2x, 3x) shrinks the worker's target rect around the
 active zone, so a zoomed frame costs less to grab, not more. Nothing
 about zoom is persisted; it is a look, not a setting.
 
+Pan: while zoomed (or cropped in cover mode) a left-drag moves the view.
+The pan is an offset in DIPs from the zone centre, clamped so the view
+stays inside the monitor, and it resets when the zoom level changes.
+Painting maps everything through the VIEW rect (where the view is now),
+and the last frame is drawn wherever it belongs relative to that, so a
+drag moves the picture at once instead of waiting for the next 5 fps
+grab; the edge the frame has not covered yet shows the grid until the
+worker catches up.
+
 Fit: the frame is letterboxed to its aspect when the bands would be
 small. When the viewport is much taller than the frame (editor pane
 open on a wide monitor) the frame covers the area instead: scaled to
@@ -34,7 +43,7 @@ import threading
 import time
 from typing import Optional
 
-from PySide6.QtCore import QRect, QRectF, QThread, Qt, Signal
+from PySide6.QtCore import QPointF, QRect, QRectF, QThread, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QRegion
 from PySide6.QtWidgets import QApplication, QWidget
 
@@ -181,8 +190,8 @@ class Viewport(QWidget):
         self.setMinimumSize(320, 200)
         self.setToolTip(
             "Live view of the target monitor with the click zone and recent clicks. "
-            "Wheel or the + / - rail zooms around the zone; double-click toggles 2x; "
-            "right-click for zone, monitor and pane actions.")
+            "Wheel or the + / - rail zooms around the zone; drag to pan while zoomed; "
+            "double-click toggles 2x; right-click for zone, monitor and pane actions.")
         c.fill_policy(self)
         self._worker: Optional[CaptureWorker] = None
         self._frame: Optional[QImage] = None
@@ -198,6 +207,11 @@ class Viewport(QWidget):
         self._last_secs = 0.0
         self._last_frame_at = 0.0
         self._zoom_idx = 0
+        # Pan offset in DIPs from the zone (or monitor) centre; the view
+        # rect the painter maps through, refreshed once per paint.
+        self._pan: tuple[float, float] = (0.0, 0.0)
+        self._view: tuple[int, int, int, int] = self._frame_rect
+        self._drag: Optional[tuple[QPointF, tuple[float, float]]] = None
         # Last output budget handed to the worker: (w_px, h_px, dpr).
         self._requested_out: tuple[int, int, float] = (0, 0, 1.0)
 
@@ -330,6 +344,7 @@ class Viewport(QWidget):
         if idx == self._zoom_idx:
             return
         self._zoom_idx = idx
+        self._pan = (0.0, 0.0)
         # Push the new rect straight away so the next grab is already
         # zoomed instead of waiting a tick.
         w = self._worker
@@ -359,10 +374,22 @@ class Viewport(QWidget):
         except Exception:
             return tuple(self.app.virtual_rect)
 
+    def _focus_dip(self) -> tuple[float, float]:
+        """Where the view centres before panning: the zone, else the
+        monitor centre."""
+        mx, my, mw, mh = self._monitor_rect
+        zone = self._active_zone()
+        if zone is not None:
+            try:
+                return zone.centroid()
+            except Exception:
+                pass
+        return mx + mw / 2, my + mh / 2
+
     def _target_rect_dip(self) -> tuple[int, int, int, int]:
         """What the worker should grab: the whole monitor at 1x, else a
         window ``1/zoom`` of it centred on the active zone (or the monitor
-        centre), clamped inside the monitor."""
+        centre) plus the pan, clamped inside the monitor."""
         mx, my, mw, mh = self._monitor_rect_dip()
         self._monitor_rect = (mx, my, mw, mh)
         z = self.zoom()
@@ -370,17 +397,67 @@ class Viewport(QWidget):
             return (mx, my, mw, mh)
         w = max(1, int(round(mw / z)))
         h = max(1, int(round(mh / z)))
-        zone = self._active_zone()
-        if zone is not None:
-            try:
-                cx, cy = zone.centroid()
-            except Exception:
-                cx, cy = mx + mw / 2, my + mh / 2
-        else:
-            cx, cy = mx + mw / 2, my + mh / 2
+        cx, cy = self._focus_dip()
+        cx += self._pan[0]
+        cy += self._pan[1]
         x = int(round(c.clamp(cx - w / 2, mx, mx + mw - w)))
         y = int(round(c.clamp(cy - h / 2, my, my + mh - h)))
         return (x, y, w, h)
+
+    # -- Pan ------------------------------------------------------------------
+
+    def pannable(self) -> bool:
+        """True while a drag can move the view: zoomed in, or cropped to
+        cover the area at 1x."""
+        return self.zoom() > 1.0 or self._cover()
+
+    def pan(self) -> tuple[float, float]:
+        return self._pan
+
+    def _pan_limits(self) -> tuple[float, float, float, float]:
+        """``(min_dx, max_dx, min_dy, max_dy)`` that keep the view inside
+        the monitor, for the zoom window or the cover crop."""
+        mx, my, mw, mh = self._monitor_rect
+        fx, fy = self._focus_dip()
+        z = self.zoom()
+        if z > 1.0:
+            vw, vh = mw / z, mh / z
+        else:
+            avail = self._avail_rect()
+            _x, _y, fw, fh = self._frame_rect
+            if not self._cover(avail) or fw <= 0 or fh <= 0:
+                return (0.0, 0.0, 0.0, 0.0)
+            scale = max(avail.width() / fw, avail.height() / fh)
+            vw, vh = avail.width() / scale, avail.height() / scale
+        lo_x, hi_x = mx + vw / 2 - fx, mx + mw - vw / 2 - fx
+        lo_y, hi_y = my + vh / 2 - fy, my + mh - vh / 2 - fy
+        if lo_x > hi_x:
+            lo_x = hi_x = 0.0
+        if lo_y > hi_y:
+            lo_y = hi_y = 0.0
+        return (lo_x, hi_x, lo_y, hi_y)
+
+    def set_pan(self, dx: float, dy: float) -> None:
+        lo_x, hi_x, lo_y, hi_y = self._pan_limits()
+        pan = (float(c.clamp(dx, lo_x, hi_x)), float(c.clamp(dy, lo_y, hi_y)))
+        if pan == self._pan:
+            return
+        self._pan = pan
+        w = self._worker
+        if w is not None:
+            try:
+                w.set_target_rect(self._target_rect_dip())
+            except RuntimeError:
+                pass
+        self.update()
+
+    def _sync_cursor(self) -> None:
+        if self._drag is not None:
+            self.setCursor(Qt.ClosedHandCursor)
+        elif self.pannable():
+            self.setCursor(Qt.OpenHandCursor)
+        else:
+            self.unsetCursor()
 
     def _monitor_index(self) -> int:
         """1-based index of the Qt screen matching the captured monitor."""
@@ -402,7 +479,7 @@ class Viewport(QWidget):
         """True when letterboxing would waste more than _FILL_THRESHOLD of
         the height, so the frame covers the area and crops instead."""
         avail = avail or self._avail_rect()
-        _x, _y, fw, fh = self._frame_rect
+        _x, _y, fw, fh = self._view
         if fw <= 0 or fh <= 0 or avail.width() <= 0 or avail.height() <= 0:
             return False
         fit_h = avail.width() * fh / fw
@@ -413,26 +490,23 @@ class Viewport(QWidget):
         return self._cover()
 
     def _image_rect(self) -> QRect:
-        """Where the frame paints: inside the rulers and left of the zoom
-        rail. Letterboxed to the captured rect's aspect ratio, or when
-        the bands would be large, scaled to cover the area and centred
-        on the zone (the rect then overhangs the area and is clipped)."""
+        """Where the VIEW rect paints: inside the rulers and left of the
+        zoom rail. Letterboxed to its aspect ratio, or when the bands
+        would be large, scaled to cover the area and centred on the zone
+        plus the pan (the rect then overhangs the area and is clipped).
+        The frame itself is drawn through :meth:`_frame_draw_rect`."""
         avail = self._avail_rect()
-        fx, fy, fw, fh = self._frame_rect
+        fx, fy, fw, fh = self._view
         if fw <= 0 or fh <= 0 or avail.width() <= 0 or avail.height() <= 0:
             return avail
         if self._cover(avail):
             scale = max(avail.width() / fw, avail.height() / fh)
             w = int(fw * scale)
             h = int(fh * scale)
-            # Centre the crop on the zone when there is one, else the frame.
-            zone = self._active_zone()
-            cx, cy = fx + fw / 2, fy + fh / 2
-            if zone is not None:
-                try:
-                    cx, cy = zone.centroid()
-                except Exception:
-                    pass
+            # Centre the crop on the zone (plus pan) when there is one.
+            cx, cy = self._focus_dip()
+            cx += self._pan[0]
+            cy += self._pan[1]
             left = avail.left() + avail.width() // 2 - int((cx - fx) * scale)
             top = avail.top() + avail.height() // 2 - int((cy - fy) * scale)
             left = int(c.clamp(left, avail.right() - w + 1, avail.left()))
@@ -449,18 +523,31 @@ class Viewport(QWidget):
         return self._image_rect().intersected(self._avail_rect())
 
     def _to_px(self, x: float, y: float, img: QRect) -> tuple[float, float]:
-        fx, fy, fw, fh = self._frame_rect
+        fx, fy, fw, fh = self._view
         sx = img.width() / max(1, fw)
         sy = img.height() / max(1, fh)
         return img.left() + (x - fx) * sx, img.top() + (y - fy) * sy
 
+    def _frame_draw_rect(self, img: QRect) -> QRect:
+        """Where the last grabbed frame lands in widget px: mapped through
+        the view, so a panned view shows the old frame shifted until the
+        next grab arrives."""
+        fx, fy, fw, fh = self._frame_rect
+        _vx, _vy, vw, vh = self._view
+        sx = img.width() / max(1, vw)
+        sy = img.height() / max(1, vh)
+        left, top = self._to_px(fx, fy, img)
+        return QRect(int(round(left)), int(round(top)),
+                     max(1, int(round(fw * sx))), max(1, int(round(fh * sy))))
+
     def widget_to_dip(self, pos) -> Optional[tuple[int, int]]:
         """Screen DIP under a widget point, or None when the point is
         outside the painted frame."""
+        self._view = self._target_rect_dip()
         img = self._image_rect()
         if not self._visible_rect().contains(pos) or not self.has_frame():
             return None
-        fx, fy, fw, fh = self._frame_rect
+        fx, fy, fw, fh = self._view
         sx = img.width() / max(1, fw)
         sy = img.height() / max(1, fh)
         return (int(round(fx + (pos.x() - img.left()) / sx)),
@@ -519,6 +606,7 @@ class Viewport(QWidget):
                 w.set_target_rect(self._target_rect_dip())
             except RuntimeError:
                 self._worker = None
+        self._sync_cursor()
         # A DPR change has no resize event of its own; catch it here.
         if abs(self._dpr() - self._requested_out[2]) > 1e-3:
             self._push_output_size()
@@ -547,7 +635,33 @@ class Viewport(QWidget):
                     self.zoom_out()
                 event.accept()
                 return
+            if self._avail_rect().contains(pos) and self.pannable():
+                self._drag = (event.position(), self._pan)
+                self._sync_cursor()
+                event.accept()
+                return
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):  # noqa: N802 (Qt name)
+        if self._drag is None:
+            return super().mouseMoveEvent(event)
+        start, pan0 = self._drag
+        img = self._image_rect()
+        _vx, _vy, vw, vh = self._view
+        sx = img.width() / max(1, vw)
+        sy = img.height() / max(1, vh)
+        delta = event.position() - start
+        # Dragging the picture right moves the view left.
+        self.set_pan(pan0[0] - delta.x() / max(1e-6, sx), pan0[1] - delta.y() / max(1e-6, sy))
+        event.accept()
+
+    def mouseReleaseEvent(self, event):  # noqa: N802 (Qt name)
+        if self._drag is not None and event.button() == Qt.LeftButton:
+            self._drag = None
+            self._sync_cursor()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event):  # noqa: N802 (Qt name)
         if event.button() == Qt.LeftButton and self._avail_rect().contains(event.position().toPoint()):
@@ -570,6 +684,7 @@ class Viewport(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.fillRect(self.rect(), QColor(c.SURFACE_PANEL))
+        self._view = self._target_rect_dip()
         img = self._image_rect()
         avail = self._avail_rect()
         vis = img.intersected(avail)
@@ -578,10 +693,17 @@ class Viewport(QWidget):
             self._paint_no_capture(p, vis)
         else:
             p.save()
-            p.setClipRect(avail)
-            p.drawImage(img, self._frame)
+            p.setClipRect(vis)
+            draw = self._frame_draw_rect(img)
+            # Ground the strip a pan has uncovered before the next grab.
+            uncovered = QRegion(vis).subtracted(QRegion(draw))
+            if not uncovered.isEmpty():
+                p.setClipRegion(uncovered)
+                self._paint_grid(p, vis)
+                p.setClipRect(vis)
+            p.drawImage(draw, self._frame)
             # Slight darkening keeps the overlays legible on a bright game.
-            p.fillRect(img, QColor(0, 0, 0, 70))
+            p.fillRect(draw, QColor(0, 0, 0, 70))
             p.restore()
         self._paint_rulers(p, img)
         self._paint_zoom_rail(p)
@@ -648,7 +770,7 @@ class Viewport(QWidget):
         p.setPen(_hairline(c.BORDER))
         p.drawLine(0, _RULER, self.width(), _RULER)
         p.drawLine(_RULER, 0, _RULER, self.height())
-        fx, fy, fw, fh = self._frame_rect
+        fx, fy, fw, fh = self._view
         mx, my, _mw, _mh = self._monitor_rect
         if fw <= 0 or fh <= 0 or img.width() <= 0:
             p.restore()

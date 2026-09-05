@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QPoint, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QCursor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout,
     QWidget,
@@ -98,11 +98,31 @@ class ModeRow(QFrame):
         self.name.setFont(c.label_font(c.SIZE_BODY, QFont.DemiBold, 0.6))
         self.name.setStyleSheet(f"color: {c.TEXT_PRIMARY}; background: transparent;")
         self.state = c.MicroLabel("STANDBY", c.TEXT_MICRO)
+        self.state.setMinimumWidth(40)
         col.addWidget(self.name)
         col.addWidget(self.state)
         row.addLayout(col, 1)
         self._active = None
+        self._state_full = ""
         self.set_active(False)
+
+    def set_state(self, text: str) -> None:
+        """State line, end-elided to the row's width so a long bot name
+        never runs under the panel edge."""
+        self._state_full = str(text)
+        self._elide_state()
+
+    def _elide_state(self) -> None:
+        full = self._state_full.upper()
+        width = max(40, self.state.width() - 2)
+        shown = QFontMetrics(self.state.font()).elidedText(full, Qt.ElideRight, width)
+        if self.state.text() != shown:
+            # MicroLabel uppercases on setText; the text is already upper.
+            self.state.setText(shown)
+
+    def resizeEvent(self, event):  # noqa: N802 (Qt name)
+        super().resizeEvent(event)
+        self._elide_state()
 
     def set_active(self, active: bool) -> None:
         if active == self._active:
@@ -147,16 +167,16 @@ class ModesPanel(c.Panel):
         self.refresh()
         snap = app.stats.snapshot()
         if running and active == "clicker":
-            self.rows["clicker"].state.setText(f"ACTIVE · {int(snap.get('total', 0))} CLK")
+            self.rows["clicker"].set_state(f"ACTIVE · {int(snap.get('total', 0))} CLK")
         else:
-            self.rows["clicker"].state.setText(
+            self.rows["clicker"].set_state(
                 "STANDBY · ZONE SET" if app._zone is not None else "STANDBY · NO ZONE")
         if running and active == "recorder":
             cur, total = app.clicker.current_step_index
-            self.rows["recorder"].state.setText(f"ACTIVE · STEP {cur}/{total}")
+            self.rows["recorder"].set_state(f"ACTIVE · STEP {cur}/{total}")
         else:
             n = len(app._steps)
-            self.rows["recorder"].state.setText(f"STANDBY · {n} STEP{'S' if n != 1 else ''}")
+            self.rows["recorder"].set_state(f"STANDBY · {n} STEP{'S' if n != 1 else ''}")
         slug = str(app.cfg.get("ai_active_bundle") or app.cfg.get("ai_bot_slug") or "").strip()
         if running and active == "ai":
             info = {}
@@ -164,10 +184,10 @@ class ModesPanel(c.Panel):
                 info = app.bot_runner.last_fired() or {}
             except Exception:
                 pass
-            self.rows["ai"].state.setText(f"ACTIVE · TICK {int(info.get('current_tick', 0) or 0)}")
+            self.rows["ai"].set_state(f"ACTIVE · TICK {int(info.get('current_tick', 0) or 0)}")
         else:
-            name = c.elide(c.bot_display_name(slug), 20) if slug else "NO BOT"
-            self.rows["ai"].state.setText(f"STANDBY · {name}")
+            name = c.bot_display_name(slug) if slug else "NO BOT"
+            self.rows["ai"].set_state(f"STANDBY · {name}")
         for mode, row in self.rows.items():
             row.state.set_color(c.RUN if (running and mode == active) else c.TEXT_MICRO)
 
@@ -191,9 +211,10 @@ class RowSpec:
     toggle: bool = False
     click: bool = False
     tip: str = ""
+    divider: bool = False   # a section caption, not a row
 
     def shape(self) -> tuple:
-        return (self.key, self.toggle, self.click)
+        return (self.key, self.toggle, self.click, self.divider)
 
 
 class _CheckSquare(QWidget):
@@ -282,6 +303,14 @@ class SeqRow(QFrame):
         row.addWidget(self.label, 1)
         self.dot = c.Dot(spec.dot, 6)
         row.addWidget(self.dot)
+        if spec.divider:
+            # Caption row: tracked label, no square, no dot, a little
+            # air above so the groups read as groups.
+            self.setFixedHeight(24)
+            row.setContentsMargins(6, 6, 6, 0)
+            self.box.hide()
+            self.dot.hide()
+            self.label.setFont(c.micro_font())
         self.apply(spec)
 
     def _on_box(self) -> None:
@@ -313,6 +342,9 @@ class SeqRow(QFrame):
         self._spec = spec
         if self.label.text() != spec.text:
             self.label.setText(spec.text)
+        if spec.divider:
+            self.label.set_color(c.TEXT_TERTIARY)
+            return
         self.label.set_color(c.TEXT_DISABLED if spec.dim else c.TEXT_SECONDARY)
         font = self.label.font()
         if font.strikeOut() != spec.strike:
@@ -353,13 +385,26 @@ def _reveal(widget: QWidget) -> None:
 
 
 class SequencePanel(c.Panel):
-    """Per-mode checklist that is also a control surface.
+    """Per-mode checklist that is also a control surface, read top to
+    bottom in the order the user acts.
 
-    Click mode: ZONE DRAWN redraws, INTERVAL focuses the timing card,
-    NEXT BREAK and STOP AFTER toggle their cfg keys. Record mode: each
-    step's square flips ``step.enabled``, its text selects the step in the
-    editor pane, and ``+ STEP`` pops the record tab's add menu. AI mode:
-    DRY RUN toggles ``ai_dry_run``. Everything else is read-only.
+    Click mode (titled CHECKLIST): numbered setup rows 01 DRAW ZONE,
+    02 WAIT, 03 TEST ONE CLICK, then an OPTIONS caption over BREAKS,
+    STOP AFTER and any key timers. While running the caption reads LIVE
+    and the option rows turn into countdowns. Each row acts: the zone row
+    draws, WAIT focuses the timing card, TEST fires a rehearsal click,
+    the option squares toggle their cfg keys.
+
+    Record mode (SEQUENCE): one numbered row per step; the square flips
+    ``step.enabled``, the text selects the step in the editor pane, and
+    ``+ STEP`` pops the record tab's add menu. Key timers follow under an
+    OPTIONS caption.
+
+    AI mode (BOT): TICK RATE, DRY RUN (its square toggles ``ai_dry_run``),
+    then a RULES FIRED caption over the last rules, newest first.
+
+    The engine state is not a row here; the header STATUS chip and the
+    CURRENT RUN panel carry it.
     """
 
     def __init__(self, app, parent: Optional[QWidget] = None):
@@ -430,16 +475,28 @@ class SequencePanel(c.Panel):
             self._list.insertWidget(self._list.count() - 1, r)
             self._rows.append(r)
 
+    _TITLES = {"clicker": "CHECKLIST", "recorder": "SEQUENCE", "ai": "BOT"}
+
     def tick(self) -> None:
         app = self.app
         mode = app._active_mode
         show_add = mode == "recorder"
         if self.add_step_btn.isVisible() != show_add:
             self.add_step_btn.setVisible(show_add)
+        title = self._TITLES.get(mode, "SEQUENCE")
+        if self.title.text() != title:
+            self.title.setText(title)
+        running = app._state_str != ClickerState.IDLE
         if mode == "clicker":
-            specs = self._click_rows() + self._timer_rows()
+            specs = self._click_rows()
+            specs.append(RowSpec("cap:options", "LIVE" if running else "OPTIONS", divider=True))
+            specs += self._option_rows(running) + self._timer_rows()
         elif mode == "recorder":
-            specs = self._record_rows() + self._timer_rows()
+            specs = self._record_rows()
+            timers = self._timer_rows()
+            if timers:
+                specs.append(RowSpec("cap:options", "KEY TIMERS", divider=True))
+                specs += timers
         else:
             specs = self._ai_rows()
         shape = tuple(s.shape() for s in specs)
@@ -480,15 +537,26 @@ class SequencePanel(c.Panel):
     # -- Click mode --------------------------------------------------------------------
 
     def _click_rows(self) -> list[RowSpec]:
+        """The numbered setup: zone, wait, test. Read top to bottom, done
+        top to bottom."""
         app = self.app
         running = app._state_str != ClickerState.IDLE
-        clicker = app.clicker
         rows: list[RowSpec] = []
         has_zone = app._zone is not None
+        if has_zone:
+            try:
+                x1, y1, x2, y2 = app._zone.aabb()
+                size = f"{int(x2 - x1)}×{int(y2 - y1)}"
+            except Exception:
+                size = "SET"
+            text = f"01  ZONE  {size}"
+        else:
+            text = "01  DRAW ZONE"
         rows.append(RowSpec(
-            "zone", "ZONE DRAWN" if has_zone else "NO ZONE", checked=has_zone,
+            "zone", text, checked=has_zone,
             dot=c.ACCENT if has_zone else c.STATUS_IDLE, dim=not has_zone, click=True,
-            tip="Click to draw the click zone again." if has_zone else "Click to draw a click zone."))
+            tip=("Where clicks land. Click to draw it again." if has_zone
+                 else "Where clicks land. Click to draw it on screen.")))
         if has_zone and getattr(app._zone, "lock", None) is not None:
             _zone, status, title = c.lock_view(app)
             if status == STATUS_LOCKED:
@@ -497,23 +565,27 @@ class SequencePanel(c.Panel):
                 dot = c.WARN
             else:
                 dot = c.STATUS_IDLE
-            name = c.elide(title or app._zone.lock.title or app._zone.lock.cls, 24).upper()
-            rows.append(RowSpec("target", f"TARGET {name}", dot=dot))
+            name = c.elide(title or app._zone.lock.title or app._zone.lock.cls, 22).upper()
+            rows.append(RowSpec("target", f"    LOCKED TO  {name}", dot=dot,
+                                tip="The zone follows this window when it moves or resizes."))
         lo, hi = float(_cfg(app, "min_delay")), float(_cfg(app, "max_delay"))
         rows.append(RowSpec(
-            "interval", f"WAIT  {c.fmt_secs(lo)} TO {c.fmt_secs(hi)}", checked=True, dot=c.ACCENT,
+            "interval", f"02  WAIT  {c.fmt_secs(lo)} TO {c.fmt_secs(hi)}", checked=True, dot=c.ACCENT,
             click=True, tip="Wait between clicks, drawn at random from this range. Click to edit."))
         if not running:
             tested = bool(getattr(app, "_checklist_tested", False))
             rows.append(RowSpec(
-                "test", "TESTED ONCE" if tested else "TEST ONE CLICK", checked=tested,
+                "test", "03  TESTED ONCE" if tested else "03  TEST ONE CLICK", checked=tested,
                 dot=c.ACCENT if tested else c.STATUS_IDLE, click=True, dim=not has_zone,
                 tip=("Fire one rehearsal click in the zone, then stop. Click to run it."
                      if has_zone else "Draw a zone first, then test one click.")))
-        rows.append(RowSpec(
-            "engine", "ENGINE RUNNING" if running else "ENGINE STANDBY", checked=running,
-            dot=c.RUN if running else c.STATUS_IDLE, active=running,
-            tip="Whether the click engine is running right now. START and STOP are in the header."))
+        return rows
+
+    def _option_rows(self, running: bool) -> list[RowSpec]:
+        """Session options: breaks and auto-stop. Countdowns while running."""
+        app = self.app
+        clicker = app.clicker
+        rows: list[RowSpec] = []
         breaks_on = bool(_cfg(app, "break_bursts_enabled"))
         fat = getattr(clicker, "_fatigue", None)
         if running and fat is not None and fat.enabled and fat.break_bursts:
@@ -526,7 +598,7 @@ class SequencePanel(c.Panel):
                                 toggle=True, tip="Periodic walk-away breaks. Click to turn off."))
         else:
             rows.append(RowSpec(
-                "break", "NEXT BREAK  " + ("ARMED" if breaks_on else "OFF"), checked=breaks_on,
+                "break", "BREAKS  " + ("ON" if breaks_on else "OFF"), checked=breaks_on,
                 dot=c.STATUS_IDLE, dim=not breaks_on, toggle=True,
                 tip=("Periodic walk-away breaks are on. Click to turn off."
                      if breaks_on else "Periodic walk-away breaks are off. Click to turn on.")))
@@ -671,14 +743,15 @@ class SequencePanel(c.Panel):
             if key != self._last_rule_key:
                 self._last_rule_key = key
                 self._rule_log.append(key)
+        rows.append(RowSpec("cap:rules", "RULES FIRED", divider=True))
         # Keyed by position: the newest rule always sits in slot 0, so a
         # new firing only changes text, never the row set.
         for i, (tk, name) in enumerate(reversed(self._rule_log)):
             rows.append(RowSpec(f"ai:rule:{i}", f"T{tk:05d}  {name}",
                                 dot=c.RUN if i == 0 else c.STATUS_IDLE, active=i == 0,
                                 tip="Rules that fired, newest first, with the tick they fired on."))
-        if len(rows) == 2:
-            rows.append(RowSpec("ai:none", "NO RULES FIRED", dim=True))
+        if len(rows) == 3:
+            rows.append(RowSpec("ai:none", "NONE YET", dim=True))
         return rows
 
     # -- Actions ----------------------------------------------------------------------
