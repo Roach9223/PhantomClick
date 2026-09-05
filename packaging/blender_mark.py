@@ -8,14 +8,16 @@ Outputs, all with a transparent background so ``make_icon.py`` and
 ``make_splash.py`` can compose them:
 
     packaging/render/mark_1024.png        still, square, for the icon
-    packaging/render/boot/frame_000.png   48 frames, 2:1, for the boot animation
-    ...
+    packaging/render/boot/frame_0000.png  48 square frames for the boot animation
+    packaging/render/hero_2160.png        still, square, for the README hero (--hero)
+    packaging/render/video/frame_0000.png 90 square frames for the release video (--video)
 
 Run::
 
-    "C:/Program Files/Blender Foundation/Blender 5.2/blender.exe" -b -P packaging/blender_mark.py -- [--still] [--anim] [--quick]
+    "C:/Program Files/Blender Foundation/Blender 5.2/blender.exe" -b -P packaging/blender_mark.py -- [--still] [--anim] [--hero] [--video] [--quick]
 
-``--quick`` renders at half size with fewer samples for iteration.
+With no flags, the icon still and the boot frames. ``--quick`` renders
+at half size with fewer samples for iteration.
 """
 
 from __future__ import annotations
@@ -32,8 +34,11 @@ OUT.mkdir(exist_ok=True)
 
 ARGS = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 QUICK = "--quick" in ARGS
-DO_STILL = "--still" in ARGS or not ("--anim" in ARGS)
-DO_ANIM = "--anim" in ARGS or not ("--still" in ARGS)
+_ANY = any(a in ARGS for a in ("--still", "--anim", "--hero", "--video"))
+DO_STILL = "--still" in ARGS or not _ANY
+DO_ANIM = "--anim" in ARGS or not _ANY
+DO_HERO = "--hero" in ARGS
+DO_VIDEO = "--video" in ARGS
 
 # Palette (sRGB hex from ui/theme.py), converted to linear for Blender.
 def lin(hexstr: str) -> tuple[float, float, float, float]:
@@ -50,7 +55,8 @@ ICE = lin("#7CC4F2")
 ICE_HI = lin("#BFE3FA")
 RUN = lin("#4ADE80")
 
-FRAMES = 48
+FRAMES = 48          # boot animation
+VIDEO_FRAMES = 96    # release video: the boot sequence, a click, a hold
 FPS = 30
 
 
@@ -110,13 +116,14 @@ def cursor_points(scale: float):
     return [(x * scale, -y * scale) for x, y in CURSOR]
 
 
-def build(anim: bool, cursor_scale: float = 0.82, ortho: float = 2.35):
+def build(anim: bool, cursor_scale: float = 0.82, ortho: float = 2.35,
+          frames: int = FRAMES, click: bool = False):
     reset()
     scene = bpy.context.scene
     scene.render.film_transparent = True
     scene.render.fps = FPS
     scene.frame_start = 0
-    scene.frame_end = FRAMES - 1
+    scene.frame_end = frames - 1
 
     # Renderer: Eevee (fast, good enough for an emissive mark); Blender 4.2+
     # names it BLENDER_EEVEE_NEXT, 5.x plain BLENDER_EEVEE.
@@ -225,26 +232,55 @@ def build(anim: bool, cursor_scale: float = 0.82, ortho: float = 2.35):
     fill.data.color = (0.6, 0.8, 1.0)
 
     if anim:
-        animate(cursor, ghosts, brackets)
+        animate(cursor, ghosts, brackets, frames=frames,
+                ring=click_ring(cursor) if click else None)
     return scene, cursor
+
+
+def click_ring(cursor):
+    """A thin ice ring at the cursor tip that expands and fades once: the
+    click. Only the release video uses it."""
+    bpy.ops.mesh.primitive_torus_add(major_radius=0.12, minor_radius=0.008,
+                                     major_segments=64, minor_segments=8,
+                                     location=(0, 0, 0.03))
+    ring = bpy.context.active_object
+    ring.name = "click_ring"
+    m = material("ring", ICE_HI, emission=ICE_HI, strength=3.0, roughness=0.3, alpha=0.0)
+    ring.data.materials.append(m)
+    ring.parent = cursor
+    ring.location = (0.0, 0.0, 0.03)
+    return ring
 
 
 def ease_out(t: float) -> float:
     return 1 - (1 - t) ** 3
 
 
-def animate(cursor, ghosts, brackets) -> None:
+def animate(cursor, ghosts, brackets, frames: int = FRAMES, ring=None) -> None:
     """Cursor sweeps in from the lower right and settles; the ghosts lag
     behind it; the brackets start wide and lock in around frame 34; a
-    final soft pulse on the brackets says 'armed'."""
+    final soft pulse on the brackets says 'armed'. With ``ring`` (the
+    release video) the cursor dips and a click ring expands at frame 56."""
     end = (-0.30, 0.42, 0.0)
     start = (1.25, -1.15, 0.0)
     settle = 30
-    for f in range(FRAMES):
+    for f in range(frames):
         t = ease_out(min(1.0, f / settle))
         pos = tuple(s + (e - s) * t for s, e in zip(start, end))
+        if ring is not None and 54 <= f <= 62:
+            # The click: a quick press into the plate and back.
+            dip = math.sin(math.pi * (f - 54) / 8) * 0.06
+            pos = (pos[0], pos[1], pos[2] - dip)
         cursor.location = pos
         cursor.keyframe_insert("location", frame=f)
+        if ring is not None:
+            rt = (f - 57) / 14.0
+            rs = 0.2 + 3.0 * max(0.0, min(1.0, rt))
+            ring.scale = (rs, rs, 1.0)
+            ring.keyframe_insert("scale", frame=f)
+            rp = ring.data.materials[0].node_tree.nodes.get("Principled BSDF")
+            rp.inputs["Alpha"].default_value = max(0.0, 0.9 * (1.0 - rt)) if 0.0 <= rt <= 1.0 else 0.0
+            rp.inputs["Alpha"].keyframe_insert("default_value", frame=f)
         for k, g in enumerate(ghosts, start=1):
             lag = ease_out(min(1.0, max(0.0, (f - 2 * k) / settle)))
             gp = tuple(s + (e - s) * lag for s, e in zip(start, end))
@@ -265,7 +301,7 @@ def animate(cursor, ghosts, brackets) -> None:
                 o.keyframe_insert("location", frame=f)
                 mat = o.data.materials[0]
                 p = mat.node_tree.nodes.get("Principled BSDF")
-                pulse = 1.1 + (1.2 if 36 <= f <= 40 else 0.0)
+                pulse = 1.1 + (1.2 if 36 <= f <= 40 else 0.0) + (1.0 if ring is not None and 56 <= f <= 60 else 0.0)
                 p.inputs["Emission Strength"].default_value = pulse
                 p.inputs["Emission Strength"].keyframe_insert("default_value", frame=f)
 
@@ -298,7 +334,39 @@ def render_anim(scene) -> None:
     print("wrote", FRAMES, "frames to", OUT / "boot")
 
 
+def render_hero(scene) -> None:
+    size = 1080 if QUICK else 2160
+    scene.render.resolution_x = size
+    scene.render.resolution_y = size
+    scene.render.resolution_percentage = 100
+    scene.render.image_settings.file_format = "PNG"
+    scene.render.image_settings.color_mode = "RGBA"
+    scene.frame_set(FRAMES - 1)
+    scene.render.filepath = str(OUT / "hero_2160.png")
+    bpy.ops.render.render(write_still=True)
+    print("wrote", scene.render.filepath)
+
+
+def render_video(scene) -> None:
+    (OUT / "video").mkdir(exist_ok=True)
+    scene.render.resolution_x = 540 if QUICK else 1080
+    scene.render.resolution_y = 540 if QUICK else 1080
+    scene.render.resolution_percentage = 100
+    scene.camera.data.ortho_scale = 3.1
+    scene.render.image_settings.file_format = "PNG"
+    scene.render.image_settings.color_mode = "RGBA"
+    scene.render.filepath = str(OUT / "video" / "frame_")
+    bpy.ops.render.render(animation=True)
+    print("wrote", VIDEO_FRAMES, "frames to", OUT / "video")
+
+
 if __name__ == "__main__":
+    if DO_HERO:
+        scene, _ = build(anim=False, cursor_scale=0.9, ortho=2.5)
+        render_hero(scene)
+    if DO_VIDEO:
+        scene, _ = build(anim=True, frames=VIDEO_FRAMES, click=True)
+        render_video(scene)
     if DO_STILL:
         # Icon variant: bigger cursor, tighter crop, so it still reads at 32 px.
         scene, _ = build(anim=False, cursor_scale=1.0, ortho=2.15)

@@ -1,5 +1,7 @@
 # PhantomClick
 
+![PhantomClick](docs/media/hero.webp)
+
 A Windows auto-clicker built around one idea: what looks human is human enough.
 The cursor travels along curved paths, dwells, jitters, tires and takes breaks.
 Clicks land at random points inside an area you draw. Timings come from
@@ -14,6 +16,8 @@ log-normal distributions, not a uniform range.
 Everything runs locally. Offline by default, no telemetry, no auto-update. The
 two optional network features (a LAN screen stream for your phone and item
 image downloads from the RuneScape wiki) are off until you turn them on.
+
+![Boot sequence](docs/media/boot.gif)
 
 ---
 
