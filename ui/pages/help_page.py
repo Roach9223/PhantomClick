@@ -182,9 +182,11 @@ class HelpPage(QWidget):
         self._kv("Target monitor", "Which screen ambient features (drift, "
                                    "wander, watchdog corners) treat as the "
                                    "screen. Auto follows your zone.")
-        self._kv("Key input", "SendInput for most apps. Serial HID (an "
-                              "Arduino running PhantomHID) is the only "
-                              "path RuneScape NXT accepts.")
+        self._kv("Key input", "Auto works everywhere with no hardware. "
+                              "Advanced: Serial HID routes keystrokes "
+                              "through an Arduino running PhantomHID, the "
+                              "only path RuneScape NXT accepts. Mouse "
+                              "clicks never use it.")
         self._kv("Wiki fetch", "Lets the AI item library download icons "
                                "from runescape.wiki. Off by default; no "
                                "HTTP requests leave the machine until "

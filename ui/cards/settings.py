@@ -64,13 +64,19 @@ class SettingsPageBody(QWidget):
         # ── Input ───────────────────────────────────────────────────
         # Backend that delivers KIND_KEY + key-timer keystrokes to the
         # OS. Lives here (not Behavior) because it's a system / I/O
-        # concern, not a humanization knob. Auto suits 95% of users;
-        # Serial HID is the only path NXT-class anti-cheat accepts.
+        # concern, not a humanization knob. Auto suits nearly everyone
+        # and needs no hardware; Serial HID (an Arduino) is the advanced
+        # path for NXT-class anti-cheat, so its port row only appears
+        # once that backend is picked.
         outer.addWidget(GroupHeader("Input"))
         input_group = SettingsGroup()
-        input_group.add_row(self._build_key_input_row())
-        input_group.add_row(self._build_serial_hid_port_row())
+        self._key_input_row = self._build_key_input_row()
+        input_group.add_row(self._key_input_row)
+        self._serial_hid_row = self._build_serial_hid_port_row()
+        input_group.add_row(self._serial_hid_row)
+        self._input_group = input_group
         outer.addWidget(input_group)
+        self._sync_serial_hid_row()
 
         outer.addSpacing(t.SP_XL)
 
@@ -188,22 +194,23 @@ class SettingsPageBody(QWidget):
             value=current,
         )
         seg.setToolTip(
-            "How keyboard events are delivered to the OS.\n\n"
-            "• Auto, Interception when its driver is installed, else SendInput.\n"
-            "• SendInput, standard Win32 path. Works in Notepad / browsers / "
-            "most apps; filtered by RuneScape NXT.\n"
-            "• Interception, hardware-flagged via the Interception driver. "
-            "Bypasses LLMHF_INJECTED filters but NXT still rejects it.\n"
-            "• Serial HID, routes through an Arduino flashed as a USB "
-            "keyboard. The only path that NXT accepts. See "
-            "firmware/phantomhid/README.md for setup."
+            "How keystrokes (Key steps, key timers, bots) reach Windows. "
+            "Mouse clicks are not affected.\n\n"
+            "Auto: works everywhere with no setup. Uses the Interception "
+            "driver if you installed it, else the standard Windows path.\n"
+            "SendInput: force the standard Windows path.\n"
+            "Interception: force the hardware-flagged driver path.\n"
+            "Serial HID (advanced): an Arduino Leonardo flashed with "
+            "firmware/phantomhid acts as a real USB keyboard. Only needed "
+            "for games such as RuneScape NXT that drop software keystrokes."
         )
         seg.valueChanged.connect(self._on_key_input_method_change)
         row = SettingsRow(
-            "Backend",
+            "Keyboard backend",
             desc=(
-                "Auto for almost everything. Serial HID for NXT or any other "
-                "game whose anti-cheat filters injected events."
+                "Leave on Auto; it works with no extra hardware. Serial HID "
+                "is an advanced option for games that block software "
+                "keystrokes and needs an Arduino."
             ),
         )
         row.set_control(seg)
@@ -227,12 +234,29 @@ class SettingsPageBody(QWidget):
         row = SettingsRow(
             "Serial HID port",
             desc=(
-                "COM port for the PhantomHID Arduino. Only used when the "
-                "backend above is set to Serial HID."
+                "COM port of the Arduino running PhantomHID (flash it from "
+                "firmware/phantomhid first; the README there has the steps). "
+                "Shown only while Serial HID is the backend."
             ),
         )
         row.set_control(port_combo)
         return row
+
+    def _sync_serial_hid_row(self) -> None:
+        """The port row is advanced-only: visible when Serial HID is the
+        backend, hidden otherwise so most users never see it."""
+        row = getattr(self, "_serial_hid_row", None)
+        if row is None:
+            return
+        serial = str(self.app.cfg.get("key_input_method", "auto") or "auto").lower() == "serial_hid"
+        if row.isVisible() != serial:
+            row.setVisible(serial)
+        # The last visible row drops its hairline.
+        try:
+            self._key_input_row.set_last(not serial)
+            row.set_last(serial)
+        except Exception:
+            pass
 
     def _populate_serial_hid_ports(self) -> None:
         """Fill the COM-port dropdown from pyserial's port list. If
@@ -268,6 +292,9 @@ class SettingsPageBody(QWidget):
         self.app.cfg["key_input_method"] = value
         save_config(self.app.cfg)
         self.app._push_config_to_clicker()
+        self._sync_serial_hid_row()
+        if value == "serial_hid":
+            self._populate_serial_hid_ports()
 
     def _on_serial_hid_port_change(self, _label: str) -> None:
         combo = getattr(self, "_serial_hid_port_combo", None)
