@@ -3,8 +3,11 @@
 Left: MODES (mode switcher), SEQUENCE (per-mode checklist / step list /
 rule log, plus the key timers), EVENT LOG (engine events and clicks)
 and SYSTEM (input, capture, scale, hotkeys, build).
-Right: ENGINE STATUS, ZONE MAP, TIMING & TARGETING and MISSION (the
-setup checklist while idle, the run readout while running).
+Right: ZONE MAP, then ENGINE STATUS and TIMING & TARGETING, which fold
+to their titles while the engine is idle, and CURRENT RUN, which only
+exists while something runs. SEQUENCE is the one setup checklist: its
+rows are the steps a new user takes, and its footer is the one sentence
+that says what still blocks START.
 
 Colour: ACCENT (ice) marks what is selected or targeted, RUN (green)
 marks what is live. See ``ui/theme.py``.
@@ -163,8 +166,7 @@ class ModesPanel(c.Panel):
                 pass
             self.rows["ai"].state.setText(f"ACTIVE · TICK {int(info.get('current_tick', 0) or 0)}")
         else:
-            # Slugs are long ("menaphos_vip_fishing"); the row is 268 px.
-            name = c.elide(slug.replace("_", " "), 11) if slug else "NO BOT"
+            name = c.elide(c.bot_display_name(slug), 20) if slug else "NO BOT"
             self.rows["ai"].state.setText(f"STANDBY · {name}")
         for mode, row in self.rows.items():
             row.state.set_color(c.RUN if (running and mode == active) else c.TEXT_MICRO)
@@ -390,6 +392,13 @@ class SequencePanel(c.Panel):
         self._list.addStretch(1)
         scroll.setWidget(self._inner)
         self.body_layout().addWidget(scroll, 1)
+        # The one sentence on the deck that says what blocks START. The
+        # header's dimmed START carries the same text as its tooltip.
+        self.footer = QLabel()
+        self.footer.setWordWrap(True)
+        self.footer.setProperty("role", "hint")
+        self.footer.hide()
+        self.body_layout().addWidget(self.footer)
         self._rows: list[SeqRow] = []
         self._shape: Optional[tuple] = None
         self._rule_log: deque[tuple[int, str]] = deque(maxlen=8)
@@ -440,6 +449,29 @@ class SequencePanel(c.Panel):
         else:
             for r, spec in zip(self._rows, specs):
                 r.apply(spec)
+        self._tick_footer()
+
+    def _tick_footer(self) -> None:
+        app = self.app
+        text = ""
+        if app._state_str == ClickerState.IDLE:
+            shell = getattr(app, "deck", None)
+            try:
+                text = shell.readiness() if shell is not None else ""
+            except Exception:
+                text = ""
+            if not text:
+                try:
+                    from ui.readiness import readiness_message
+                    text = readiness_message(app)
+                except Exception:
+                    text = ""
+            if not text:
+                text = "Ready. START runs it, F6 does the same."
+        if self.footer.text() != text:
+            self.footer.setText(text)
+        if self.footer.isVisible() != bool(text):
+            self.footer.setVisible(bool(text))
 
     def refresh(self) -> None:
         """Force a rebuild on the next tick (step list changed elsewhere)."""
@@ -471,6 +503,13 @@ class SequencePanel(c.Panel):
         rows.append(RowSpec(
             "interval", f"WAIT  {c.fmt_secs(lo)} TO {c.fmt_secs(hi)}", checked=True, dot=c.ACCENT,
             click=True, tip="Wait between clicks, drawn at random from this range. Click to edit."))
+        if not running:
+            tested = bool(getattr(app, "_checklist_tested", False))
+            rows.append(RowSpec(
+                "test", "TESTED ONCE" if tested else "TEST ONE CLICK", checked=tested,
+                dot=c.ACCENT if tested else c.STATUS_IDLE, click=True, dim=not has_zone,
+                tip=("Fire one rehearsal click in the zone, then stop. Click to run it."
+                     if has_zone else "Draw a zone first, then test one click.")))
         rows.append(RowSpec(
             "engine", "ENGINE RUNNING" if running else "ENGINE STANDBY", checked=running,
             dot=c.RUN if running else c.STATUS_IDLE, active=running,
@@ -688,6 +727,9 @@ class SequencePanel(c.Panel):
                 app.log.exception("deck sequence redraw failed")
         elif key == "interval":
             self._focus_timing()
+        elif key == "test":
+            if app._zone is not None:
+                app._test_click_once()
         elif key.startswith("timer:"):
             try:
                 app.show_page("timers")
@@ -1068,7 +1110,7 @@ def _hid_summary(full: str, ok: bool, cfg: dict) -> str:
 
 class EngineStatusPanel(c.Panel):
     def __init__(self, app, parent: Optional[QWidget] = None):
-        super().__init__("ENGINE STATUS", parent)
+        super().__init__("ENGINE STATUS", parent, collapsible=True)
         self.app = app
         self.grid = c.KVGrid(["ENGINE", "HUMANIZER", "HID", "HOTKEYS", "MONITOR", "FATIGUE"], tips={
             "ENGINE": "Click engine state: STANDBY, ARMING (pre-start delay), RUNNING or HOLD.",
@@ -1225,11 +1267,10 @@ class IntervalStrip(QWidget):
 
 
 class CadencePanel(c.Panel):
-    """Compact timing and targeting summary; never stretches to fill a column."""
+    """Compact timing and targeting summary; folds to its title while idle."""
     def __init__(self, app, parent=None):
-        super().__init__("TIMING & TARGETING", parent)
+        super().__init__("TIMING & TARGETING", parent, collapsible=True)
         self.app = app
-        self.setFixedHeight(166)
         body = self.body_layout()
         self.grid = c.KVGrid(["INTERVAL", "CURVE", "REALISM", "ANTI-CLUSTER"], tips={
             "CURVE": "Shape of the wait distribution. LOG-NORMAL clusters near the short end with a long tail, like real inter-action timing.",
@@ -1277,26 +1318,15 @@ class CadencePanel(c.Panel):
         self.strip.update()
 
 
-class MissionPanel(c.Panel):
-    """Setup checklist while idle, run readout while running.
-
-    Idle rows are the steps a new user takes in order (draw the zone, set
-    the interval, test one click, start), each a live control: the square
-    shows whether the step is done, clicking the row performs it. One
-    line under the rows says what still blocks START; that sentence has
-    no other home on the deck, so it is never repeated.
-    """
+class CurrentRunPanel(c.Panel):
+    """Live readout while the engine or a bot runs: the phase line and
+    PROGRESS / CLICKS / RECOVERIES. Hidden while idle; the SEQUENCE panel
+    is the setup checklist, so nothing here repeats it."""
 
     def __init__(self, app, parent=None):
-        super().__init__("MISSION", parent)
+        super().__init__("CURRENT RUN", parent)
         self.app = app
         body = self.body_layout()
-        self._list = QVBoxLayout()
-        self._list.setContentsMargins(0, 0, 0, 0)
-        self._list.setSpacing(2)
-        body.addLayout(self._list)
-        self._rows: list[SeqRow] = []
-        self._shape: Optional[tuple] = None
         self.phase = QLabel()
         self.phase.setWordWrap(True)
         self.phase.setProperty("role", "hint")
@@ -1308,136 +1338,14 @@ class MissionPanel(c.Panel):
         })
         self.grid.setFixedHeight(62)
         body.addWidget(self.grid)
-        self.grid.hide()
 
-    # -- Rows ---------------------------------------------------------------
-
-    def _rebuild(self, specs: list[RowSpec]) -> None:
-        while self._list.count():
-            item = self._list.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
-        self._rows = []
-        for spec in specs:
-            r = SeqRow(spec)
-            r.toggled.connect(self._on_row)
-            r.activated.connect(self._on_row)
-            self._list.addWidget(r)
-            self._rows.append(r)
-
-    def rows(self) -> list[SeqRow]:
-        return list(self._rows)
-
-    def _ready(self) -> str:
-        from ui.readiness import readiness_message
-        try:
-            return readiness_message(self.app)
-        except Exception:
-            return ""
-
-    def _specs(self, message: str) -> list[RowSpec]:
-        app = self.app
-        mode = app._active_mode
-        rows: list[RowSpec] = []
-        ready = not message
-        if mode == "clicker":
-            has_zone = app._zone is not None
-            lo, hi = float(_cfg(app, "min_delay")), float(_cfg(app, "max_delay"))
-            tested = bool(getattr(app, "_checklist_tested", False))
-            rows.append(RowSpec("m:zone", "DRAW ZONE" if not has_zone else "ZONE DRAWN", checked=has_zone,
-                                dot=c.ACCENT if has_zone else c.STATUS_IDLE, click=True,
-                                tip="Where clicks land. Click to draw it on screen."))
-            rows.append(RowSpec("m:interval", f"WAIT  {c.fmt_secs(lo)} TO {c.fmt_secs(hi)}", checked=True,
-                                dot=c.ACCENT, click=True, tip="Wait between clicks. Click to edit."))
-            rows.append(RowSpec("m:test", "TEST ONE CLICK" if not tested else "TESTED", checked=tested,
-                                dot=c.ACCENT if tested else c.STATUS_IDLE, click=True, dim=not has_zone,
-                                tip="Fire one rehearsal click, then stop. Click to run it."))
-        elif mode == "recorder":
-            n = len(app._steps)
-            enabled = sum(bool(getattr(s, "enabled", True)) for s in app._steps)
-            rows.append(RowSpec("m:steps", f"ADD STEPS  {n}" if n else "ADD STEPS", checked=n > 0,
-                                dot=c.ACCENT if n else c.STATUS_IDLE, click=True,
-                                tip="Build the sequence. Click to add a step."))
-            rows.append(RowSpec("m:configure", f"CONFIGURE  {enabled} ENABLED", checked=bool(n) and ready,
-                                dot=c.ACCENT if (n and ready) else c.STATUS_IDLE, click=True, dim=not n,
-                                tip="Every enabled step needs its zone, template, colour or key. Click to open the steps."))
-        else:
-            slug = str(app.cfg.get("ai_active_bundle") or app.cfg.get("ai_bot_slug") or "").strip()
-            dry = bool(_cfg(app, "ai_dry_run"))
-            name = c.elide(slug.replace("_", " "), 14).upper() if slug else ""
-            rows.append(RowSpec("m:bot", f"BOT  {name}" if name else "PICK A BOT", checked=bool(slug),
-                                dot=c.ACCENT if slug else c.STATUS_IDLE, click=True,
-                                tip="Which bot runs. Click to open the BOT pane."))
-            rows.append(RowSpec("m:dry", "DRY RUN  " + ("ON" if dry else "OFF"), checked=dry,
-                                dot=c.WARN if dry else c.STATUS_IDLE, toggle=True,
-                                tip="Dry run logs what the bot would do without touching the mouse. Click to toggle."))
-        rows.append(RowSpec("m:start", "START" if ready else "START  BLOCKED", checked=False,
-                            dot=c.RUN if ready else c.STATUS_IDLE, click=True, dim=not ready,
-                            tip=("Start now. F6 does the same." if ready else f"Blocked: {message}")))
-        return rows
-
-    def _on_row(self, key: str) -> None:
-        app = self.app
-        shell = getattr(app, "deck", None)
-        try:
-            if key == "m:zone":
-                app.click_page.zone_card._on_draw()
-            elif key == "m:interval":
-                if shell is not None:
-                    shell.set_editor_open(True)
-                app.click_page.reveal_timing()
-                _reveal(app.click_page.timing_card)
-            elif key == "m:test":
-                app._test_click_once()
-            elif key == "m:steps":
-                if shell is not None:
-                    shell.set_editor_open(True)
-                app.record_mode_tab.show_add_menu(QCursor.pos())
-            elif key in ("m:configure", "m:bot"):
-                if shell is not None:
-                    shell.set_editor_open(True)
-            elif key == "m:dry":
-                app.cfg["ai_dry_run"] = not bool(_cfg(app, "ai_dry_run"))
-                save_config(app.cfg)
-                card = getattr(app, "ai_card", None)
-                switch = getattr(getattr(card, "config", None), "dry_switch", None)
-                if switch is not None and switch.isChecked() != bool(app.cfg["ai_dry_run"]):
-                    switch.setChecked(bool(app.cfg["ai_dry_run"]))
-            elif key == "m:start":
-                app._on_start()
-        except Exception:
-            app.log.exception("mission row failed: %s", key)
-        self.tick()
-
-    # -- Tick ---------------------------------------------------------------
+    def running(self) -> bool:
+        return self.app._state_str != ClickerState.IDLE
 
     def tick(self):
         app = self.app
-        running = app._state_str != ClickerState.IDLE
-        self.title.setText("CURRENT RUN" if running else "MISSION")
-        if not running:
-            message = self._ready()
-            specs = self._specs(message)
-            shape = tuple(sp.shape() for sp in specs)
-            if shape != self._shape:
-                self._shape = shape
-                self._rebuild(specs)
-            else:
-                for r, sp in zip(self._rows, specs):
-                    r.apply(sp)
-            for r in self._rows:
-                if not r.isVisible():
-                    r.show()
-            self.phase.setText(message or "Ready. START runs it, F6 does the same.")
-            if not self.grid.isHidden():
-                self.grid.hide()
+        if not self.running():
             return
-        for r in self._rows:
-            if r.isVisible():
-                r.hide()
-        if self.grid.isHidden():
-            self.grid.show()
         if app._active_mode == "ai":
             snap = app.bot_runner.last_fired() if app.bot_runner else {}
             phase = snap.get("last_fired_rule") or "Waiting for a matching rule"
@@ -1456,8 +1364,9 @@ class MissionPanel(c.Panel):
         self.grid.set_value("RECOVERIES", recovery, c.TEXT_SECONDARY)
 
 
-# Old name, kept for anything that imported it.
-RunProgressPanel = MissionPanel
+# Old names, kept for anything that imported them.
+MissionPanel = CurrentRunPanel
+RunProgressPanel = CurrentRunPanel
 
 
 # -- CORNER ABORT FOOTER ---------------------------------------------------------
@@ -1534,10 +1443,9 @@ class RightColumn(QWidget):
         col = QVBoxLayout(self)
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(10)
-        self.engine_status = EngineStatusPanel(app)
-        col.addWidget(self.engine_status)
-
-        # All cards keep compact natural heights; telemetry never stretches.
+        # The zone map is a setup tool, so it leads. The two telemetry
+        # panels fold to their titles until the engine runs; CURRENT RUN
+        # exists only while it does.
         self.zone_panel = c.Panel("ZONE MAP")
         self.zone_map = ZoneMap(app)
         self.zone_panel.body_layout().addWidget(self.zone_map)
@@ -1545,17 +1453,30 @@ class RightColumn(QWidget):
         self.zone_panel.body_layout().addWidget(self.corner_footer)
         col.addWidget(self.zone_panel)
 
+        self.engine_status = EngineStatusPanel(app)
+        col.addWidget(self.engine_status)
         self.cadence = CadencePanel(app)
         col.addWidget(self.cadence)
-        self.progress = MissionPanel(app)
+        self.progress = CurrentRunPanel(app)
         col.addWidget(self.progress)
+        self.progress.hide()
         col.addStretch(1)
+        self._sync_idle()
+
+    def _sync_idle(self) -> None:
+        running = self.app._state_str != ClickerState.IDLE
+        self.engine_status.sync_open(running)
+        self.cadence.sync_open(running)
+        show = running and self.height() >= 800
+        if self.progress.isVisible() != show:
+            self.progress.setVisible(show)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.progress.setVisible(self.height() >= 800)
+        self._sync_idle()
 
     def tick(self) -> None:
+        self._sync_idle()
         for panel in (self.engine_status, self.cadence, self.progress, self.corner_footer):
             try:
                 panel.tick()

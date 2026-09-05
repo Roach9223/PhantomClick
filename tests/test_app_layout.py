@@ -136,10 +136,14 @@ def test_compact_timing_panel_has_real_anti_cluster_state(window, tmp_path):
     window.cfg["anti_cluster_radius"] = 17
     panel.tick()
     QApplication.processEvents()
-    assert panel.height() == 166
+    # Idle: telemetry folds to its title; a click on the title opens it.
+    assert not panel.is_open()
+    panel.set_open(True)
+    QApplication.processEvents()
+    assert panel.height() >= 150
     text = " ".join(label.text() for label in panel.findChildren(QLabel))
     assert "ANTI-CLUSTER" in text and "17px" in text
-    assert window.findChild(MissionPanel).isVisible()
+    assert not window.findChild(MissionPanel).isVisible()
     window.grab().save(str(tmp_path / "compact-timing.png"))
 
 
@@ -152,13 +156,13 @@ def test_wide_short_window_stays_within_requested_size(window):
 
 
 def test_idle_run_card_and_explicit_timing(window):
-    from ui.deck.columns import MissionPanel
-    panel = window.findChild(MissionPanel)
-    panel.tick()
-    assert panel.title.text() == "MISSION"
-    assert "Draw" in panel.phase.text() or "draw" in panel.phase.text()
-    keys = [r.key for r in panel.rows()]
-    assert keys[0] == "m:zone" and keys[-1] == "m:start"
+    # SEQUENCE is the setup checklist: zone, wait, test, and the one
+    # sentence that says what blocks START.
+    seq = window.deck.left.sequence
+    seq.tick()
+    keys = [r.key for r in seq.rows()]
+    assert keys[:3] == ["zone", "interval", "test"]
+    assert "draw" in seq.footer.text().lower()
     # START is dimmed while the zone is missing and says why.
     window.deck.tick()
     assert not window.start_btn.isEnabled()

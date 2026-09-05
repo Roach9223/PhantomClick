@@ -253,9 +253,17 @@ class MonoLabel(QLabel):
 # -- Panel -------------------------------------------------------------------
 
 class Panel(QFrame):
-    """Bordered surface with a micro title row. The deck's unit of layout."""
+    """Bordered surface with a micro title row. The deck's unit of layout.
 
-    def __init__(self, title: str, parent: Optional[QWidget] = None):
+    A ``collapsible`` panel folds to its title row: :meth:`sync_open`
+    opens it whenever the caller says the content matters (the engine is
+    running) and otherwise leaves it as the user last set it, closed by
+    default. Telemetry a new user has not earned yet stays out of the way
+    until there is something to read.
+    """
+
+    def __init__(self, title: str, parent: Optional[QWidget] = None,
+                 collapsible: bool = False):
         super().__init__(parent)
         self.setObjectName("deck-panel")
         self.setProperty("role", "panel")
@@ -263,9 +271,9 @@ class Panel(QFrame):
             f"QFrame#deck-panel {{ background: {SURFACE}; border: 1px solid {BORDER}; "
             f"border-radius: {RADIUS_CARD}px; }}"
         )
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(12, 10, 12, 12)
-        outer.setSpacing(8)
+        self._outer = QVBoxLayout(self)
+        self._outer.setContentsMargins(12, 10, 12, 12)
+        self._outer.setSpacing(8)
         self.title = MicroLabel(title, TEXT_TERTIARY)
         self.title.setProperty("role", "panel-title")
         # Title row: the label plus a stretch, so a panel can park a tiny
@@ -275,14 +283,62 @@ class Panel(QFrame):
         self.title_row.setSpacing(8)
         self.title_row.addWidget(self.title)
         self.title_row.addStretch(1)
-        outer.addLayout(self.title_row)
-        self._body = QVBoxLayout()
+        self._outer.addLayout(self.title_row)
+        self.body_widget = QWidget()
+        self.body_widget.setAttribute(Qt.WA_StyledBackground, False)
+        self.body_widget.setStyleSheet("background: transparent;")
+        self._body = QVBoxLayout(self.body_widget)
         self._body.setContentsMargins(0, 0, 0, 0)
         self._body.setSpacing(6)
-        outer.addLayout(self._body, 1)
+        self._outer.addWidget(self.body_widget, 1)
+        self._collapsible = bool(collapsible)
+        self._open = True
+        self._user_open: Optional[bool] = None
+        self.chevron: Optional[QLabel] = None
+        if self._collapsible:
+            self.chevron = QLabel()
+            self.chevron.setFixedSize(14, 14)
+            self.title_row.addWidget(self.chevron)
+            self.setCursor(Qt.PointingHandCursor)
+            self._paint_chevron()
 
     def body_layout(self) -> QVBoxLayout:
         return self._body
+
+    # -- Collapse --------------------------------------------------------------
+
+    def is_open(self) -> bool:
+        return self._open
+
+    def _paint_chevron(self) -> None:
+        if self.chevron is not None:
+            self.chevron.setPixmap(icon_pixmap(
+                "chevron-down" if self._open else "chevron-right", 14, TEXT_TERTIARY))
+
+    def set_open(self, open_: bool) -> None:
+        open_ = bool(open_)
+        if open_ == self._open:
+            return
+        self._open = open_
+        self.body_widget.setVisible(open_)
+        self._outer.setContentsMargins(12, 10, 12, 12 if open_ else 10)
+        self._paint_chevron()
+
+    def sync_open(self, needed: bool) -> None:
+        """Open when ``needed``; otherwise the user's last choice, which
+        defaults to closed."""
+        if not self._collapsible:
+            return
+        self.set_open(bool(needed) or bool(self._user_open))
+
+    def mousePressEvent(self, event):  # noqa: N802 (Qt name)
+        if self._collapsible and event.button() == Qt.LeftButton \
+                and event.position().y() <= self.title.geometry().bottom() + 8:
+            self._user_open = not self._open
+            self.set_open(self._user_open)
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
 
 class KVGrid(QWidget):
@@ -586,6 +642,32 @@ def fmt_secs(v: float) -> str:
     if v < 10.0:
         return f"{v:0.2f}S"
     return f"{v:0.1f}S"
+
+
+_BOT_NAMES: Optional[dict[str, str]] = None
+
+
+def bot_display_name(slug: str) -> str:
+    """The bot's manifest name for a slug ("Menaphos VIP Fishing" for
+    ``menaphos_vip_fishing``). The library is read once; anything not in
+    it (a bundle, a custom bot) falls back to the slug in words."""
+    global _BOT_NAMES
+    slug = str(slug or "").strip()
+    if not slug:
+        return ""
+    if _BOT_NAMES is None:
+        names: dict[str, str] = {}
+        try:
+            from ui.cards.ai import _enumerate_bots
+            for bot in _enumerate_bots():
+                names[str(bot.get("slug", ""))] = str(bot.get("name") or "")
+        except Exception:
+            pass
+        _BOT_NAMES = names
+    name = _BOT_NAMES.get(slug) or slug.replace("_", " ").replace("-", " ").title()
+    # Manifests append the kind ("Menaphos VIP Fishing (Python bot)");
+    # the deck's rows have no room for it.
+    return name.split(" (", 1)[0].strip()
 
 
 def format_mmss(seconds: float) -> str:

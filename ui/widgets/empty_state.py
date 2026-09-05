@@ -77,7 +77,9 @@ class EmptyState(QFrame):
         if cta_text and on_cta is not None:
             layout.addSpacing(14)
             btn = QPushButton(cta_text)
-            btn.setProperty("role", "quiet-accent")
+            # The one thing to do on an empty page reads as the primary.
+            btn.setProperty("variant", "primary")
+            btn.setMinimumHeight(32)
             btn.setCursor(Qt.PointingHandCursor)
             btn.clicked.connect(on_cta)
             layout.addWidget(btn, 0, Qt.AlignCenter)
