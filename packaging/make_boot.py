@@ -1,12 +1,19 @@
 """Compose the splash and the boot-animation frames from the Blender renders.
 
-Inputs (from ``blender_mark.py``): ``render/mark_1024.png`` and
-``render/boot/frame_NNNN.png`` (48 transparent 640 x 320 frames).
+Inputs (from ``blender_mark.py``): ``render/mark_1024.png`` and the first
+48 of the 1080 px square ``render/video/frame_NNNN.png`` frames (the boot
+sweep is the opening of the release video; ``render/boot`` is the
+fallback when only ``--anim`` was rendered).
 
 Outputs, committed so the build never needs Blender:
 
-    packaging/splash.png          480 x 240, the PyInstaller onefile splash
-    packaging/boot/frame_NN.png   48 frames, 640 x 320, played by ui/boot_splash.py
+    packaging/splash.png          960 x 480, the PyInstaller onefile splash
+    packaging/boot/frame_NN.png   48 frames, 1440 x 720, played by ui/boot_splash.py
+
+Both are rendered at 2x: the boot window shows the frames at 720 x 360
+logical with a device pixel ratio of 2, so they stay crisp on a 150 % or
+200 % monitor instead of being stretched; the splash is downscaled by
+Windows rather than upscaled.
 
 Both are the mark on the left and the Barlow wordmark on the right, on the
 slate palette from ``ui/theme.py``. The splash is the last frame scaled,
@@ -34,8 +41,9 @@ FG = (0xDC, 0xE3, 0xEA)          # theme.TEXT_PRIMARY
 MUTED = (0x7C, 0x88, 0x94)       # theme.TEXT_TERTIARY
 ICE = (0x7C, 0xC4, 0xF2)         # theme.ACCENT
 
-FRAME_W, FRAME_H = 640, 320
-SPLASH_W, SPLASH_H = 480, 240
+FRAME_W, FRAME_H = 1440, 720     # 2x of the 720 x 360 boot window
+SPLASH_W, SPLASH_H = 960, 480    # 2x of the old splash
+DESIGN_W = 640                   # the width the type sizes were tuned at
 
 
 def _font(candidates: list[str], size: int) -> ImageFont.ImageFont:
@@ -69,7 +77,7 @@ def compose(mark: Image.Image, w: int, h: int, *, progress: float = 1.0,
     img.alpha_composite(m, (mx, my))
 
     # Wordmark and subtext to the right of the mark.
-    scale = w / FRAME_W
+    scale = w / DESIGN_W
     word = _font([str(FONTS / "Barlow-Bold.ttf"), "segoeuib.ttf", "arialbd.ttf"], int(52 * scale))
     small = _font([str(FONTS / "Barlow-SemiBold.ttf"), "segoeuib.ttf"], int(14 * scale))
     mono = _font([str(FONTS / "JetBrainsMono-Medium.ttf"), "consola.ttf"], int(13 * scale))
@@ -107,7 +115,7 @@ def compose(mark: Image.Image, w: int, h: int, *, progress: float = 1.0,
 
 
 def main() -> None:
-    frames = sorted((RENDER / "boot").glob("frame_*.png"))
+    frames = sorted((RENDER / "video").glob("frame_*.png"))[:48]         or sorted((RENDER / "boot").glob("frame_*.png"))
     still = RENDER / "mark_1024.png"
     if not frames or not still.exists():
         raise SystemExit("render first: blender -b -P packaging/blender_mark.py")

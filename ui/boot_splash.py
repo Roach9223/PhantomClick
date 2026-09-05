@@ -4,7 +4,10 @@ built.
 It plays the frames in ``packaging/boot`` (rendered in Blender by
 ``packaging/blender_mark.py``, composed by ``packaging/make_boot.py``) at
 30 fps in a frameless, always-on-top window centred on the screen under
-the cursor, then emits ``finished``. A click or any key skips it. The
+the cursor, then emits ``finished``. The frames are 2x assets: each
+pixmap carries a device pixel ratio of ``FRAME_SCALE`` so the window is
+half the frame size in logical pixels and stays sharp on scaled
+monitors. A click or any key skips it. The
 ``boot_animation`` config key (default on) and the
 ``PHANTOMCLICK_NO_BOOT`` environment variable both turn it off, and a
 missing frames folder means it simply never shows.
@@ -23,6 +26,7 @@ from PySide6.QtGui import QCursor, QGuiApplication, QPainter, QPixmap
 from PySide6.QtWidgets import QWidget
 
 FPS = 30
+FRAME_SCALE = 2.0   # frames are composed at 2x the logical window size
 
 
 def frames_dir() -> Path:
@@ -45,11 +49,12 @@ class BootSplash(QWidget):
         for p in sorted(frames_dir().glob("frame_*.png")):
             pm = QPixmap(str(p))
             if not pm.isNull():
+                pm.setDevicePixelRatio(FRAME_SCALE)
                 self._frames.append(pm)
         self._idx = 0
         self._done = False
-        w = self._frames[0].width() if self._frames else 640
-        h = self._frames[0].height() if self._frames else 320
+        w = int(self._frames[0].width() / FRAME_SCALE) if self._frames else 720
+        h = int(self._frames[0].height() / FRAME_SCALE) if self._frames else 360
         self.setFixedSize(w, h)
         self._timer = QTimer(self)
         self._timer.setInterval(int(1000 / FPS))
