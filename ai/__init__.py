@@ -1,4 +1,4 @@
-"""rs3vision Studio — visual color-automation IDE on top of rs3vision."""
+"""rs3vision Studio, visual color-automation IDE on top of rs3vision."""
 
 from __future__ import annotations
 

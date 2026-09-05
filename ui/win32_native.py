@@ -1,12 +1,12 @@
-"""Win11 native chrome — Mica backdrop + dark title bar via DwmSetWindowAttribute.
+"""Win11 native chrome, Mica backdrop + dark title bar via DwmSetWindowAttribute.
 
 Both calls are silent no-ops on non-Windows or Windows builds that don't
 support the attribute (Win10, early Win11). Returns ``True`` on success so
 callers can decide whether to fall back to a solid window background.
 
 DWM attribute IDs come from ``dwmapi.h`` in the Windows SDK:
-- ``DWMWA_USE_IMMERSIVE_DARK_MODE = 20`` — forces dark non-client area
-- ``DWMWA_SYSTEMBACKDROP_TYPE = 38`` — Mica / Acrylic / Tabbed (Win11 22H2+)
+- ``DWMWA_USE_IMMERSIVE_DARK_MODE = 20``, forces dark non-client area
+- ``DWMWA_SYSTEMBACKDROP_TYPE = 38``, Mica / Acrylic / Tabbed (Win11 22H2+)
 
 We only enable Mica (``DWMSBT_MAINWINDOW = 2``); Acrylic on the main window
 looks dated and Tabbed-Mica is for tabbed shells like Explorer.

@@ -28,7 +28,7 @@ class Port:
     """A named input or output port on a block."""
 
     name: str
-    kind: str = "data"  # "trigger" | "data" — trigger ports carry control flow
+    kind: str = "data"  # "trigger" | "data", trigger ports carry control flow
 
 
 @dataclass
@@ -40,7 +40,7 @@ class Param:
     kind: str = "text"  # "text" | "int" | "float" | "bool" | "color_hex" | "choice"
     choices: List[str] = field(default_factory=list)
     # Optional callable that returns a fresh list of choices at node-add time
-    # (used for dropdowns whose options come from disk — e.g. template files).
+    # (used for dropdowns whose options come from disk, e.g. template files).
     # Takes precedence over the static `choices` field when provided.
     choices_provider: Optional[Callable[[], List[str]]] = None
     description: str = ""
@@ -54,12 +54,12 @@ class Param:
 class Block(ABC):
     """Executable unit. Subclass, declare ports/params, implement execute."""
 
-    # Class-level metadata — override in subclasses.
+    # Class-level metadata, override in subclasses.
     identifier: str = ""          # e.g. "color.find"
     name: str = ""                # human display, e.g. "Find Color"
     category: str = ""            # e.g. "Color"
     description: str = ""         # shown in tooltips
-    example: str = ""             # optional — inline help/docs example
+    example: str = ""             # optional, inline help/docs example
     color: tuple = (60, 60, 90)   # node header color (R, G, B)
 
     inputs: List[Port] = []
@@ -104,7 +104,7 @@ def iter_by_category() -> Dict[str, List[Type[Block]]]:
 
 
 # ─────────────────────────────────────────────────────────────────
-# NodeGraphQt adapter — a factory that builds BaseNode subclasses
+# NodeGraphQt adapter, a factory that builds BaseNode subclasses
 # from Block subclasses. Lets the editor render + connect blocks
 # using the declarative metadata above.
 # ─────────────────────────────────────────────────────────────────
@@ -119,7 +119,7 @@ def make_ngq_node_cls(block_cls: Type[Block]):
     * One output port per :attr:`Block.outputs`.
     * One property per :attr:`Block.params` (edited in the properties panel).
     * A `_block_cls` attribute pointing at the originating Block subclass
-      — the runtime uses this to instantiate + execute the block.
+     , the runtime uses this to instantiate + execute the block.
     """
     from NodeGraphQt import BaseNode
 
@@ -143,7 +143,7 @@ def make_ngq_node_cls(block_cls: Type[Block]):
             r, g, b = block_cls.color
             self.set_color(r, g, b)
             # Tooltip is applied by StudioGraph.create_node AFTER the graph
-            # finishes constructing the node — NodeGraphQt's internal
+            # finishes constructing the node, NodeGraphQt's internal
             # `_tooltip_disable` runs post-__init__ and would otherwise
             # clobber anything we set here.
 
@@ -158,7 +158,7 @@ def make_ngq_node_cls(block_cls: Type[Block]):
 
 
 # Yellow = "trigger" (control-flow). Blue = "data" (values). Keeps the
-# wiring intent visually obvious — users can tell at a glance which
+# wiring intent visually obvious, users can tell at a glance which
 # ports fire execution vs carry payloads.
 _PORT_COLORS = {
     "trigger": (245, 200, 60),

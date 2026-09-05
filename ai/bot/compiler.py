@@ -1,10 +1,10 @@
-"""compile_user_bot — turn a list of :class:`AIBotStep` into a
+"""compile_user_bot, turn a list of :class:`AIBotStep` into a
 runnable :class:`Bot` with one ``@bot.rule`` per step.
 
 Strategy: closures-per-step, NOT a meta-interpreter.
 
 Why? The bot runner walks rules in priority order each tick and the
-first rule that returns truthy "wins" — see
+first rule that returns truthy "wins", see
 ``ai.bot.runner._BotWorker.run``. Building one rule per step preserves:
   * priority order = step order (the user's mental model from Record mode),
   * the AI dashboard's per-rule live highlight (lights up the actual
@@ -149,7 +149,7 @@ def compile_user_bot(
     Returns ``(bot, errors)``. An empty errors list means the bot is
     ready to run; non-empty means *some* steps were dropped or
     flagged. Callers should toast each error and may still start the
-    bot — only steps that produced errors are dropped, the rest are
+    bot, only steps that produced errors are dropped, the rest are
     registered.
     """
     errors: List[str] = []
@@ -163,17 +163,17 @@ def compile_user_bot(
         auto_stop_dry_ticks=auto_stop_dry_ticks,
         watchdog_no_click_s=watchdog_no_click_s,
     )
-    # Pin the item library on the Bot — the runner picks it up via
+    # Pin the item library on the Bot, the runner picks it up via
     # getattr(bot, "item_library", None) and exposes it through
     # ctx.item_library for WorldState.
     if item_library is not None:
         bot.item_library = item_library  # type: ignore[attr-defined]
 
     if not steps:
-        errors.append("No steps to compile — add at least one step in the editor.")
+        errors.append("No steps to compile, add at least one step in the editor.")
         return bot, errors
 
-    # Pass 1 — build closures for every enabled, valid step keyed by
+    # Pass 1, build closures for every enabled, valid step keyed by
     # step_id so pass 2 can resolve branch targets and loop targets.
     # Validation errors here mean the closure won't be registered.
     step_closures: Dict[str, Tuple[AIBotStep, Callable[[], bool]]] = {}
@@ -187,7 +187,7 @@ def compile_user_bot(
             continue
         step_closures[step.step_id] = (step, closure)
 
-    # Pass 2 — wrap conditional / loop closures so they can call other
+    # Pass 2, wrap conditional / loop closures so they can call other
     # steps' closures inline. Then register the FINAL closure under
     # the canonical rule name.
     for step_id, (step, closure) in step_closures.items():
@@ -206,7 +206,7 @@ def compile_user_bot(
                     f"Step '{rule_name_for(step)}' branches to a step "
                     f"that no longer exists (or is disabled)."
                 )
-                # Keep the gate but with no inline target — it'll just
+                # Keep the gate but with no inline target, it'll just
                 # return its predicate value (True ends the tick, False
                 # falls through).
         bot.rule(
@@ -216,7 +216,7 @@ def compile_user_bot(
         )(final_closure)
 
     if not bot.rules:
-        errors.append("No valid steps to register — check the validation messages above.")
+        errors.append("No valid steps to register, check the validation messages above.")
 
     return bot, errors
 
@@ -227,7 +227,7 @@ def _slug_from_name(name: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────
-# compile_program — procedural compile path (Phase B canonical)
+# compile_program, procedural compile path (Phase B canonical)
 # ─────────────────────────────────────────────────────────────────
 
 
@@ -242,7 +242,7 @@ class _CompiledStep:
     phase: str
     func: Callable[[], bool]
     enabled: bool
-    # Closed-loop verification — runner reads these after the closure
+    # Closed-loop verification, runner reads these after the closure
     # returns truthy. ``verify_spec`` is the raw {signal, params,
     # timeout_ms} dict from the step JSON; the runner converts it to
     # a Verifier on the fly. ``on_fail`` and ``retry_budget`` are
@@ -250,7 +250,7 @@ class _CompiledStep:
     verify_spec: Optional[dict] = None
     on_fail: str = "retry"
     retry_budget: int = 3
-    # Display-only metadata for the BotOverlay — not used by the
+    # Display-only metadata for the BotOverlay, not used by the
     # runtime. Keeps the original step's ROI + kind so the HUD can
     # outline the area the bot is currently scanning without making
     # the runner re-deserialize the program every tick.
@@ -260,7 +260,7 @@ class _CompiledStep:
 
 @_dataclass
 class _CompiledInterrupt:
-    """Pre-compiled interrupt — trigger predicate + handler dispatch."""
+    """Pre-compiled interrupt, trigger predicate + handler dispatch."""
 
     name: str
     handler: str
@@ -285,10 +285,10 @@ def compile_program(
 
     The returned bot has these extra attributes the runner uses:
 
-    - ``program`` (:class:`BotProgram`) — the source program
-    - ``_compiled_procedures`` (``dict[str, list[_CompiledStep]]``) —
+    - ``program`` (:class:`BotProgram`), the source program
+    - ``_compiled_procedures`` (``dict[str, list[_CompiledStep]]``) , 
       compiled step closures keyed by procedure name, in order
-    - ``_compiled_interrupts`` (``list[_CompiledInterrupt]``) — in
+    - ``_compiled_interrupts`` (``list[_CompiledInterrupt]``), in
       declaration order; the runner evaluates them top-to-bottom
 
     The legacy ``bot.rules`` list is also populated (one Rule per
@@ -317,7 +317,7 @@ def compile_program(
     compiled_procs: Dict[str, List[_CompiledStep]] = {}
     # First pass: parse every procedure's steps + build closures.
     # Cross-procedure / cross-step references would go in a second
-    # pass (currently none — branch targets are within a single step
+    # pass (currently none, branch targets are within a single step
     # list and resolve via legacy_steps_to_program for now).
     for proc_name, proc in program.procedures.items():
         ai_steps = deserialize_steps(proc.steps)
@@ -377,7 +377,7 @@ def compile_program(
     bot._compiled_interrupts = compiled_interrupts  # type: ignore[attr-defined]
     bot._program_entry = program.entry  # type: ignore[attr-defined]
 
-    # Legacy rule-list mirror — drives the dashboard preview. Entry
+    # Legacy rule-list mirror, drives the dashboard preview. Entry
     # procedure first, then the rest in dict order. Rule names are
     # prefixed with the procedure so the dashboard can show
     # ``fishing_loop.click fishing spot``.
@@ -395,7 +395,7 @@ def compile_program(
 
     if not any(compiled_procs.values()):
         errors.append(
-            "No valid steps in any procedure — bot has nothing to do."
+            "No valid steps in any procedure, bot has nothing to do."
         )
 
     return bot, errors
@@ -500,7 +500,7 @@ def _build_trigger(intr: Interrupt) -> Optional[Callable[[], bool]]:
     return None
 
 
-# Keep compile_user_bot the canonical legacy path — internally upgrades
+# Keep compile_user_bot the canonical legacy path, internally upgrades
 # a flat list to a single-procedure program and delegates to
 # compile_program. Callers that want native procedural compilation use
 # compile_program directly.
@@ -543,7 +543,7 @@ def _compile_step(
         return _build_find_capture_click(step, asset_path), errs
     if step.kind == KIND_ZONE_CLICK:
         if not step.zone_json:
-            errs.append("zone not drawn yet — click 'Set zone' in the editor")
+            errs.append("zone not drawn yet, click 'Set zone' in the editor")
             return None, errs
         return _build_zone_click(step), errs
     if step.kind == KIND_FIND_COLOR_CLICK:
@@ -586,7 +586,7 @@ def _compile_step(
             return None, errs
         return _build_if_item_count(step), errs
     if step.kind == KIND_LOOP_BACK:
-        # loop_back without a target_id is "loop the whole list" — the
+        # loop_back without a target_id is "loop the whole list", the
         # runner already wraps step_idx modulo, so this is a no-op
         # rule that just forces a tick to fire. Useful for keep-alive
         # bots; otherwise users want to set a target.
@@ -715,7 +715,8 @@ def _build_find_capture_click(step: AIBotStep, asset_path) -> Callable[[], bool]
         if frame is None:
             return False
         if roi is not None:
-            rx, ry, rw, rh = roi
+            # The step's ROI is in screen px; slice in frame px.
+            rx, ry, rw, rh = ctx.screen_rect_to_frame(roi)
             fh, fw = frame.shape[:2]
             rx = max(0, min(rx, fw - 1))
             ry = max(0, min(ry, fh - 1))
@@ -738,7 +739,7 @@ def _build_find_capture_click(step: AIBotStep, asset_path) -> Callable[[], bool]
             return False
         cx = offset[0] + max_loc[0] + tw // 2
         cy = offset[1] + max_loc[1] + th // 2
-        _api.click.at((cx, cy))
+        _api.click.at(ctx.frame_to_screen((cx, cy)))
         _api.wait(_uniform_int(after_min, after_max))
         return True
     return _r
@@ -772,7 +773,7 @@ def _build_zone_click(step: AIBotStep) -> Callable[[], bool]:
 
 def _build_find_animation_click(step: AIBotStep) -> Callable[[], bool]:
     """Find a flickering region inside ``step.roi`` and click the most
-    active candidate. Stateful — keeps a sliding window of recent
+    active candidate. Stateful, keeps a sliding window of recent
     frames in a closure cell so the diff has history to chew on.
     """
     from ..algorithms.animation import AnimationDetector
@@ -791,7 +792,7 @@ def _build_find_animation_click(step: AIBotStep) -> Callable[[], bool]:
         result = detector.tick(frame)
         if not result.candidates:
             return False
-        # Click the candidate with the highest flicker count — that's
+        # Click the candidate with the highest flicker count, that's
         # usually the centre of the most-active spot.
         target = result.candidates[0]
         _api.click.at(target.centroid)
@@ -805,7 +806,7 @@ def _build_wait(step: AIBotStep) -> Callable[[], bool]:
 
     def _r() -> bool:
         _api.wait(_uniform_int(lo, hi))
-        return True               # always fires — terminates the tick
+        return True               # always fires, terminates the tick
     return _r
 
 

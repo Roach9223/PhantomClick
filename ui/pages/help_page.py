@@ -1,4 +1,4 @@
-"""Help page — full-width documentation for new users.
+"""Help page, full-width documentation for new users.
 
 Single scrollable column with sections covering: what the app is, how
 each mode works, every step kind, hover zones, the realism dial,
@@ -62,18 +62,40 @@ class HelpPage(QWidget):
         scroll.setWidget(inner)
         outer.addWidget(scroll)
 
+    def rebuild(self) -> None:
+        """Re-render after a hotkey rebind so the key names stay current."""
+        while self._cl.count():
+            item = self._cl.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._build_sections()
+        self._cl.addStretch(1)
+
     # -- Builders --------------------------------------------------------
 
+    def _key(self, cfg_key: str) -> str:
+        from modules.hotkey_manager import name_to_display
+        from ui.config_io import DEFAULTS
+        return name_to_display(str(self.app.cfg.get(cfg_key, DEFAULTS.get(cfg_key, ""))))
+
     def _build_sections(self) -> None:
+        start = self._key("hotkey_start")
+        stop = self._key("hotkey_stop")
+        pause = self._key("hotkey_pause")
+        capture = self._key("hotkey_capture")
+
         self._title("Help & Reference")
         self._lead(
             "PhantomClick is a human-like auto-clicker. The cursor "
             "physically moves along curved paths, dwells, jitters, and "
-            "occasionally takes breaks — the goal is to look like a "
-            "person, not a script. Everything runs locally; no network."
+            "occasionally takes breaks. The goal is to look like a "
+            "person, not a script. Everything runs locally. The only "
+            "network features are the opt-in Monitor server on your own "
+            "LAN and the opt-in wiki icon fetch, both off by default."
         )
 
-        self._h2("Quick start — Click mode")
+        self._h2("Quick start: Click mode")
         self._p(
             "Use this when one button keeps appearing in the same "
             "place on screen."
@@ -82,19 +104,19 @@ class HelpPage(QWidget):
             "Open the Click tab from the rail.",
             "Pick a shape (Rect / Circle / Custom) and press "
             "“Draw click zone.” Drag on screen to define it.",
-            "Set the timing range — the engine waits a random duration "
+            "Set the timing range. The engine waits a random duration "
             "between Min and Max before each click. Try the Fast / "
             "Medium / Slow presets.",
-            "Press START (or F6). Pre-start delay gives you time to "
+            f"Press START (or {start}). Pre-start delay gives you time to "
             "alt-tab into the target window before the first click.",
-            "Press STOP (F7) or Esc to halt.",
+            f"Press STOP ({stop}) or Esc to halt.",
         ])
 
-        self._h2("Sequence — Record mode")
+        self._h2("Sequence: Record mode")
         self._p(
             "Use this for routines: click a button, wait, follow a "
             "moving target, click again, then loop. The list runs "
-            "top → bottom and wraps back to the start."
+            "top to bottom and wraps back to the start."
         )
 
         self._h2("Step kinds")
@@ -102,18 +124,73 @@ class HelpPage(QWidget):
                  "Click in a fixed zone N times before advancing.")
         self._kv("Track",
                  "Follow a captured target via OpenCV template "
-                 "matching. Add alternate views for rotation / "
-                 "camera-angle changes.")
+                 "matching. Use “+ Add view” for extra captures of the "
+                 "same target (rotation, camera angle); the best match "
+                 "wins each frame.")
         self._kv("Color",
-                 "Eyedropper picks a target color; the engine clicks "
-                 "any matching pixel. Useful for buttons that move or "
-                 "have shifting backgrounds. Optional zone restricts "
-                 "where on screen the engine looks.")
+                 "Eyedropper picks a target color; click several shades "
+                 "to accept all of them. The engine clicks any matching "
+                 "pixel on the monitor you picked from. “Set click area” "
+                 "restricts matches to a drawn zone, which matters when "
+                 "the HUD shares the color.")
+        self._kv("Key",
+                 "Press a key or combo (F1, Ctrl+Shift+Z) through the "
+                 "input backend chosen under Settings. No cursor motion.")
         self._kv("Pause",
-                 "Wait Min–Max seconds. Cursor still drifts.")
+                 "Wait Min to Max seconds. Cursor still drifts.")
         self._kv("Loop",
                  "Jump execution back to an earlier step. Forever, "
                  "or N more times before continuing past.")
+
+        self._h2("AI mode")
+        self._p(
+            "Rule-based RuneScape bots. Pick a bot (a bundle you built "
+            "in the editor, or one shipped in the library), then START. "
+            "Each tick the runner evaluates every rule in priority order "
+            "and dispatches the first action through the same humanizer "
+            "and key backend the other modes use. START, STOP, the status "
+            "pill and Esc behave exactly as they do for Click and Record."
+        )
+        self._kv(f"{pause}", "Pause or resume the running bot. Click and "
+                             "Record ignore this key.")
+        self._kv(f"{capture}", "Freeze the screen and drag a rectangle to "
+                               "save a snapshot into the active bundle's "
+                               "library (needs an active bundle).")
+        self._kv("Dry run", "Evaluate rules and log actions without "
+                            "moving the mouse. Good for checking detection.")
+
+        self._h2("Key timers")
+        self._p(
+            "Passive keypresses on their own clock, for things like "
+            "“press Z every 6 minutes.” They run alongside whatever "
+            "sequence is active, never move the cursor, and stop when "
+            "the engine stops. A start is refused when a timer or Key "
+            "step needs a key backend that isn't available."
+        )
+
+        self._h2("Monitor")
+        self._p(
+            "Opt-in LAN page for your phone: a live MJPEG view of the "
+            "screen plus a status panel. A second toggle allows remote "
+            "Start / Stop / Close-RuneScape buttons. Access is by a random "
+            "URL token; regenerate it to invalidate old links. Anyone on "
+            "your Wi-Fi with the URL can watch (and control, if enabled), "
+            "so keep both off when you don't need them."
+        )
+
+        self._h2("Settings")
+        self._kv("Target monitor", "Which screen ambient features (drift, "
+                                   "wander, watchdog corners) treat as the "
+                                   "screen. Auto follows your zone.")
+        self._kv("Key input", "SendInput for most apps. Serial HID (an "
+                              "Arduino running PhantomHID) is the only "
+                              "path RuneScape NXT accepts.")
+        self._kv("Wiki fetch", "Lets the AI item library download icons "
+                               "from runescape.wiki. Off by default; no "
+                               "HTTP requests leave the machine until "
+                               "you turn it on.")
+        self._kv("Mouse trace", "Records every cursor write to a JSONL "
+                                "file for diagnosing movement issues.")
 
         self._h2("Hover zones")
         self._p(
@@ -125,7 +202,7 @@ class HelpPage(QWidget):
         self._h2("Realism dial")
         self._p(
             "One slider on the Behavior tab drives every humanization "
-            "behavior — idle wander, fatigue, breaks, overshoots, "
+            "behavior: idle wander, fatigue, breaks, overshoots, "
             "anti-cluster, hover frequency. Most users never need to "
             "open Advanced. Moving the dial overwrites Advanced values; "
             "set the dial first, then override individual settings if "
@@ -133,13 +210,19 @@ class HelpPage(QWidget):
         )
 
         self._h2("Hotkeys")
-        self._kv("Start clicking", "F6")
-        self._kv("Stop clicking", "F7")
+        self._kv("Start", start)
+        self._kv("Stop", stop)
+        self._kv("Pause / resume bot", f"{pause} (AI mode only)")
+        self._kv("Capture frame", f"{capture} (AI mode, needs an active bundle)")
         self._kv("Emergency stop", "Esc (always works, can't be rebound)")
-        self._kv("Command palette", "Ctrl+K  —  fuzzy-search every action")
-        self._kv("Switch mode", "Ctrl+1 (Click) / Ctrl+2 (Record)")
+        self._kv("Command palette", "Ctrl+K, fuzzy-search every action")
+        self._kv("Switch tab", "Ctrl+1 Click / Ctrl+2 Record / Ctrl+3 AI / "
+                               "Ctrl+4 Monitor / Ctrl+5 Settings")
         self._kv("Draw click zone", "Ctrl+D")
         self._kv("Toggle overlays", "Ctrl+H")
+        self._kv("Help", "F1")
+        self._p("Start, Stop, Pause and Capture are rebindable on the "
+                "Hotkeys tab. Esc stays fixed.")
 
         self._h2("Tips")
         self._ul([
@@ -148,7 +231,7 @@ class HelpPage(QWidget):
             "Slamming the cursor to any screen corner emergency-stops "
             "the engine within ~50 ms.",
             "Drift-across-whole-screen (on the Click tab) lets the "
-            "idle wander roam the full monitor — clicks still come "
+            "idle wander roam the full monitor. Clicks still come "
             "from the zone you drew.",
             "Use the command palette (Ctrl+K) to set a timing preset, "
             "draw a zone, or jump to a tab without touching the rail.",
@@ -163,7 +246,7 @@ class HelpPage(QWidget):
         )
         self._faq(
             "Why does it pause for several seconds at random?",
-            "Break bursts — by design. Realism includes scheduled "
+            "Break bursts, by design. Realism includes scheduled "
             "multi-second pauses every 40-70 clicks to simulate "
             "looking away. Disable in Behavior · Advanced."
         )
@@ -175,9 +258,10 @@ class HelpPage(QWidget):
         )
         self._faq(
             "What about multiple monitors?",
-            "Currently primary monitor only for the engine; capture "
-            "supports the full virtual desktop for Track / Color "
-            "templates."
+            "Zones, captures and color picks work on any monitor, "
+            "including mixed DPI. Ambient drift is scoped to the "
+            "Settings target monitor (auto follows your zone). AI mode "
+            "pins to one monitor index."
         )
 
     # -- Helpers ---------------------------------------------------------
@@ -185,7 +269,7 @@ class HelpPage(QWidget):
     def _title(self, text: str) -> None:
         lbl = QLabel(text)
         lbl.setStyleSheet(
-            f"color: {t.TEXT_PRIMARY}; font-family: {t.FONT_DISPLAY}; "
+            f"color: {t.TEXT_PRIMARY}; font-family: {t.FONT_FAMILY}; "
             f"font-size: 24px; font-weight: 700; "
             f"letter-spacing: 0.5px; padding-bottom: {t.SP_SM}px;"
         )
@@ -203,7 +287,7 @@ class HelpPage(QWidget):
     def _h2(self, text: str) -> None:
         lbl = QLabel(text)
         lbl.setStyleSheet(
-            f"color: {t.TEXT_PRIMARY}; font-family: {t.FONT_DISPLAY}; "
+            f"color: {t.TEXT_PRIMARY}; font-family: {t.FONT_FAMILY}; "
             f"font-size: 18px; font-weight: 700; "
             f"padding-top: {t.SP_LG}px; padding-bottom: {t.SP_XS}px;"
         )

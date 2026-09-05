@@ -1,4 +1,4 @@
-"""The :class:`Bot` class — container + ``@bot.rule`` decorator.
+"""The :class:`Bot` class: container + ``@bot.rule`` decorator.
 
 Every ``.py`` bot script looks like::
 
@@ -8,19 +8,42 @@ Every ``.py`` bot script looks like::
     def chop():
         ...
 
-    if __name__ == "__main__":
-        bot.run()
+    @bot.rule(phase="scanning", idle=True)
+    def idle():
+        wait(500)
+        return True
 
-:class:`Bot` only stores metadata + rules — it doesn't run them.
-Execution happens via :class:`rs3vision_studio.bot.runner.BotRunner`
-which loops ticks, evaluates rules in order, and emits Qt signals the
-Studio consumes.
+:class:`Bot` only stores metadata + rules. Execution happens via
+:class:`ai.bot.runner.BotRunner`, which the PhantomClick AI tab drives:
+it loops ticks, evaluates rules in order, and emits Qt signals.
+
+Idle rules: a fallthrough rule that always returns True keeps the loop from
+spinning hot, but it also looks like "something fired" to the AFK
+watchdog, which then never trips. Mark such rules with ``idle=True``
+(or return the :data:`IDLE` sentinel) so the runner counts the tick as
+dry while still honouring the rule's wait.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional
+
+
+class _IdleSentinel:
+    """Truthy return value meaning "I handled this tick, but nothing
+    productive happened". See module docstring."""
+
+    __slots__ = ()
+
+    def __bool__(self) -> bool:
+        return True
+
+    def __repr__(self) -> str:
+        return "IDLE"
+
+
+IDLE = _IdleSentinel()
 
 
 @dataclass
@@ -31,6 +54,8 @@ class Rule:
     func: Callable[[], Any]
     phase: str = ""
     enabled: bool = True
+    # When True the runner treats a truthy return as a dry tick.
+    idle: bool = False
 
 
 class Bot:
@@ -44,7 +69,7 @@ class Bot:
         monitor: Optional[int] = None,
         tick_rate_hz: float = 5.0,
         dry_run: bool = True,
-        # Humanizer overrides (merged into the Studio default at run time).
+        # Humanizer overrides (merged into the app defaults at run time).
         fatigue_intensity: Optional[float] = None,
         break_min_clicks: Optional[int] = None,
         break_max_clicks: Optional[int] = None,
@@ -55,7 +80,7 @@ class Bot:
         # AFK reliability knobs.
         auto_stop_dry_ticks: int = 60,
         watchdog_no_click_s: float = 600.0,
-        # Auto-camera — when detection misses for ``auto_camera_dry_ticks``
+        # Auto-camera: when detection misses for ``auto_camera_dry_ticks``
         # consecutive ticks, the runner issues a camera rotation to try
         # unsticking the scene. Gives up after ``auto_camera_max_bursts``
         # rotations with no match; then the AFK watchdog takes over.
@@ -68,6 +93,8 @@ class Bot:
         self.slug = slug or _default_slug(self.name)
         self.monitor = monitor
         self.tick_rate_hz = float(tick_rate_hz)
+        # A script's dry_run=True is a floor: the app's toggle can add
+        # dry-run on top but cannot take it away. See BotRunner.play.
         self.dry_run = bool(dry_run)
         self.rules: List[Rule] = []
 
@@ -101,6 +128,7 @@ class Bot:
         name: Optional[str] = None,
         phase: str = "",
         enabled: bool = True,
+        idle: bool = False,
     ):
         """Register a rule function.
 
@@ -111,6 +139,9 @@ class Bot:
 
             @bot.rule(phase="banking")        # with kwargs
             def bank(): ...
+
+        ``idle=True`` marks a fallthrough rule whose firing should not
+        count as progress for the AFK watchdog.
         """
 
         def _wrap(func: Callable) -> Callable:
@@ -119,24 +150,13 @@ class Bot:
                 func=func,
                 phase=phase,
                 enabled=enabled,
+                idle=bool(idle),
             ))
             return func
 
         if _func is not None and callable(_func):
             return _wrap(_func)
         return _wrap
-
-    # ────────────────────────────────────────────────────────────
-    # Standalone runner — for ``python my_bot.py``
-    # ────────────────────────────────────────────────────────────
-    def run(self) -> None:
-        """Run the bot outside the Studio (no Qt, simple console loop).
-
-        This path is deliberately minimal — no live graph view, no MCP.
-        For full instrumentation, load the bot via the Studio.
-        """
-        from .runner import standalone_run
-        standalone_run(self)
 
 
 def _default_slug(name: str) -> str:

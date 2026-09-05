@@ -1,14 +1,16 @@
-"""``StatePill`` — small pill that shows a state next to a card title.
+"""``StatePill``: small rectangular chip that shows a state next to a card
+title.
 
-Lives in the title row of a card to give an at-a-glance status without
-forcing the user to read field values. Two tones: ``"accent"`` (live coral
-wash, default) and ``"neutral"`` (gray-on-panel, for "Not set" cases).
+Two tones: ``"accent"`` (lime text on a lime wash, meaning something is
+set or live) and ``"neutral"`` (secondary text on the panel colour, for
+"Not set"). 6 px radius, never full-round. Text is uppercased.
 """
 
 from __future__ import annotations
 
 from typing import Optional
 
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QLabel, QWidget
 
 
@@ -19,15 +21,18 @@ class StatePill(QLabel):
         tone: str = "accent",
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(text, parent)
+        super().__init__(text.upper(), parent)
         self.setProperty("role", "state-pill")
+        font = self.font()
+        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.0)
+        self.setFont(font)
         if tone != "accent":
             self.setProperty("tone", tone)
 
     def set_state(self, text: str, tone: str = "accent") -> None:
         """Update text + tone in one call. Repolishes so QSS picks up
         the new tone attribute."""
-        self.setText(text)
+        self.setText(text.upper())
         new_tone = tone if tone != "accent" else None
         if self.property("tone") != new_tone:
             self.setProperty("tone", new_tone)

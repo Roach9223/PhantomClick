@@ -3,10 +3,10 @@
 Every primitive pulls the "current execution context" from a
 :class:`contextvars.ContextVar` set by the :class:`BotRunner` each
 tick. Inside a ``@bot.rule`` body you just call ``find_color(...)``
-or ``click.at(...)`` — the context is implicit.
+or ``click.at(...)``, the context is implicit.
 
 The primitives dispatch to the existing graph blocks to avoid
-duplicating detection logic — one source of truth per primitive,
+duplicating detection logic, one source of truth per primitive,
 shared between graphs and bots.
 """
 
@@ -27,8 +27,8 @@ def _ctx():
         return _current_ctx.get()
     except LookupError as e:
         raise RuntimeError(
-            "bot primitive called outside a @bot.rule body — the runtime "
-            "context is only set during bot.run()."
+            "bot primitive called outside a @bot.rule body; the runtime "
+            "context is only set while BotRunner is ticking."
         ) from e
 
 
@@ -44,7 +44,7 @@ def _reset_ctx(token) -> None:
 def world():
     """Return the current tick's :class:`WorldState`.
 
-    Only valid inside a ``@bot.rule`` body — the runner attaches a
+    Only valid inside a ``@bot.rule`` body, the runner attaches a
     fresh ``WorldState`` to ``ctx.world`` at the start of every tick.
     Reading ``world().inventory`` or ``world().orbs`` triggers a
     lazy scan; subsequent reads in the same tick return the cached
@@ -54,13 +54,13 @@ def world():
     ctx = _ctx()
     w = getattr(ctx, "world", None)
     if w is None:
-        # Defensive — should never trip in practice because the runner
+        # Defensive, should never trip in practice because the runner
         # builds WorldState before binding the contextvars context.
         from .world import build_world
         frame = getattr(ctx, "current_frame", None)
         if frame is None:
             raise RuntimeError(
-                "world() called before frame capture — should be unreachable."
+                "world() called before frame capture, should be unreachable."
             )
         w = build_world(ctx, frame, tick=0)
         ctx.world = w
@@ -68,7 +68,7 @@ def world():
 
 
 # ─────────────────────────────────────────────────────────────────
-# Match — the result of a detection primitive
+# Match, the result of a detection primitive
 # ─────────────────────────────────────────────────────────────────
 
 
@@ -92,17 +92,48 @@ class Match:
 
 
 # ─────────────────────────────────────────────────────────────────
-# Detection primitives — dispatch to existing graph blocks
+# Detection primitives, dispatch to existing graph blocks
 # ─────────────────────────────────────────────────────────────────
 
 
 def _coerce_roi(roi):
-    """Playbook-style tuples + strings both accepted."""
+    """Screen-space ROI (tuple or "x,y,w,h" string) to a frame-space
+    "x,y,w,h" string for the graph blocks.
+
+    Bots and the Captures card store ROIs in physical screen pixels;
+    the frame is a monitor-relative crop, so the translation has to
+    happen before slicing or every ROI on a non-origin monitor misses.
+    """
     if roi is None or roi == "":
         return ""
+    parts = None
     if isinstance(roi, (list, tuple)) and len(roi) == 4:
-        return ",".join(str(int(v)) for v in roi)
-    return str(roi)
+        parts = [int(v) for v in roi]
+    else:
+        try:
+            parts = [int(v.strip()) for v in str(roi).split(",")]
+        except ValueError:
+            parts = None
+        if parts is not None and len(parts) != 4:
+            parts = None
+    if parts is None:
+        return str(roi)
+    fx, fy, w, h = _ctx().screen_rect_to_frame(parts)
+    return f"{fx},{fy},{w},{h}"
+
+
+def _roi_to_frame(roi):
+    """Screen-space (x, y, w, h) to frame-space tuple; None passes through."""
+    if roi is None:
+        return None
+    return tuple(int(v) for v in _ctx().screen_rect_to_frame(roi))
+
+
+def _pt_to_screen(point):
+    """Frame-space point to screen-space; None passes through."""
+    if point is None:
+        return None
+    return _ctx().frame_to_screen(point)
 
 
 def _call_block(identifier: str, *, frame=None, **params) -> Dict[str, Any]:
@@ -130,7 +161,7 @@ def find_color(
     """Find the largest matching cluster of a given colour.
 
     Returns a :class:`Match` (falsy on miss). Uses CTS mode 2 (HSL) by
-    default — robust to most antialiasing.
+    default, robust to most antialiasing.
     """
     result = _call_block(
         "color.find",
@@ -143,7 +174,7 @@ def find_color(
     )
     if not result.get("found"):
         return Match()
-    point = result.get("point")
+    point = _pt_to_screen(result.get("point"))
     return Match(
         point=point,
         count=int(result.get("count") or 0),
@@ -182,7 +213,7 @@ def find_interactable(
     cluster_dist: int = 6,
     debug_label: str = "",
 ) -> Match:
-    """Find the largest cyan-coloured cluster inside ``roi`` — designed
+    """Find the largest cyan-coloured cluster inside ``roi``, designed
     for RS3's "high contrast" mode where every interactable object
     (fishing spots, trees, bank chests, NPCs, ground items, …) is
     rendered in the same saturated cyan and everything else is greyscale.
@@ -197,12 +228,12 @@ def find_interactable(
       coverage is built-in).
 
     The default colour comes from the global captures library's
-    ``contrast_cyan`` multi-sample stack — capture it once via the
+    ``contrast_cyan`` multi-sample stack, capture it once via the
     Colour label tool, promote globally, and every bot inherits the
     detection. Override with an explicit ``color=0xRRGGBB`` to test
     or to handle a contrast palette that drifts in a future game patch.
 
-    Returns the same :class:`Match` shape as :func:`find_color` —
+    Returns the same :class:`Match` shape as :func:`find_color` , 
     ``.point`` is the cluster centroid, ``.count`` is its pixel count.
     """
     if color is None:
@@ -252,11 +283,11 @@ def find_player(
     min_pixels: int = 100,
     cluster_dist: int = 8,
 ) -> Match:
-    """Find the player on screen — the largest red-coloured cluster.
+    """Find the player on screen, the largest red-coloured cluster.
 
     Designed for RS3 contrast mode where the player avatar (and only
     the player) renders in saturated red. Use this to locate the
-    player position dynamically — no fixed PLAYER_ROI needed; bots
+    player position dynamically, no fixed PLAYER_ROI needed; bots
     track the player wherever the camera pans.
 
     Default colour comes from the global ``contrast_red`` multi-sample
@@ -265,7 +296,7 @@ def find_player(
     Returns a :class:`Match` with ``.point`` = centroid (screen-px)
     and ``.count`` = red-pixel count of the largest cluster. The
     pixel count fluctuates while animating (rod swing changes the
-    avatar sprite bbox) — :func:`player_is_animating` uses that.
+    avatar sprite bbox), :func:`player_is_animating` uses that.
     """
     if color is None:
         try:
@@ -308,11 +339,11 @@ def player_is_animating(
     - Centroid range across the window > ``pos_tol_px`` → animating
       (the player is walking or being repositioned by a click).
     - Pixel count range > ``size_tol_pct`` % of the minimum →
-      animating (the avatar sprite is cycling — rod swing, attack
+      animating (the avatar sprite is cycling, rod swing, attack
       anim, etc).
 
     Returns False during the warm-up window (first ``history`` ticks
-    after bot.start()) — not enough data to compare yet. Bots that
+    after bot.start()), not enough data to compare yet. Bots that
     need this should either accept a 2-second false-idle warm-up or
     gate on a separate "running for at least N ticks" check.
 
@@ -363,7 +394,7 @@ def find_any_color(
     once per target inside the same ROI, and returns the :class:`Match`
     with the largest pixel count. Falsy when no target matches anywhere.
 
-    Designed for the multi-sample colour capture flow — boon procs,
+    Designed for the multi-sample colour capture flow, boon procs,
     anti-aliased UI elements, and gradient targets where one pixel
     sample misses the natural variation in the rendered colour::
 
@@ -375,12 +406,12 @@ def find_any_color(
         if m:
             click.at(m.point)
 
-    Costs N×``find_color``. Don't pass an unbounded list — typically
+    Costs N×``find_color``. Don't pass an unbounded list, typically
     3–5 samples is enough.
 
     Diagnostics: pass ``debug_label="..."`` to log per-sample pixel
     counts + chosen centroid at INFO level. Use this to diagnose
-    detection failures — a single log run tells you whether all
+    detection failures, a single log run tells you whether all
     samples missed (palette mismatch), clusters fell below threshold
     (min_pixels too high), or the best match was just in a weird
     place (ROI/cluster_dist issue). Keep ``debug_label`` empty in
@@ -421,7 +452,7 @@ def find_any_color(
 
 
 def find_dtm(template_path: str, *, roi=None, max_matches: int = 5) -> Match:
-    """Deformable-template match — YAML template → match point + confidence."""
+    """Deformable-template match, YAML template → match point + confidence."""
     result = _call_block(
         "dtm.find",
         template_path=str(template_path),
@@ -430,7 +461,7 @@ def find_dtm(template_path: str, *, roi=None, max_matches: int = 5) -> Match:
     )
     if not result.get("found"):
         return Match()
-    point = result.get("point")
+    point = _pt_to_screen(result.get("point"))
     return Match(
         point=point,
         count=1,
@@ -449,7 +480,7 @@ def find_ocr(
     roi=None,
     regex: Optional[str] = None,
 ) -> Match:
-    """Bitmap-font OCR — returns match with text content in ``extra['text']``."""
+    """Bitmap-font OCR, returns match with text content in ``extra['text']``."""
     result = _call_block(
         "ocr.read",
         font_path=str(font_path),
@@ -481,14 +512,14 @@ def find_ocr(
 
 
 class _Click:
-    """Callable wrapper — ``click.at(point)`` is the canonical form."""
+    """Callable wrapper, ``click.at(point)`` is the canonical form."""
 
     def __call__(self, x: int, y: int, button: str = "left") -> None:
         self.at((int(x), int(y)), button=button)
 
     def at(self, point, button: str = "left") -> None:
         if point is None:
-            _ctx().log("[bot] click.at: point is None — skipped")
+            _ctx().log("[bot] click.at: point is None, skipped")
             return
         x, y = int(point[0]), int(point[1])
         ctx = _ctx()
@@ -498,7 +529,7 @@ class _Click:
         try:
             ctx.input_backend.click(x, y, button=button)
         except NotImplementedError as e:
-            ctx.log(f"[bot] click: backend not ready — {e}")
+            ctx.log(f"[bot] click: backend not ready, {e}")
             ctx.request_stop("input backend not implemented")
             return
         ctx.log(f"click {button} at ({x}, {y})")
@@ -507,13 +538,13 @@ class _Click:
         """Click at the current cursor position WITHOUT re-moving.
 
         Used after a humanized hover (``move(point)`` + ``wait(...)``)
-        when uptext verification has happened — re-moving would shift
+        when uptext verification has happened, re-moving would shift
         the cursor and possibly miss the just-verified target. The
         humanized ``humanizer.click`` still runs so the mouse-down/up
         cadence stays human; only the bezier travel is skipped.
 
         Falls back to a fresh ``click.at(current_cursor)`` if the input
-        backend doesn't expose ``click_here`` (older actuators) — slower
+        backend doesn't expose ``click_here`` (older actuators), slower
         but always works.
         """
         ctx = _ctx()
@@ -526,16 +557,16 @@ class _Click:
             try:
                 fn(button=button)
             except NotImplementedError as e:
-                ctx.log(f"[bot] click.fire: backend not ready — {e}")
+                ctx.log(f"[bot] click.fire: backend not ready, {e}")
                 return
             ctx.log(f"click.fire {button}")
             return
         # Fallback: ask the OS for the cursor and re-route through click.at.
         try:
-            from pynput.mouse import Controller as _MC
-            x, y = _MC().position
+            from ..input.frame_source import cursor_screen_xy
+            x, y = cursor_screen_xy()
         except Exception as e:
-            ctx.log(f"[bot] click.fire: cursor read failed — {e}")
+            ctx.log(f"[bot] click.fire: cursor read failed, {e}")
             return
         self.at((int(x), int(y)), button=button)
 
@@ -579,7 +610,7 @@ def key(keyname: str) -> None:
     try:
         ctx.input_backend.press_key(keyname)
     except NotImplementedError as e:
-        ctx.log(f"[bot] key: backend not ready — {e}")
+        ctx.log(f"[bot] key: backend not ready, {e}")
         return
     ctx.log(f"key press: {keyname!r}")
 
@@ -607,12 +638,13 @@ def uptext(*, fresh: bool = False) -> Optional[Dict[str, Any]]:
     can use ``if (u := uptext()) and "Chop down" in u["text"]: ...``
     without a try/except on every call.
 
-    ``fresh=True`` triggers a brand-new screen capture instead of
-    re-reading from the per-tick cached ``ctx.current_frame``. Use this
-    after a ``move()`` inside the same rule body — without a fresh
-    capture, the still-cached frame won't reflect the tooltip that
-    appeared post-hover. Costs ~10–25 ms per call.
+    ``fresh=True`` grabs a new frame from the run's frame source instead
+    of re-reading the per-tick cached ``ctx.current_frame``. Use this
+    after a ``move()`` inside the same rule body: the start-of-tick
+    frame predates the hover, so the tooltip is never in it. Costs one
+    capture (~10 to 25 ms).
     """
+    from ..input.frame_source import cursor_screen_xy
     from ..uptext import UptextReader
     ctx = _ctx()
     reader = getattr(ctx, "_uptext_reader", None)
@@ -621,20 +653,33 @@ def uptext(*, fresh: bool = False) -> Optional[Dict[str, Any]]:
         ctx._uptext_reader = reader
     if not reader.ready():
         return None
-    if fresh:
-        snap = reader.read_now()
-    else:
-        frame = getattr(ctx, "current_frame", None)
-        if frame is None:
-            return None
-        snap = reader.read_from_frame(frame)
+    frame = _fresh_frame(ctx) if fresh else getattr(ctx, "current_frame", None)
+    if frame is None:
+        return None
+    try:
+        cursor_frame = ctx.screen_to_frame(cursor_screen_xy())
+    except Exception:
+        return None
+    snap = reader.read_from_frame(frame, cursor_frame)
     if "error" in snap:
         return None
     return snap
 
 
+def _fresh_frame(ctx):
+    """Grab a frame right now (not the tick-start one). Returns None on
+    capture failure so callers degrade to "no match" instead of raising
+    mid-rule."""
+    try:
+        return ctx.capture()
+    except Exception as e:
+        _warn_once(ctx, "fresh_capture_failed",
+                   f"[bot] fresh capture failed: {type(e).__name__}: {e}")
+        return None
+
+
 # ─────────────────────────────────────────────────────────────────
-# IFTTT primitives — animation, bank-open template match, uptext check
+# IFTTT primitives, animation, bank-open template match, uptext check
 # ─────────────────────────────────────────────────────────────────
 
 
@@ -655,7 +700,7 @@ def find_animation(
 
     Use this instead of :func:`find_color` / :func:`find_any_color`
     for animated targets that share a colour palette with their
-    background — fishing-spot bubbles vs surrounding water,
+    background, fishing-spot bubbles vs surrounding water,
     pulsing-trap markers, glowing-ore highlights. Colour matching
     floods on the background; animation matching uniquely localises
     the moving target.
@@ -663,9 +708,32 @@ def find_animation(
     The detector keeps a ring buffer of recent frames per (roi, window,
     min_flickers, tile) tuple, cached on the bot context. The first
     ``window`` ticks return a falsy match because we need at least 2
-    frames to diff — plan a 1–2 tick warm-up after bot.start().
+    frames to diff, plan a 1–2 tick warm-up after bot.start().
     """
     ctx = _ctx()
+    detector = _anim_detector(ctx, roi, window, min_flickers, tile)
+    frame = getattr(ctx, "current_frame", None)
+    if frame is None:
+        return Match()
+    state = detector.tick(frame)
+    if not state.candidates:
+        return Match()
+    # Highest flicker count = strongest, most-localised animation.
+    best = max(state.candidates, key=lambda c: c.flicker_count)
+    return Match(
+        point=_pt_to_screen(best.centroid),
+        count=int(best.flicker_count),
+        confidence=1.0,
+        points=[_pt_to_screen(c.centroid) for c in state.candidates],
+        extra={"bbox": ctx.frame_rect_to_screen(best.bbox)},
+    )
+
+
+def _anim_detector(ctx, roi, window, min_flickers, tile):
+    """One AnimationDetector per (screen roi, window, flickers, tile),
+    cached on the context. The detector itself works in frame pixels;
+    the cache key stays in screen pixels so two bots sharing an ROI
+    share the ring buffer."""
     cache = getattr(ctx, "_anim_detectors", None)
     if cache is None:
         cache = {}
@@ -676,27 +744,13 @@ def find_animation(
     if detector is None:
         from ..algorithms.animation import AnimationDetector
         detector = AnimationDetector(
-            roi=roi_t,
+            roi=_roi_to_frame(roi_t),
             window=window,
             min_flickers=min_flickers,
             tile=tile,
         )
         cache[key] = detector
-    frame = getattr(ctx, "current_frame", None)
-    if frame is None:
-        return Match()
-    state = detector.tick(frame)
-    if not state.candidates:
-        return Match()
-    # Highest flicker count = strongest, most-localised animation.
-    best = max(state.candidates, key=lambda c: c.flicker_count)
-    return Match(
-        point=best.centroid,
-        count=int(best.flicker_count),
-        confidence=1.0,
-        points=[c.centroid for c in state.candidates],
-        extra={"bbox": best.bbox},
-    )
+    return detector
 
 
 def is_animating(
@@ -711,7 +765,7 @@ def is_animating(
 
     Wraps :class:`ai.algorithms.animation.AnimationDetector`. One
     detector is cached per unique ``(roi, window, min_flickers, tile)``
-    on the bot context — the ring buffer needs to persist across ticks
+    on the bot context, the ring buffer needs to persist across ticks
     for the diff to work, so re-creating the detector per call would
     always return False.
 
@@ -720,7 +774,7 @@ def is_animating(
         @bot.rule(phase="fishing")
         def recast_when_idle():
             if is_animating(PLAYER_ROI):
-                return False         # still fishing — leave it alone
+                return False         # still fishing, leave it alone
             spot = find_color(SPOT_COLOR, roi=POOL_ROI)
             if not spot:
                 return False
@@ -733,22 +787,7 @@ def is_animating(
     bot.start().
     """
     ctx = _ctx()
-    cache = getattr(ctx, "_anim_detectors", None)
-    if cache is None:
-        cache = {}
-        ctx._anim_detectors = cache
-    roi_t = tuple(int(v) for v in roi)
-    key = (roi_t, int(window), int(min_flickers), int(tile))
-    detector = cache.get(key)
-    if detector is None:
-        from ..algorithms.animation import AnimationDetector
-        detector = AnimationDetector(
-            roi=roi_t,
-            window=window,
-            min_flickers=min_flickers,
-            tile=tile,
-        )
-        cache[key] = detector
+    detector = _anim_detector(ctx, roi, window, min_flickers, tile)
     frame = getattr(ctx, "current_frame", None)
     if frame is None:
         return False
@@ -786,7 +825,7 @@ def is_animating_recording(
             ...
 
     Falls back to False (and logs once) if the recording is missing or
-    its meta is malformed — better than silently using a wrong ROI.
+    its meta is malformed, better than silently using a wrong ROI.
     """
     from pathlib import Path as _Path
     ctx = _ctx()
@@ -794,7 +833,7 @@ def is_animating_recording(
     rec_dir = _Path(recording_path)
     if not rec_dir.is_dir():
         _warn_once(ctx, f"recording_dir_missing:{rec_dir}",
-                   f"is_animating_recording: directory missing — {rec_dir}")
+                   f"is_animating_recording: directory missing, {rec_dir}")
         return False
     meta_path = rec_dir / "meta.json"
     if not meta_path.exists():
@@ -806,7 +845,7 @@ def is_animating_recording(
         meta = _json.loads(meta_path.read_text(encoding="utf-8"))
     except Exception as e:
         _warn_once(ctx, f"recording_meta_bad:{rec_dir}",
-                   f"is_animating_recording: meta unreadable — {e}")
+                   f"is_animating_recording: meta unreadable, {e}")
         return False
     rect = meta.get("rect")
     if not (isinstance(rect, (list, tuple)) and len(rect) == 4):
@@ -825,7 +864,7 @@ def _warn_once(ctx, key: str, message: str) -> None:
     """Log ``message`` to the bot context exactly once per ``key``.
 
     Used by helpers that may fail every tick on the same misconfig
-    (missing capture, malformed meta) — a single warning is signal,
+    (missing capture, malformed meta), a single warning is signal,
     a per-tick repeat is noise.
     """
     flag_attr = f"_warned_{abs(hash(key))}"
@@ -846,7 +885,7 @@ def template_match(
     Returns a :class:`Match` with ``confidence`` set to the maximum
     correlation score (0.0–1.0) inside the search region. The match
     is falsy when ``confidence < threshold`` (default 0.0 means any
-    score counts as a hit — let the caller compare).
+    score counts as a hit, let the caller compare).
 
     ``reference`` accepts a Path or string path; typically a snapshot
     loaded once at module import::
@@ -880,9 +919,10 @@ def template_match(
     ref_img = _load_template_cached(ctx, ref_path)
     if ref_img is None:
         return Match()
-    score, point = _template_match_impl(ctx, frame, ref_img, roi)
+    score, point = _template_match_impl(ctx, frame, ref_img, _roi_to_frame(roi))
     if score < threshold:
         return Match()
+    point = _pt_to_screen(point)
     return Match(
         point=point,
         count=1,
@@ -898,18 +938,18 @@ def tooltip_match(
     offset: Tuple[int, int] = (2, 14),
     size: Tuple[int, int] = (420, 58),
 ) -> Match:
-    """Template-match against a cursor-anchored ROI — designed for
+    """Template-match against a cursor-anchored ROI, designed for
     verifying the RS3 NXT action tooltip ("Bait fishing spot", "Bank
     chest", "Chop down Willow") is the one expected before clicking.
 
     The tooltip appears just below + right of the cursor in RS3; this
     helper snapshots that anchor region and runs ``template_match``
     against the saved reference. Same defaults as the legacy
-    :class:`UptextReader` (offset (2, 14), size 420×58) — tuned for
+    :class:`UptextReader` (offset (2, 14), size 420×58), tuned for
     3840×2160 NXT-default UI scale; override if your resolution
     differs significantly.
 
-    Pair with :class:`ai.captures.snapshot` — capture a single
+    Pair with :class:`ai.captures.snapshot`, capture a single
     PNG of the tooltip area while hovering the target in-game, then::
 
         from ai.captures import snapshot
@@ -927,35 +967,36 @@ def tooltip_match(
                 return False                     # not over the spot
             click.fire()
 
-    No OCR dependency — works regardless of whether
+    No OCR dependency, works regardless of whether
     ``ai/fonts/plain_11.rvf`` is built.
     """
     from pathlib import Path as _Path
+    from ..input.frame_source import cursor_screen_xy
 
     ctx = _ctx()
-    frame = getattr(ctx, "current_frame", None)
-    if frame is None:
-        return Match()
     ref_path = _Path(reference) if not isinstance(reference, _Path) else reference
     ref_img = _load_template_cached(ctx, ref_path)
     if ref_img is None:
         return Match()
+    # The tick-start frame predates the hover that made the tooltip
+    # appear, so a fresh grab is the only frame that can contain it.
+    frame = _fresh_frame(ctx)
+    if frame is None:
+        return Match()
 
-    # Compute cursor-anchored ROI in physical pixels (matches the unit
-    # mss / bot ROIs use). Reads the live cursor position rather than
-    # any stored value because we want the location the cursor is AT
-    # right now — typically just after a humanized move().
+    # Cursor-anchored ROI in screen pixels, read live because we want
+    # where the cursor is right now, just after the humanized move().
     try:
-        from pynput.mouse import Controller as _MC
-        cx, cy = _MC().position
+        cx, cy = cursor_screen_xy()
     except Exception:
         return Match()
     ox, oy = offset
     w, h = size
     roi = (int(cx) + int(ox), int(cy) + int(oy), int(w), int(h))
-    score, point = _template_match_impl(ctx, frame, ref_img, roi)
+    score, point = _template_match_impl(ctx, frame, ref_img, _roi_to_frame(roi))
     if score < threshold:
         return Match()
+    point = _pt_to_screen(point)
     return Match(
         point=point,
         count=1,
@@ -1017,10 +1058,10 @@ def _template_match_impl(ctx, frame, ref_img, roi):
         result = _cv2.matchTemplate(work, ref_img, _cv2.TM_CCOEFF_NORMED)
         _min_v, max_v, _min_l, max_l = _cv2.minMaxLoc(result)
     except Exception as e:
-        ctx.log(f"[bot] template_match: matchTemplate failed — {e}")
+        ctx.log(f"[bot] template_match: matchTemplate failed, {e}")
         return 0.0, None
     # max_l is the top-left of the best match in the cropped frame.
-    # Convert to centroid in absolute screen coords.
+    # Convert to a centroid in frame coords; callers map to screen.
     cx = origin[0] + int(max_l[0]) + rw // 2
     cy = origin[1] + int(max_l[1]) + rh // 2
     return float(max_v), (cx, cy)
@@ -1035,7 +1076,7 @@ def is_bank_open(
     """Return True iff the saved reference snapshot template-matches
     the current frame above ``threshold``.
 
-    ``reference`` accepts a :class:`pathlib.Path` or a string path —
+    ``reference`` accepts a :class:`pathlib.Path` or a string path , 
     typically loaded once at module-import time::
 
         from ai.captures import snapshot
@@ -1055,7 +1096,7 @@ def is_bank_open(
     reasonable starting point for bank-window detection but tune per
     reference if the UI has heavy alpha blending.
 
-    ``roi`` optionally restricts the search to a region of the frame —
+    ``roi`` optionally restricts the search to a region of the frame , 
     useful when the reference snapshot covers only part of the screen
     and you want to avoid false matches in unrelated UI areas.
     """
@@ -1079,7 +1120,7 @@ def is_bank_open(
             import cv2 as _cv2
             ref_img = _cv2.imread(str(ref_path), _cv2.IMREAD_COLOR)
         except Exception as e:
-            ctx.log(f"[bot] is_bank_open: cv2 import or imread failed — {e}")
+            ctx.log(f"[bot] is_bank_open: cv2 import or imread failed, {e}")
             return False
         if ref_img is None:
             ctx.log(f"[bot] is_bank_open: could not load reference {ref_path}")
@@ -1097,7 +1138,7 @@ def is_bank_open(
 
     if roi is not None:
         try:
-            x, y, w, h = (int(v) for v in roi)
+            x, y, w, h = _roi_to_frame(roi)
         except Exception:
             return False
         fh, fw = work.shape[:2]
@@ -1110,14 +1151,14 @@ def is_bank_open(
     rh, rw = ref_img.shape[:2]
     fh, fw = work.shape[:2]
     if rh > fh or rw > fw:
-        # Reference is larger than the search area — can't possibly match.
+        # Reference is larger than the search area, can't possibly match.
         return False
 
     try:
         result = _cv2.matchTemplate(work, ref_img, _cv2.TM_CCOEFF_NORMED)
         _min_v, max_v, _min_l, _max_l = _cv2.minMaxLoc(result)
     except Exception as e:
-        ctx.log(f"[bot] is_bank_open: matchTemplate failed — {e}")
+        ctx.log(f"[bot] is_bank_open: matchTemplate failed, {e}")
         return False
     return float(max_v) >= float(threshold)
 
@@ -1145,7 +1186,7 @@ def uptext_matches(
         wait(1500)
         return True
 
-    Defaults to ``fresh=True`` — the typical caller has just hovered
+    Defaults to ``fresh=True``, the typical caller has just hovered
     inside the same tick, and the start-of-tick frame won't reflect
     the post-hover tooltip. Pass ``fresh=False`` to use the cached
     ``world().uptext`` (cheaper, but stale relative to a hover).
@@ -1153,7 +1194,7 @@ def uptext_matches(
     **Font fallback:** uptext OCR needs ``ai/fonts/plain_11.rvf``,
     which is built from a captured RS3 font corpus via
     ``rs3vision-tools/``. When the font isn't on disk this helper
-    returns True instead of False — the verification layer is a
+    returns True instead of False, the verification layer is a
     robustness boost, not a hard requirement, and silently failing
     every click would leave the bot stuck. Set ``require_font=True``
     to opt into strict mode for safety-critical clicks (returns
@@ -1166,7 +1207,7 @@ def uptext_matches(
         _warn_once(
             _ctx(),
             "uptext_font_missing",
-            "[bot] uptext OCR font is missing (ai/fonts/plain_11.rvf) — "
+            "[bot] uptext OCR font is missing (ai/fonts/plain_11.rvf), "
             "skipping uptext verification. Bot will rely on colour / DTM "
             "match alone. Build the font via rs3vision-tools to re-enable "
             "the safety check.",

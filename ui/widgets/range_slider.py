@@ -1,9 +1,9 @@
-"""``RangeSlider`` — dual-thumb min/max slider.
+"""``RangeSlider``: dual-thumb min/max slider.
 
 Qt ships no native range slider, so this is a custom-painted ``QWidget``.
-Track + filled-range + two thumbs, mouse-drag updates whichever thumb
-the cursor is closer to. Emits a ``valueChanged(min, max)`` signal that
-mirrors the original CTk RangeSlider's callback shape.
+Deck styling: 1 px BORDER_STRONG track, 3 px lime fill between the thumbs,
+10 px round lime knobs. Disabled swaps lime for TEXT_DISABLED. Emits
+``valueChanged(min, max)``.
 """
 
 from __future__ import annotations
@@ -15,13 +15,16 @@ from PySide6.QtWidgets import QWidget, QSizePolicy
 from .. import theme as t
 
 
-_TRACK_H = 4
-_THUMB_R = 8
-_HEIGHT = 28
+_TRACK_H = 1
+_FILL_H = 3
+_THUMB_R = 5
+_HEIGHT = 20
 
 
 class RangeSlider(QWidget):
     valueChanged = Signal(float, float)
+
+    THUMB_R = _THUMB_R
 
     def __init__(
         self,
@@ -83,7 +86,6 @@ class RangeSlider(QWidget):
         usable = max(1, self.width() - 2 * _THUMB_R)
         frac = (x - _THUMB_R) / usable
         v = self._min + frac * (self._max - self._min)
-        # Quantize to ``steps`` for predictable values.
         step_size = (self._max - self._min) / self._steps
         if step_size > 0:
             v = round(v / step_size) * step_size
@@ -95,21 +97,21 @@ class RangeSlider(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         cy = self.height() / 2
-        # Track
+        accent = QColor(t.ACCENT if self.isEnabled() else t.TEXT_DISABLED)
+        # Track: 1 px hairline.
         track = QRectF(_THUMB_R, cy - _TRACK_H / 2,
                        self.width() - 2 * _THUMB_R, _TRACK_H)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(t.SURFACE_HIGH))
-        p.drawRoundedRect(track, 2, 2)
-        # Filled range
+        p.setBrush(QColor(t.BORDER_STRONG))
+        p.drawRect(track)
+        # Filled range: 3 px.
         x_lo = self._value_to_x(self._lo)
         x_hi = self._value_to_x(self._hi)
-        filled = QRectF(x_lo, cy - _TRACK_H / 2, x_hi - x_lo, _TRACK_H)
-        p.setBrush(QColor(t.ACCENT))
-        p.drawRoundedRect(filled, 2, 2)
-        # Thumbs
+        filled = QRectF(x_lo, cy - _FILL_H / 2, x_hi - x_lo, _FILL_H)
+        p.setBrush(accent)
+        p.drawRect(filled)
+        # Thumbs: 10 px round.
         for x in (x_lo, x_hi):
-            p.setBrush(QColor(t.ACCENT))
             p.drawEllipse(QRectF(x - _THUMB_R, cy - _THUMB_R,
                                   _THUMB_R * 2, _THUMB_R * 2))
 
@@ -121,8 +123,6 @@ class RangeSlider(QWidget):
         x = event.position().x()
         x_lo = self._value_to_x(self._lo)
         x_hi = self._value_to_x(self._hi)
-        # Pick the closer thumb. Tie goes to "hi" so dragging from the right
-        # of the bar feels natural.
         self._dragging = "lo" if abs(x - x_lo) < abs(x - x_hi) else "hi"
         self._handle_drag(x)
 

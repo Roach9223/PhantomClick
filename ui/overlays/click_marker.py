@@ -1,4 +1,4 @@
-"""Click-marker flash — short-lived ring + crosshair at the actual click point.
+"""Click-marker flash, short-lived ring + crosshair at the actual click point.
 
 Color encodes step kind: green for Click steps, magenta for Color steps.
 Drift between the requested target and the actual click is logged at WARN.

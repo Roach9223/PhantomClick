@@ -1,4 +1,4 @@
-"""DTM — Deformable Template Matching blocks.
+"""DTM, Deformable Template Matching blocks.
 
 A DTM template is a handful of coloured points in a rigid relative
 layout, loaded from a YAML file. The matcher looks for patterns in a
@@ -70,14 +70,14 @@ class FindDtmBlock(Block):
     description = (
         "Find every position where a DTM template matches. A DTM "
         "template is a handful of coloured points arranged in a rigid "
-        "layout — far more robust than single-colour matching for UI "
+        "layout, far more robust than single-colour matching for UI "
         "elements. Create templates from the visualizer with the "
         "'Create DTM from ROI' button."
     )
     example = (
         "Make a template: visualizer → drag around the UI element → "
         "🎯 Create DTM from ROI. Set template_path to its .yaml filename. "
-        "Open the YAML to tune tolerances — tight anchor (cts=1, tol≤8), "
+        "Open the YAML to tune tolerances, tight anchor (cts=1, tol≤8), "
         "looser secondary points (cts=2, tol=10–15)."
     )
     color = (80, 60, 120)

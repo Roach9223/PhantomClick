@@ -1,4 +1,4 @@
-"""``ZoneDrawer`` — fullscreen interactive overlay for drawing a zone.
+"""``ZoneDrawer``, fullscreen interactive overlay for drawing a zone.
 
 Covers a single :class:`QScreen` with a translucent black scrim, then
 lets the user paint:

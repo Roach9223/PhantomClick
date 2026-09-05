@@ -1,9 +1,9 @@
-"""Action verification — the closed-loop "did the click actually work?"
+"""Action verification, the closed-loop "did the click actually work?"
 check that turns "click and hope" into "click, verify, react."
 
 Most action steps in a bot are reactive: they fire when their detection
 matches and *assume* the action succeeded. That assumption is wrong
-in MMOs all the time — the target moved during the cursor travel,
+in MMOs all the time, the target moved during the cursor travel,
 the click landed on a stale frame, lag swallowed it, the player
 animation never started. Without a check, the bot just keeps acting
 on a phantom result.
@@ -15,13 +15,13 @@ counter, retry the step, or run a recovery procedure.
 
 Signals shipped here (each cheap per tick):
 
-- ``inv_change`` — the inventory's filled-slot count changed in a
+- ``inv_change``, the inventory's filled-slot count changed in a
   given direction by a required delta. Best signal for "I just
   caught a fish" or "I just deposited."
-- ``uptext_match`` — the cursor-anchored RS3 uptext matches a
+- ``uptext_match``, the cursor-anchored RS3 uptext matches a
   pattern. Confirms the cursor is hovering the expected target
   (e.g. ``"Bank chest"``).
-- ``always_pass`` — sentinel that always succeeds on its first
+- ``always_pass``, sentinel that always succeeds on its first
   tick. Useful as a default when a step needs no verification.
 
 The remaining signals from the plan (``player_stillness``,
@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
 
-# Public verifier signal names — string discriminators in JSON.
+# Public verifier signal names, string discriminators in JSON.
 SIGNAL_INV_CHANGE = "inv_change"
 SIGNAL_UPTEXT_MATCH = "uptext_match"
 SIGNAL_CHAT_MATCH = "chat_match"
@@ -73,7 +73,7 @@ class Verifier:
 
     The Verifier captures any "initial state" it needs for
     diff-based signals (``inv_change``) on its first ``tick`` call,
-    not at construction — that way the snapshot reflects the world
+    not at construction, that way the snapshot reflects the world
     state at the moment we *start* watching, which is the tick
     immediately after the action fired.
     """
@@ -163,7 +163,7 @@ class Verifier:
         return pattern.lower() in text.lower()
 
     def _check_chat_match(self, ctx) -> bool:
-        # Wired in B.5 alongside the on_chat interrupt — currently
+        # Wired in B.5 alongside the on_chat interrupt, currently
         # awaits a chat-event source attached to ``ctx``.
         events = getattr(ctx, "recent_chat_events", None)
         if not events:
@@ -178,7 +178,7 @@ class Verifier:
         return False
 
     def _check_player_stillness(self, ctx) -> bool:
-        # Wired alongside minimap reader — currently a stub that
+        # Wired alongside minimap reader, currently a stub that
         # never confirms (so steps that require it will time out
         # rather than silently pass with no actual evidence).
         return False

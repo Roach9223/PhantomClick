@@ -3,7 +3,7 @@
 Path generation uses a Wind/Hooke algorithm: a virtual particle pulled
 toward the target by a spring-like "gravity" force while being buffeted
 by randomized "wind" gusts. Much more organic wobble than fixed-control-
-point Bezier curves. A Bezier fallback is kept for tuning comparisons.
+point Bezier curves.
 """
 
 from __future__ import annotations
@@ -20,12 +20,10 @@ from . import dpi_cursor, mouse_trace
 
 _mouse = Controller()
 
-USE_WIND = True  # flip to False to A/B test against Bezier fallback
-
 # Watchdog corner-stop fires when cursor lands in any of the four 3x3
-# corner zones (modules/clicker.py::_watchdog_loop:435 — `x<=bx+2 AND
+# corner zones (modules/clicker.py::_watchdog_loop:435, `x<=bx+2 AND
 # y<=by+2` etc.). We only need to nudge cursor positions OUT of those
-# corner zones — every other position (including edge positions like
+# corner zones, every other position (including edge positions like
 # y=0 with x=500) is fine and must be left untouched, otherwise zones
 # near the screen edge lose accuracy. SAFE_MARGIN sits 1 px outside the
 # watchdog's threshold so the absolute final pixel after sway/tremor
@@ -44,7 +42,7 @@ def set_safe_bounds(bounds: Optional[tuple[int, int, int, int]]) -> None:
     is in matching coordinate space.
 
     On a non-100%-scaled monitor, conflating DIPs and physical px makes the
-    clamp shrink the usable area by the scale factor — e.g. on a 150%
+    clamp shrink the usable area by the scale factor, e.g. on a 150%
     monitor the cursor would never reach the right ~33% of the screen.
 
     Pass ``None`` to clear (no clamping)."""
@@ -58,7 +56,7 @@ def set_safe_bounds(bounds: Optional[tuple[int, int, int, int]]) -> None:
         return
     # Convert each corner DIP→physical. Using both corners (rather than a
     # uniform DPR multiply) handles multi-monitor where the rect spans
-    # screens with different DPRs — though in practice the engine only
+    # screens with different DPRs, though in practice the engine only
     # passes single-screen rects.
     px1, py1 = dpi_cursor.dip_to_physical(int(bx), int(by))
     px2, py2 = dpi_cursor.dip_to_physical(int(bx + bw), int(by + bh))
@@ -67,7 +65,7 @@ def set_safe_bounds(bounds: Optional[tuple[int, int, int, int]]) -> None:
 
 def _clamp_to_safe(x: float, y: float) -> tuple[float, float]:
     """Push (x, y) out of any active corner zone, leaving non-corner
-    positions unchanged. The clamp is intentionally narrow — only the
+    positions unchanged. The clamp is intentionally narrow, only the
     four 3×3 corner squares are restricted. Edge positions (like y=0
     with x=500) are unaffected so click zones drawn near a screen edge
     keep their full usable area."""
@@ -104,6 +102,35 @@ def _sleep(stop: Optional[threading.Event], seconds: float) -> bool:
     return stop.wait(seconds)
 
 
+def _soft_range(lo: float, hi: float) -> float:
+    """Log-normal draw whose bulk sits in ``[lo, hi]`` with a soft tail.
+
+    A plain ``uniform(lo, hi)`` produces a flat-topped histogram with
+    hard edges, which is a fingerprint no human timing study shows.
+    Here the median is the geometric mean of the range and sigma is
+    sized so roughly 90% of draws land inside ``[lo, hi]``; the rest
+    spill a little below ``lo`` or trail off above ``hi``. Values are
+    rejection-sampled inside a wider soft window so the shape is kept
+    without pinning to a boundary.
+    """
+    lo = max(0.001, float(lo))
+    hi = max(lo, float(hi))
+    if hi - lo < 1e-6:
+        return lo
+    log_lo = math.log(lo)
+    log_hi = math.log(hi)
+    mu = 0.5 * (log_lo + log_hi)
+    # +-1.65 sigma spans the range, so ~90% of mass falls in [lo, hi].
+    sigma = (log_hi - log_lo) / 3.3
+    floor = lo * 0.80
+    ceiling = hi + (hi - lo) * 0.50
+    for _ in range(6):
+        val = math.exp(random.gauss(mu, sigma))
+        if floor <= val <= ceiling:
+            return val
+    return random.uniform(lo, hi)
+
+
 def _ease(t: float) -> float:
     """Asymmetric human-reach profile: fast accel, long decel.
 
@@ -133,13 +160,13 @@ def _wind_path(start: tuple[float, float], end: tuple[float, float]) -> list[tup
     if dist < 1.0:
         return [(ex, ey)]
 
-    # Tuned empirically — these feel "human" in side-by-side comparisons.
+    # Tuned empirically, these feel "human" in side-by-side comparisons.
     gravity = 7.0
     wind_strength = min(10.0, dist / 15.0)
     damping = 3.0
     # Cap step at 60 px/frame so the cursor can't blow past the target
     # in a single render frame on long cross-screen moves. With ~16 ms
-    # walk cadence that's still ~3750 px/sec — plenty fast for a
+    # walk cadence that's still ~3750 px/sec, plenty fast for a
     # deliberate human reach without producing the bouncing overshoot
     # the unbounded version did.
     max_step = max(3.0, min(60.0, dist / 20.0))
@@ -172,7 +199,7 @@ def _wind_path(start: tuple[float, float], end: tuple[float, float]) -> list[tup
             break
 
         # Wind drifts: high-freq perturbation near start, calms down near end.
-        # Squared so the last ~8% of the path is essentially calm — combined
+        # Squared so the last ~8% of the path is essentially calm, combined
         # with the tremor decay in _walk(), the landing pixel is precise.
         near_raw = min(1.0, remaining / max(dist, 1.0))
         near = near_raw * near_raw
@@ -189,7 +216,7 @@ def _wind_path(start: tuple[float, float], end: tuple[float, float]) -> list[tup
 
         # Proximity-based damping. Inside `proximity_zone`, ramp up
         # extra damping linearly toward the target. At the target,
-        # we apply 35% extra velocity decay per step — combined with
+        # we apply 35% extra velocity decay per step, combined with
         # base damping that's ~41% per step, which collapses
         # equilibrium velocity from ~22 px/step to ~6 px/step inside
         # the landing zone. Eliminates the dramatic overshoot.
@@ -214,29 +241,6 @@ def _wind_path(start: tuple[float, float], end: tuple[float, float]) -> list[tup
     return points
 
 
-def _bezier_path(start: tuple[float, float], end: tuple[float, float]) -> list[tuple[float, float]]:
-    """Cubic Bezier fallback with two randomized control points."""
-    sx, sy = start
-    ex, ey = end
-    dx, dy = ex - sx, ey - sy
-    dist = max(1.0, math.hypot(dx, dy))
-    # Control points offset perpendicular to the line by up to ~15% of distance.
-    perp_x, perp_y = -dy / dist, dx / dist
-    off1 = random.uniform(-0.15, 0.15) * dist
-    off2 = random.uniform(-0.15, 0.15) * dist
-    c1 = (sx + dx * 0.33 + perp_x * off1, sy + dy * 0.33 + perp_y * off1)
-    c2 = (sx + dx * 0.66 + perp_x * off2, sy + dy * 0.66 + perp_y * off2)
-    steps = max(15, int(dist / 6))
-    pts = []
-    for i in range(1, steps + 1):
-        t = i / steps
-        it = 1 - t
-        x = it**3 * sx + 3 * it**2 * t * c1[0] + 3 * it * t**2 * c2[0] + t**3 * ex
-        y = it**3 * sy + 3 * it**2 * t * c1[1] + 3 * it * t**2 * c2[1] + t**3 * ey
-        pts.append((x, y))
-    return pts
-
-
 def _walk_phys(points: list[tuple[float, float]], duration: float, stop: Optional[threading.Event]) -> bool:
     """Walk the path over `duration` seconds with asymmetric ease + tremor.
 
@@ -255,14 +259,14 @@ def _walk_phys(points: list[tuple[float, float]], duration: float, stop: Optiona
     t0 = time.monotonic()
     last_idx = -1
 
-    # Per-walk tremor parameters — randomized so two consecutive moves
+    # Per-walk tremor parameters, randomized so two consecutive moves
     # don't share the same sway phase / freq.
     sway_phase_x = random.uniform(0.0, 2 * math.pi)
     sway_phase_y = random.uniform(0.0, 2 * math.pi)
     sway_freq_x = random.uniform(1.5, 3.0)
     sway_freq_y = random.uniform(1.5, 3.0)
     # Mix of calm (~30% of moves) and normal (~70%) moves so the tremor
-    # itself isn't a constant pattern — a steady hand is also human.
+    # itself isn't a constant pattern, a steady hand is also human.
     if random.random() < 0.30:
         sway_amp = random.uniform(0.0, 0.4)
         tremor_sigma = 0.20
@@ -273,7 +277,7 @@ def _walk_phys(points: list[tuple[float, float]], duration: float, stop: Optiona
     # OU process state. Each tick: x ← α·x + σ·√(1-α²)·N(0,1).
     # α near 1 → low-freq drift (smooth); α near 0 → white noise (buzz).
     # α = 0.88 at our 5-10 ms tick gives a correlation time ~50 ms,
-    # putting the dominant frequency around 6-8 Hz — within the
+    # putting the dominant frequency around 6-8 Hz, within the
     # physiological hand-tremor band. Amplitude inflated vs. the old
     # white-noise σ because OU's stationary std equals σ (we use σ as
     # the per-step injection scale, but since α reduces variance by
@@ -298,7 +302,7 @@ def _walk_phys(points: list[tuple[float, float]], duration: float, stop: Optiona
         idx = min(n - 1, int(eased * n))
         if idx != last_idx:
             px, py = points[idx]
-            # Symmetric envelope — calm at start (just leaving rest),
+            # Symmetric envelope, calm at start (just leaving rest),
             # peak wobble mid-flight, calm at landing. sin²(πt) is 0 at
             # both ends, 1 at midpoint, and smooth-derivative throughout
             # so there's no visible step into or out of the tremor.
@@ -332,7 +336,7 @@ def move(
 
     ``end`` is in DIPs (engine's coordinate space). All path math is
     done in physical Win32 pixels so that a move spanning two monitors
-    with different DPI scales doesn't teleport at the bezel — DIPs are
+    with different DPI scales doesn't teleport at the bezel, DIPs are
     not uniform across mixed-DPR monitors, so a wind path drifting
     past one monitor's right edge in DIP space can land on a
     non-existent screen and warp to identity-mapped physical coords.
@@ -374,7 +378,7 @@ def move(
         )
 
     # Settle pause: 0-50ms scaled by distance, fires only ~40% of the time.
-    # Constant settle pauses become their own mechanical pattern — randomize
+    # Constant settle pauses become their own mechanical pattern, randomize
     # whether the human "verifies aim" or just clicks straight away.
     if random.random() < 0.40:
         settle = min(0.050, dist / 4000.0) * random.uniform(0.5, 1.3)
@@ -382,12 +386,12 @@ def move(
         settle = 0.0
 
     if do_overshoot:
-        # Target 3-12px past end along the approach vector — in physical
+        # Target 3-12px past end along the approach vector, in physical
         # px so the visual overshoot distance is consistent across DPRs.
         over = random.uniform(3, 12)
         ux, uy = (ex - sx) / dist, (ey - sy) / dist
         overshoot_pt = _clamp_to_safe(ex + ux * over, ey + uy * over)
-        path = _wind_path((sx, sy) , overshoot_pt) if USE_WIND else _bezier_path((sx, sy), overshoot_pt)
+        path = _wind_path((sx, sy), overshoot_pt)
         if _walk_phys(path, duration, stop):
             mouse_trace.event("move_end", interrupted=True, phase="overshoot")
             return True
@@ -397,7 +401,7 @@ def move(
             return True
         # Short corrective hop back.
         cur_phys = dpi_cursor.get_pos_physical()
-        correct_path = _wind_path((float(cur_phys[0]), float(cur_phys[1])), (ex, ey)) if USE_WIND else _bezier_path((float(cur_phys[0]), float(cur_phys[1])), (ex, ey))
+        correct_path = _wind_path((float(cur_phys[0]), float(cur_phys[1])), (ex, ey))
         if _walk_phys(correct_path, max(0.04, duration * 0.35), stop):
             mouse_trace.event("move_end", interrupted=True, phase="overshoot_correct")
             return True
@@ -407,7 +411,7 @@ def move(
         mouse_trace.event("move_end", interrupted=False, phase="overshoot_done")
         return False
     else:
-        path = _wind_path((sx, sy), (ex, ey)) if USE_WIND else _bezier_path((sx, sy), (ex, ey))
+        path = _wind_path((sx, sy), (ex, ey))
         if _walk_phys(path, duration, stop):
             mouse_trace.event("move_end", interrupted=True, phase="walk")
             return True
@@ -432,7 +436,7 @@ def drift(
     the direct line by `curvature * dist * U(0.3, 0.7)` with a random sign,
     so the arc can bow either direction.
 
-    ``clamp`` defaults True. Pass False to bypass the corner-zone clamp —
+    ``clamp`` defaults True. Pass False to bypass the corner-zone clamp , 
     needed for hover-zone visits whose target may sit on a different
     monitor than the engine's primary safe rect (which would otherwise be
     pushed back inside the safe rect, leaving the zone unreachable).
@@ -495,22 +499,24 @@ def click(
 
     Returns True if interrupted before completion.
     """
-    btn = Button.right if button == "right" else Button.left
+    btn = {"right": Button.right, "middle": Button.middle}.get(
+        str(button).lower(), Button.left)
 
-    # Pause after cursor arrives, before first press.
-    if _sleep(stop, random.uniform(0.020, 0.080) * fatigue):
+    # Pause after cursor arrives, before first press. Log-normal rather
+    # than uniform so the timing histogram has a tail, not a plateau.
+    if _sleep(stop, _soft_range(0.020, 0.080) * fatigue):
         return True
 
     def _one_click() -> bool:
         _mouse.press(btn)
         # Bimodal press-hold so the histogram has two humps instead of a
-        # narrow band — quick-trigger taps (~10%) live alongside deliberate
-        # presses (~90%). Detectors that fingerprint a clean uniform[40,120]
-        # cluster see a much messier distribution.
+        # narrow band: quick-trigger taps (~10%) live alongside deliberate
+        # presses (~90%). Each hump is itself log-normal so neither has
+        # the hard edges a uniform draw leaves behind.
         if random.random() < 0.10:
-            hold = random.uniform(0.020, 0.060) * fatigue   # quick trigger
+            hold = _soft_range(0.020, 0.060) * fatigue   # quick trigger
         else:
-            hold = random.uniform(0.060, 0.250) * fatigue   # deliberate press
+            hold = _soft_range(0.060, 0.250) * fatigue   # deliberate press
         mouse_trace.event("press", btn=button, hold=round(hold, 4))
         if _sleep(stop, hold):
             _mouse.release(btn)
@@ -526,7 +532,7 @@ def click(
     if mode == "double":
         # Wider inter-click gap so the second-click cadence isn't a clean
         # band either. Real users vary 40-180ms here.
-        if _sleep(stop, random.uniform(0.040, 0.180)):
+        if _sleep(stop, _soft_range(0.040, 0.180)):
             return True
         if _one_click():
             return True

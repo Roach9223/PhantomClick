@@ -1,31 +1,30 @@
-"""``IOSSwitch`` — custom-painted iOS-style toggle.
+"""``IOSSwitch``: the deck toggle. Name kept for API compatibility.
 
-White circle thumb on a coral track when on, on a dark track when off.
-Animates the thumb position on toggle (~150 ms ease-out cubic). Used in
-:class:`SettingsRow` controls where a switch reads more naturally than a
-checkbox — e.g. master enable rows on the form-style pages.
+A 30 x 14 rectangular switch: 1 px BORDER frame on a SURFACE_PANEL well,
+12 x 10 square knob. Knob is lime when on, STATUS_IDLE when off. The knob
+jumps between positions; there is no animation.
 
 Drop-in replacement for a checkbox at the API level: ``isChecked()``,
-``setChecked()``, ``toggled(bool)`` all work as expected.
+``setChecked()``, ``toggled(bool)`` all work as expected. ``toggledChanged``
+is kept for callers that connected to it.
 """
 
 from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import (
-    Property, QEasingCurve, QPropertyAnimation, QRectF, Qt, Signal,
-)
-from PySide6.QtGui import QColor, QPainter, QPainterPath
+from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QAbstractButton, QWidget
 
 from .. import theme as t
 
 
-SWITCH_W = 36
-SWITCH_H = 21
-THUMB_SIZE = 17
-THUMB_PAD = 2
+SWITCH_W = 30
+SWITCH_H = 14
+KNOB_W = 12
+KNOB_H = 10
+KNOB_PAD = 1
 
 
 class IOSSwitch(QAbstractButton):
@@ -36,53 +35,43 @@ class IOSSwitch(QAbstractButton):
         self.setCheckable(True)
         self.setFixedSize(SWITCH_W, SWITCH_H)
         self.setCursor(Qt.PointingHandCursor)
+        self.toggled.connect(self._on_toggled)
 
-        self._thumb_pos = THUMB_PAD
-        self._anim = QPropertyAnimation(self, b"thumb_pos", self)
-        self._anim.setDuration(150)
-        self._anim.setEasingCurve(QEasingCurve.OutCubic)
-
-        self.toggled.connect(self._animate)
-
-    def _animate(self, on: bool) -> None:
-        end = SWITCH_W - THUMB_SIZE - THUMB_PAD if on else THUMB_PAD
-        self._anim.stop()
-        self._anim.setStartValue(self._thumb_pos)
-        self._anim.setEndValue(end)
-        self._anim.start()
+    def _on_toggled(self, on: bool) -> None:
+        self.update()
         self.toggledChanged.emit(on)
 
-    def get_thumb_pos(self) -> int:
-        return self._thumb_pos
-
-    def set_thumb_pos(self, value: int) -> None:
-        self._thumb_pos = value
-        self.update()
-
-    thumb_pos = Property(int, get_thumb_pos, set_thumb_pos)
-
     def setChecked(self, checked: bool) -> None:  # noqa: N802 (Qt name)
-        # Snap the thumb to the right end without animation when the state
-        # is set programmatically (e.g. from cfg load); only user toggles
-        # animate. This avoids a visual "ping" on app boot.
         super().setChecked(checked)
-        self._thumb_pos = (
-            SWITCH_W - THUMB_SIZE - THUMB_PAD if checked else THUMB_PAD
-        )
         self.update()
 
     def paintEvent(self, _event):  # noqa: N802 (Qt name)
         p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.Antialiasing, True)
 
-        # Track
-        track_color = QColor(t.ACCENT) if self.isChecked() else QColor("#2a2f38")
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(0, 0, SWITCH_W, SWITCH_H),
-                            SWITCH_H / 2, SWITCH_H / 2)
-        p.fillPath(path, track_color)
+        enabled = self.isEnabled()
+        frame = QColor(t.BORDER_STRONG if self.underMouse() and enabled else t.BORDER)
+        if not enabled:
+            frame = QColor(t.BORDER_SUBTLE)
+        p.setPen(QPen(frame, 1))
+        p.setBrush(QColor(t.SURFACE_PANEL))
+        p.drawRoundedRect(QRectF(0.5, 0.5, SWITCH_W - 1, SWITCH_H - 1), 3, 3)
 
-        # Thumb
-        p.setBrush(QColor("#ffffff"))
+        on = self.isChecked()
+        if not enabled:
+            knob = QColor(t.TEXT_DISABLED)
+        else:
+            knob = QColor(t.ACCENT if on else t.STATUS_IDLE)
+        x = SWITCH_W - KNOB_W - KNOB_PAD - 1 if on else KNOB_PAD + 1
+        y = (SWITCH_H - KNOB_H) / 2
         p.setPen(Qt.NoPen)
-        p.drawEllipse(QRectF(self._thumb_pos, THUMB_PAD, THUMB_SIZE, THUMB_SIZE))
+        p.setBrush(knob)
+        p.drawRoundedRect(QRectF(x, y, KNOB_W, KNOB_H), 1.5, 1.5)
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        super().enterEvent(event)
+        self.update()
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        super().leaveEvent(event)
+        self.update()

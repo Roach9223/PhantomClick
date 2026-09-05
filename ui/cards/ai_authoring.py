@@ -1,4 +1,4 @@
-"""AI-mode authoring surface — the in-GUI bot builder.
+"""AI-mode authoring surface, the in-GUI bot builder.
 
 Each ``AIBotStep`` renders as a collapsible row; the user adds, edits,
 reorders, and removes steps here. At Start time the AI tab routes
@@ -7,11 +7,11 @@ produce a runnable :class:`Bot` that the runner executes the same way
 it executes library bots.
 
 This editor follows the Record-mode StepCard pattern but is more
-compact — the goal is feature-complete authoring on day one, not
+compact, the goal is feature-complete authoring on day one, not
 pixel-perfect parity with Record. The shared design rules:
     * 3-px teal stripe via ``[expanded="true"]`` for the open card.
-    * `Expander` owns its own chevron — never bake one into a label.
-    * Footer hint: "FIRST-MATCH WINS EACH TICK" — the single most
+    * `Expander` owns its own chevron, never bake one into a label.
+    * Footer hint: "FIRST-MATCH WINS EACH TICK", the single most
       important pedagogical signal, since priority-order semantics
       differ from Record's program-counter.
 """
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu,
@@ -49,7 +49,9 @@ from ai.bot.authoring import (
 )
 from ai.bot.compiler import rule_name_for
 
-from .. import theme as t
+from ui.config_io import wiki_cache_root
+
+from .. import icons, theme as t
 from ..widgets.card import Card
 from ..widgets.ios_switch import IOSSwitch
 
@@ -87,7 +89,7 @@ class AIAuthoringSection(Card):
         self.app = app
         self._active_bundle = None
 
-        # Header — "+ Add step" menu (becomes a submenu so we can group).
+        # Header, "+ Add step" menu (becomes a submenu so we can group).
         self.add_btn = QPushButton("+  Add step")
         self.add_btn.setMinimumHeight(t.BUTTON_H)
         self.add_btn.setCursor(Qt.PointingHandCursor)
@@ -104,11 +106,11 @@ class AIAuthoringSection(Card):
         self.add_btn.setMenu(menu)
         self.add_to_header(self.add_btn)
 
-        # Items library — small panel, can be collapsed.
+        # Items library, small panel, can be collapsed.
         self._items_panel = _ItemLibraryPanel(app, self)
         self.add(self._items_panel)
 
-        # Body container — vertical list of step rows.
+        # Body container, vertical list of step rows.
         self._rows_host = QWidget()
         self._rows_layout = QVBoxLayout(self._rows_host)
         self._rows_layout.setContentsMargins(0, 0, 0, 0)
@@ -118,7 +120,7 @@ class AIAuthoringSection(Card):
         # Empty-state hint.
         self._empty_hint = QLabel(
             "No steps yet. Click ‘+ Add step’ to start building. "
-            "Steps run top-to-bottom each tick — the first one that "
+            "Steps run top-to-bottom each tick, the first one that "
             "fires wins the tick (other steps run on later ticks)."
         )
         self._empty_hint.setWordWrap(True)
@@ -128,10 +130,10 @@ class AIAuthoringSection(Card):
         )
         self.add(self._empty_hint)
 
-        # Lock banner — shown when bot is running. Edits to the live
+        # Lock banner, shown when bot is running. Edits to the live
         # bot snapshot don't take effect until the user stops + restarts.
         self._lock_banner = QLabel(
-            "🔒 Bot is running — changes apply on next start."
+            "Bot is running. Changes apply on next start."
         )
         self._lock_banner.setStyleSheet(
             f"color: {t.WARN}; font-size: {t.SIZE_SM}px; "
@@ -141,9 +143,9 @@ class AIAuthoringSection(Card):
         self._lock_banner.setVisible(False)
         self.add(self._lock_banner)
 
-        # Footer hint — the single most important pedagogical signal.
+        # Footer hint, the single most important pedagogical signal.
         footer = QLabel(
-            "↻  FIRST-MATCH WINS EACH TICK · priority = step order"
+            "FIRST-MATCH WINS EACH TICK, PRIORITY = STEP ORDER"
         )
         footer.setAlignment(Qt.AlignCenter)
         footer.setStyleSheet(
@@ -159,7 +161,7 @@ class AIAuthoringSection(Card):
 
     # ── Bundle awareness ─────────────────────────────────────────
     def _on_active_bundle_changed(self, bundle) -> None:
-        """The active bundle changed — relabel the card so users know
+        """The active bundle changed, relabel the card so users know
         whether they're editing a bundle's procedure or the legacy
         cfg-backed steps. The data source itself is swapped by
         ``App.set_ai_authoring_bundle`` before this hook fires."""
@@ -167,7 +169,7 @@ class AIAuthoringSection(Card):
         if bundle is None:
             self._empty_hint.setText(
                 "No steps yet. Click '+ Add step' to start building. "
-                "Steps run top-to-bottom each tick — the first one that "
+                "Steps run top-to-bottom each tick, the first one that "
                 "fires wins the tick (other steps run on later ticks)."
             )
         else:
@@ -258,7 +260,7 @@ class AIAuthoringSection(Card):
     def test_step(self, step) -> None:
         """Fire ``step`` once in a transient ctx with dry_run=True.
 
-        The runner machinery isn't started — we capture one frame,
+        The runner machinery isn't started, we capture one frame,
         compile the step's closure, run it. Result is toasted so the
         author can iterate on detection params without the full
         Start → watch → Stop cycle.
@@ -276,7 +278,7 @@ class AIAuthoringSection(Card):
         try:
             with mss.mss() as sct:
                 mons = sct.monitors
-                idx = int(self.app.cfg.get("ai_monitor", 1))
+                idx = self.app.resolved_ai_monitor(sct.monitors)
                 if not (0 <= idx < len(mons)):
                     idx = 1 if len(mons) > 1 else 0
                 raw = sct.grab(mons[idx])
@@ -285,7 +287,7 @@ class AIAuthoringSection(Card):
                 )
         except Exception as e:
             self.app.toasts.post(
-                f"⚠ Test capture failed: {type(e).__name__}: {e}",
+                f"Test capture failed: {type(e).__name__}: {e}",
                 kind="error",
             )
             return
@@ -294,7 +296,7 @@ class AIAuthoringSection(Card):
         closure, errs = _compile_step(step, step_index=0, bundle=bundle)
         if closure is None:
             for e in errs:
-                self.app.toasts.post(f"⚠ {e}", kind="warn")
+                self.app.toasts.post(f"{e}", kind="warn")
             return
 
         # Build a transient ctx + WorldState so primitives have what they need.
@@ -332,7 +334,7 @@ class AIAuthoringSection(Card):
                 fired = bool(closure())
             except Exception as e:
                 self.app.toasts.post(
-                    f"⚠ Test crashed: {type(e).__name__}: {e}",
+                    f"Test crashed: {type(e).__name__}: {e}",
                     kind="error",
                 )
                 return
@@ -350,12 +352,12 @@ class AIAuthoringSection(Card):
             elif getattr(backend, "last_key", None):
                 click_info = f"  → key {backend.last_key!r}"
             self.app.toasts.post(
-                f"✓ Step fired in {elapsed_ms:.1f} ms{click_info}",
+                f"Step fired in {elapsed_ms:.1f} ms{click_info}",
                 kind="success",
             )
         else:
             self.app.toasts.post(
-                f"✗ Step did NOT fire ({elapsed_ms:.1f} ms — no detection match / "
+                f"Step did NOT fire ({elapsed_ms:.1f} ms, no detection match / "
                 "predicate False)",
                 kind="warn",
             )
@@ -405,7 +407,7 @@ class _StepRow(QFrame):
         h.setSpacing(t.SP_SM)
 
         self._chevron = QToolButton()
-        self._chevron.setText("▸")
+        self._chevron.setIcon(icons.icon("chevron-right"))
         self._chevron.setAutoRaise(True)
         self._chevron.setCursor(Qt.PointingHandCursor)
         self._chevron.clicked.connect(self._toggle_expanded)
@@ -436,10 +438,10 @@ class _StepRow(QFrame):
         )
         h.addWidget(self._summary, 1)
 
-        # Action buttons — up, down, duplicate, remove.
-        for label, tip, delta in [("▲", "Move up", -1), ("▼", "Move down", +1)]:
+        # Action buttons, up, down, duplicate, remove.
+        for label, tip, delta in [("arrow-up", "Move up", -1), ("arrow-down", "Move down", +1)]:
             b = QToolButton()
-            b.setText(label)
+            b.setIcon(icons.icon(label))
             b.setToolTip(tip)
             b.setAutoRaise(True)
             b.setCursor(Qt.PointingHandCursor)
@@ -448,7 +450,7 @@ class _StepRow(QFrame):
             )
             h.addWidget(b)
         dup_btn = QToolButton()
-        dup_btn.setText("⎘")
+        dup_btn.setIcon(icons.icon("duplicate"))
         dup_btn.setToolTip("Duplicate step")
         dup_btn.setAutoRaise(True)
         dup_btn.setCursor(Qt.PointingHandCursor)
@@ -457,7 +459,7 @@ class _StepRow(QFrame):
         )
         h.addWidget(dup_btn)
         rm_btn = QToolButton()
-        rm_btn.setText("✕")
+        rm_btn.setIcon(icons.icon("x"))
         rm_btn.setToolTip("Remove step")
         rm_btn.setAutoRaise(True)
         rm_btn.setCursor(Qt.PointingHandCursor)
@@ -489,7 +491,7 @@ class _StepRow(QFrame):
         body_layout.addWidget(
             self._make_label_row("Phase", step.phase,
                                   on_change=self._on_phase_changed,
-                                  placeholder="optional — drives chip color")
+                                  placeholder="optional, drives chip color")
         )
 
         # Per-kind body.
@@ -513,7 +515,7 @@ class _StepRow(QFrame):
     def _toggle_expanded(self) -> None:
         new = not self._body.isVisible()
         self._body.setVisible(new)
-        self._chevron.setText("▾" if new else "▸")
+        self._chevron.setIcon(icons.icon("chevron-down" if new else "chevron-right"))
         self.setProperty("expanded", "true" if new else "false")
         # Re-polish so the QSS [expanded="true"] selector lands.
         self.style().unpolish(self)
@@ -623,7 +625,7 @@ class _StepRow(QFrame):
         rl.addWidget(pick_btn)
         v.addWidget(row)
 
-        # Tolerance + min-pixels — two spinboxes side by side.
+        # Tolerance + min-pixels, two spinboxes side by side.
         knobs = QWidget()
         kl = QHBoxLayout(knobs)
         kl.setContentsMargins(0, 0, 0, 0)
@@ -644,7 +646,7 @@ class _StepRow(QFrame):
         kl.addStretch(1)
         v.addWidget(knobs)
 
-        # ROI row — "Set ROI" button + caption.
+        # ROI row, "Set ROI" button + caption.
         roi_row = QWidget()
         rr = QHBoxLayout(roi_row)
         rr.setContentsMargins(0, 0, 0, 0)
@@ -738,7 +740,7 @@ class _StepRow(QFrame):
         v.addWidget(knobs)
 
         hint = QLabel(
-            "Detects regions whose pixels flicker over the window — "
+            "Detects regions whose pixels flicker over the window, "
             "fishing spots (bubble surface), hunter trap motion, etc. "
             "Tighten the ROI to the exact area you expect activity in; "
             "wider ROIs catch more noise (camera pan, NPC walks)."
@@ -756,7 +758,7 @@ class _StepRow(QFrame):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(t.SP_XS)
 
-        # Asset dropdown — populated from the active bundle's snapshots.
+        # Asset dropdown, populated from the active bundle's snapshots.
         row = QWidget()
         rl = QHBoxLayout(row)
         rl.setContentsMargins(0, 0, 0, 0)
@@ -767,7 +769,7 @@ class _StepRow(QFrame):
         snapshots = bundle.list_snapshots() if bundle is not None else []
         if not snapshots:
             cb.addItem(
-                "(no snapshots yet — capture one in the Captures section)", "",
+                "(no snapshots yet, capture one in the Captures section)", "",
             )
         else:
             cb.addItem("(choose snapshot)", "")
@@ -801,7 +803,7 @@ class _StepRow(QFrame):
         tr.addStretch(1)
         v.addWidget(thr_row)
 
-        # Optional ROI — restricts the search area, faster + more precise.
+        # Optional ROI, restricts the search area, faster + more precise.
         roi_row = QWidget()
         rr = QHBoxLayout(roi_row)
         rr.setContentsMargins(0, 0, 0, 0)
@@ -939,7 +941,7 @@ class _StepRow(QFrame):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(t.SP_XS)
 
-        # Item picker — combobox of items in the bot's library.
+        # Item picker, combobox of items in the bot's library.
         row = QWidget()
         rl = QHBoxLayout(row)
         rl.setContentsMargins(0, 0, 0, 0)
@@ -948,7 +950,7 @@ class _StepRow(QFrame):
         cb = QComboBox()
         items = list(getattr(self.app, "_ai_item_names", []))
         if not items:
-            cb.addItem("(library is empty — add items below)", "")
+            cb.addItem("(library is empty, add items below)", "")
         else:
             cb.addItem("(none)", "")
             for nm in items:
@@ -1125,7 +1127,7 @@ class _StepRow(QFrame):
         rl.setSpacing(t.SP_SM)
         rl.addWidget(self._field_label("Then run step"))
         cb = QComboBox()
-        cb.addItem("(predicate only — return True)", None)
+        cb.addItem("(predicate only, return True)", None)
         for s in self.app._ai_user_steps:
             if s.step_id == self.step.step_id:
                 continue
@@ -1191,7 +1193,7 @@ class _StepRow(QFrame):
         return wrap
 
     def _build_test_row(self) -> QWidget:
-        """A '▶ Test' button that fires this step ONCE in dry-run with
+        """A 'Test' button that fires this step ONCE in dry-run with
         a freshly captured frame, then toasts the result. Tight feedback
         loop for tuning detection thresholds without starting the bot."""
         wrap = QWidget()
@@ -1199,7 +1201,8 @@ class _StepRow(QFrame):
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(t.SP_SM)
         h.addStretch(1)
-        btn = QPushButton("▶  Test step")
+        btn = QPushButton("Test step")
+        btn.setIcon(icons.icon("play"))
         btn.setMinimumHeight(t.BUTTON_H)
         btn.setCursor(Qt.PointingHandCursor)
         btn.setProperty("variant", "accent")
@@ -1430,7 +1433,7 @@ class _StepRow(QFrame):
 
     # ── zone_click handlers ─────────────────────────────────────
     def _on_zone_shape_changed(self, value: str) -> None:
-        # Changing the shape clears the existing zone — geometries
+        # Changing the shape clears the existing zone, geometries
         # don't translate (a rect's coords don't make sense as a
         # circle's centre+radius).
         if value not in ("rect", "circle", "polygon"):
@@ -1481,6 +1484,12 @@ class _StepRow(QFrame):
 # ─────────────────────────────────────────────────────────────────
 # Item library panel (collapsible, lives inside AIAuthoringSection)
 # ─────────────────────────────────────────────────────────────────
+
+
+class _WikiFetchBridge(QObject):
+    """Worker-thread to GUI-thread hop for wiki fetch results:
+    ``(item_name, path_or_None, error_text)``."""
+    done = Signal(str, object, str)
 
 
 class _ItemLibraryPanel(QFrame):
@@ -1535,16 +1544,22 @@ class _ItemLibraryPanel(QFrame):
         ar.setSpacing(t.SP_SM)
         self._name_edit = QLineEdit()
         self._name_edit.setPlaceholderText(
-            "Item name (e.g. Raw trout, Yew logs, Coins) — uses the wiki"
+            "Item name (e.g. Raw trout, Yew logs, Coins), uses the wiki"
         )
         self._name_edit.returnPressed.connect(self._on_add_clicked)
         ar.addWidget(self._name_edit, 1)
-        add_btn = QPushButton("+ Add from wiki")
-        add_btn.setMinimumHeight(t.BUTTON_H)
-        add_btn.setCursor(Qt.PointingHandCursor)
-        add_btn.clicked.connect(self._on_add_clicked)
-        ar.addWidget(add_btn)
+        self._add_btn = QPushButton("+ Add from wiki")
+        self._add_btn.setMinimumHeight(t.BUTTON_H)
+        self._add_btn.setCursor(Qt.PointingHandCursor)
+        self._add_btn.clicked.connect(self._on_add_clicked)
+        ar.addWidget(self._add_btn)
         outer.addWidget(add_row)
+        # Fetch results arrive from a worker thread; the signal hop lands
+        # them back on the GUI thread before any widget is touched.
+        self._fetch_bridge = _WikiFetchBridge(self)
+        self._fetch_bridge.done.connect(self._on_fetch_done)
+        self._fetch_in_flight = False
+        self.refresh_wiki_gate()
 
         # List.
         self._list_host = QWidget()
@@ -1617,40 +1632,81 @@ class _ItemLibraryPanel(QFrame):
         h.addWidget(rm)
         return row
 
+    # ── Wiki gate ────────────────────────────────────────────────
+    def _wiki_enabled(self) -> bool:
+        return bool(self.app.cfg.get("ai_wiki_fetch_enabled", False))
+
+    def refresh_wiki_gate(self) -> None:
+        """Enable the add button only when Settings allows outbound wiki
+        requests. Re-run on show so a toggle flipped on the Settings page
+        is reflected the next time this panel is visible."""
+        on = self._wiki_enabled()
+        self._add_btn.setEnabled(on and not self._fetch_in_flight)
+        self._add_btn.setToolTip(
+            "Download this item's inventory icon from runescape.wiki."
+            if on else
+            "Wiki fetch is off. Turn on “Fetch item icons from "
+            "runescape.wiki” under Settings, Network to enable this."
+        )
+
+    def showEvent(self, event):  # noqa: N802 (Qt name)
+        super().showEvent(event)
+        try:
+            self.refresh_wiki_gate()
+        except Exception:
+            pass
+
     # ── Actions ──────────────────────────────────────────────────
     def _on_add_clicked(self) -> None:
         name = self._name_edit.text().strip()
         if not name:
             return
-        self._name_edit.setEnabled(False)
-        self._status.setText(f"Fetching {name}…")
-        try:
-            ok = self._fetch_and_register(name)
-        finally:
-            self._name_edit.setEnabled(True)
-        if ok:
-            self._name_edit.clear()
-
-    def _fetch_and_register(self, name: str) -> bool:
-        """Fetch the item icon, add to the bot's library config."""
-        try:
-            from ai.wiki import default_client
-            from pathlib import Path
-            cache_root = Path("debug/wiki_cache")
-            client = default_client(cache_root)
-            path = client.fetch_item_image(name)
-        except Exception as e:
+        if not self._wiki_enabled():
             self.app.toasts.post(
-                f"⚠ Wiki fetch error: {type(e).__name__}: {e}",
-                kind="error",
-            )
-            return False
-        if path is None:
-            self.app.toasts.post(
-                f"⚠ Couldn't find an inventory icon for {name!r} on the wiki.",
+                "Wiki fetch is off. Enable it under Settings, Network.",
                 kind="warn",
             )
-            return False
+            return
+        if self._fetch_in_flight:
+            return
+        self._fetch_in_flight = True
+        self._name_edit.setEnabled(False)
+        self._add_btn.setEnabled(False)
+        self._status.setText(f"Fetching {name}…")
+        # Network on a worker thread so a slow wiki doesn't freeze the GUI.
+        import threading
+        bridge = self._fetch_bridge
+
+        def _work() -> None:
+            try:
+                from ai.wiki import default_client
+                client = default_client(wiki_cache_root())
+                path = client.fetch_item_image(name)
+                bridge.done.emit(name, path, "")
+            except Exception as e:
+                bridge.done.emit(name, None, f"{type(e).__name__}: {e}")
+
+        threading.Thread(target=_work, name="wiki-fetch", daemon=True).start()
+
+    def _on_fetch_done(self, name: str, path, error: str) -> None:
+        self._fetch_in_flight = False
+        self._name_edit.setEnabled(True)
+        self.refresh_wiki_gate()
+        self._status.setText("")
+        if error:
+            self.app.toasts.post(f"Wiki fetch error: {error}", kind="error")
+            return
+        if path is None:
+            self.app.toasts.post(
+                f"Couldn't find an inventory icon for {name!r} on the wiki.",
+                kind="warn",
+            )
+            return
+        if self._register(name, path):
+            self._name_edit.clear()
+
+    def _register(self, name: str, path) -> bool:
+        """Add a fetched icon to the bot's library config."""
         names = list(getattr(self.app, "_ai_item_names", []))
         if name not in names:
             names.append(name)
@@ -1659,7 +1715,7 @@ class _ItemLibraryPanel(QFrame):
         from ui.config_io import save_config
         save_config(self.app.cfg)
         self.app.toasts.post(
-            f"✓ Added {name!r} → {path.name}", kind="success",
+            f"Added {name!r} → {path.name}", kind="success",
         )
         self.refresh()
         # The combobox in any open if_item_count step body needs re-render.
@@ -1676,6 +1732,5 @@ class _ItemLibraryPanel(QFrame):
         self.parent_section.render_all()
 
     def _cached_path_for(self, name: str):
-        from pathlib import Path
         from ai.wiki.client import _slugify
-        return Path("debug/wiki_cache/items") / f"{_slugify(name)}.png"
+        return wiki_cache_root() / "items" / f"{_slugify(name)}.png"

@@ -1,4 +1,4 @@
-"""``SettingsRow`` — single row inside a :class:`SettingsGroup`.
+"""``SettingsRow``, single row inside a :class:`SettingsGroup`.
 
 Layout::
 
@@ -35,7 +35,7 @@ class SettingsRow(QFrame):
         mono_desc: bool = False,
     ):
         """``mono_desc=True`` swaps the desc styling from the standard
-        quiet-tertiary helper text to mono primary — used by Monitor's
+        quiet-tertiary helper text to mono primary, used by Monitor's
         Phone URL row where the desc IS the value the user copies."""
         super().__init__(parent)
         self.setProperty("role", "settings-row")
@@ -81,12 +81,17 @@ class SettingsRow(QFrame):
     # -- Control API -------------------------------------------------------
 
     def set_control(self, widget: QWidget) -> None:
-        """Replace the right-side control(s) with ``widget``."""
+        """Replace the right-side control(s) with ``widget``.
+
+        Replaced widgets are scheduled for deletion; an unparented QWidget
+        would otherwise live on (invisible) until the Python reference
+        vanished, which for rows rebuilt on every refresh means never."""
         while self._control_layout.count():
             item = self._control_layout.takeAt(0)
             w = item.widget()
-            if w is not None:
+            if w is not None and w is not widget:
                 w.setParent(None)
+                w.deleteLater()
         self._control_layout.addWidget(widget)
 
     def add_control(self, widget: QWidget) -> None:

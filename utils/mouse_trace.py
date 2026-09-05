@@ -1,12 +1,12 @@
 """Cursor-movement trace for diagnosing weird movement.
 
-Off by default — enable from the Settings card's Diagnostics section.
+Off by default, enable from the Settings card's Diagnostics section.
 Once on, every cursor write (``dpi_cursor.set_pos``) and every cursor
 read (``dpi_cursor.get_pos``) is logged with a monotonic timestamp,
 plus bracketing markers emitted by the humanizer / engine so each batch
 of writes is attributable to the operation that drove it.
 
-The output format is JSONL — one JSON object per line — for two reasons:
+The output format is JSONL, one JSON object per line, for two reasons:
 
 * Easy to grep / tail / open in a text editor.
 * Parseable by pandas / jq / Python without a custom decoder.
@@ -30,7 +30,7 @@ import time
 from typing import Optional, TextIO
 
 # Rotation budget. The trace is debug-only so we don't need a deep
-# archive — one rotation is plenty for "roll back and look at what just
+# archive, one rotation is plenty for "roll back and look at what just
 # happened." Kept small so a 10-hour session doesn't fill the install
 # directory: at ~150 events/sec × ~150 bytes/event = ~80 MB/hour, so
 # the 10 MB cap rolls every ~7 minutes when the trace is on. The size
@@ -97,7 +97,7 @@ def _rotate_locked() -> None:
     try:
         os.rename(path, backup)
     except OSError:
-        # Couldn't rotate — last-ditch: truncate so the file doesn't
+        # Couldn't rotate, last-ditch: truncate so the file doesn't
         # keep growing past the cap forever.
         try:
             with open(path, "w", encoding="utf-8") as g:
@@ -146,7 +146,7 @@ def event_count() -> int:
 def event(kind: str, **fields) -> None:
     """Append one record to the trace if enabled.
 
-    The ``is_enabled()`` early-out is checked twice — once outside the
+    The ``is_enabled()`` early-out is checked twice, once outside the
     lock for the common (disabled) fast path, once inside the lock for
     correctness in case ``disable()`` raced with us. Rotates the file
     when it crosses ``_MAX_BYTES`` so a 10-hour session can't fill the

@@ -1,20 +1,21 @@
-# PhantomHID — USB HID keystroke bridge
+# PhantomHID: USB HID keystroke bridge
 
 A 100-line Arduino sketch that turns an ATmega32u4 dev board into a
 real USB keyboard. PhantomClick sends commands over the serial port;
-the board emits actual USB HID reports — indistinguishable from a
+the board emits actual USB HID reports, indistinguishable from a
 real keyboard at every layer of Windows / Raw Input / game-engine
 input handling, because they ARE real USB HID reports from a real
 USB device.
 
 This is the only known path to drive RuneScape NXT keystrokes from
-PhantomClick (NXT filters SendInput, Interception, *and* PostMessage
-WM_KEYDOWN — see `project_nxt_keyboard_filter.md` in memory). It also
-works for any other game with similar BotWatch-style filtering.
+PhantomClick. NXT drops keyboard events that carry the injected flag
+(SendInput), events from the Interception driver, and PostMessage
+WM_KEYDOWN; a real USB HID device is the one source it accepts. The
+same approach works for any other game with similar filtering.
 
 ## What you need
 
-- **Hardware:** any ATmega32u4 board — Pro Micro, Leonardo, Micro,
+- **Hardware:** any ATmega32u4 board, Pro Micro, Leonardo, Micro,
   Beetle. ~$5 for a clone Pro Micro.
 - **Cable:** USB cable that fits the board (most Pro Micros are
   Micro-USB, Beetle is full-USB).
@@ -39,12 +40,12 @@ power LED will stay on; some boards blink the TX LED briefly.
 Open a serial monitor (Tools → Serial Monitor) at 115200 baud,
 line-ending = "Newline". Type `P` and press Enter. The board should
 reply `OK PHANTOMHID v1`. Close the serial monitor before using
-PhantomClick — only one process can hold the port at a time.
+PhantomClick, only one process can hold the port at a time.
 
 ## Hook into PhantomClick
 
 1. Install pyserial: `pip install pyserial`
-2. Open PhantomClick → Settings → Behavior → Key input method.
+2. Open PhantomClick → Settings → Key input method.
 3. Pick **Serial HID**.
 4. In the COM port dropdown, pick the same port the IDE used.
 5. Save (PhantomClick auto-saves on change).
@@ -55,7 +56,7 @@ Arduino.
 ## Test before relying on it
 
 Open Notepad, focus it, run a one-step recorder with a `KIND_KEY`
-step bound to space. Spaces should appear. Then test in NXT — your
+step bound to space. Spaces should appear. Then test in NXT, your
 spacebar quick-action should now fire on every cycle.
 
 If NXT still rejects keystrokes after switching to Serial HID, the
@@ -88,13 +89,13 @@ keyboard codes internally.
   seen ship without bugs.
 - The Arduino `Keyboard` library can hold up to 6 keys + modifiers
   simultaneously (one HID report's worth). Going past 6 keys
-  silently drops the oldest — fine for any normal macro.
+  silently drops the oldest, fine for any normal macro.
 - USB HID reports drop on cable disconnect. PhantomClick will log
   "serial_hid send failed" if you unplug the board mid-session.
 
 ## Why not just use Logitech G HUB / Corsair iCUE macros?
 
 Those firmware macros only fire when the *physical* key on the
-device is pressed — there's no software API to trigger them
+device is pressed, there's no software API to trigger them
 remotely. The Arduino is the only setup where the host can decide
 when a real HID keystroke fires.

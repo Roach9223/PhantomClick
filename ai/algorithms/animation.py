@@ -1,7 +1,7 @@
-"""Animation detector — finds regions whose pixels are flickering
+"""Animation detector, finds regions whose pixels are flickering
 over a sliding window of recent frames.
 
-Many RuneScape activity targets aren't static — fishing spots have
+Many RuneScape activity targets aren't static, fishing spots have
 intermittent surface bubbles, hunter traps have movement when
 something's caught, certain ore rocks pulse when a rare deposit is
 present. Color matching alone misses them because the CTS hit hops
@@ -13,7 +13,7 @@ Per tick:
   1. Push the new frame into the buffer (drop the oldest if full).
   2. For every consecutive pair, compute :func:`rs3vision.feature.diff`
      to get the changed-tile rectangles between them.
-  3. Aggregate changed tiles across the window — tiles that flickered
+  3. Aggregate changed tiles across the window, tiles that flickered
      in any pair are candidates.
   4. Cluster nearby candidates and return their centroids as click
      targets.
@@ -21,7 +21,7 @@ Per tick:
 Stationary scene = no candidates. Constantly-changing scene (camera
 panning) = too many candidates everywhere → nothing useful, the bot
 should rely on a static target instead. The sweet spot is "small,
-localized, periodic motion against a mostly-still backdrop" — exactly
+localized, periodic motion against a mostly-still backdrop", exactly
 what fishing-spot bubbles look like.
 
 The state is per-detector instance (one per `find_animation_click`
@@ -153,7 +153,7 @@ class AnimationDetector:
             ))
 
         # Cluster nearby candidates into one (so a single fishing spot
-        # doesn't return ten neighbouring tiles). Greedy O(N²) merge —
+        # doesn't return ten neighbouring tiles). Greedy O(N²) merge , 
         # candidates are typically <30 so this is cheap.
         merged = _merge_close(candidates, max_dist=tile * 4)
         merged.sort(key=lambda c: -c.flicker_count)

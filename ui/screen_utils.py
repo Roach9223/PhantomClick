@@ -2,7 +2,7 @@
 
 Both the Monitor card and the Settings page render the user's attached
 screens as a friendly label list. This module is the single source of
-truth for that label — extracted from prior duplicates that had drifted
+truth for that label, extracted from prior duplicates that had drifted
 apart (the Monitor copy never normalized 3-letter EDID codes like
 ``"AUS"`` to brand names, so identical hardware rendered differently
 between tabs).
@@ -69,3 +69,82 @@ def screen_label(screen, *, index: int | None = None,
     g = screen.geometry()
     tag = " · primary" if is_primary else ""
     return f"{head} · {g.width()}×{g.height()}{tag}"
+
+
+# ── Virtual-screen geometry ─────────────────────────────────────────────────
+#
+# Multi-monitor helpers used by the preflight zone check, the tracker
+# preview loop, and the zone thumbnails. Everything below works in Qt's
+# DIP space unless the name says physical; physical rects come from
+# ``utils.dpi_cursor`` so the whole app shares one conversion path.
+
+
+def screens() -> list:
+    from PySide6.QtGui import QGuiApplication
+    app = QGuiApplication.instance()
+    if app is None:
+        return []
+    return list(app.screens() or [])
+
+
+def virtual_screen_dip_rect() -> tuple[int, int, int, int]:
+    """``(x, y, w, h)`` union of every attached screen, DIP space.
+
+    Origins can be negative when a secondary monitor sits left of or above
+    the primary. Falls back to a 1920x1080 primary when Qt has no screens
+    (headless / offscreen tests).
+    """
+    scr = screens()
+    if not scr:
+        return (0, 0, 1920, 1080)
+    left = min(s.geometry().left() for s in scr)
+    top = min(s.geometry().top() for s in scr)
+    right = max(s.geometry().left() + s.geometry().width() for s in scr)
+    bottom = max(s.geometry().top() + s.geometry().height() for s in scr)
+    return (left, top, right - left, bottom - top)
+
+
+def screen_at_dip(x: float, y: float):
+    """QScreen containing DIP point ``(x, y)``, else the primary screen,
+    else None (no screens attached)."""
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QGuiApplication
+    app = QGuiApplication.instance()
+    if app is None:
+        return None
+    s = None
+    try:
+        s = app.screenAt(QPoint(int(x), int(y)))
+    except Exception:
+        s = None
+    return s or app.primaryScreen()
+
+
+def screen_physical_rect(screen) -> tuple[int, int, int, int]:
+    """``(x, y, w, h)`` of one QScreen in physical pixels."""
+    from utils.dpi_cursor import dip_rect_to_physical
+    g = screen.geometry()
+    return dip_rect_to_physical(g.left(), g.top(), g.width(), g.height())
+
+
+def zone_screen_info(zone) -> tuple[str, tuple[int, int], tuple[int, int]]:
+    """``(label, (w, h), (origin_x, origin_y))`` for the screen that holds
+    ``zone``'s centroid, so thumbnails draw the zone relative to its own
+    monitor instead of assuming everything lives on the primary at (0, 0).
+    Without a zone the primary screen is described."""
+    from PySide6.QtGui import QGuiApplication
+    app = QGuiApplication.instance()
+    primary = app.primaryScreen() if app is not None else None
+    screen = primary
+    if zone is not None:
+        try:
+            cx, cy = zone.centroid()
+            screen = screen_at_dip(cx, cy) or primary
+        except Exception:
+            screen = primary
+    if screen is None:
+        return ("", (0, 0), (0, 0))
+    g = screen.geometry()
+    is_primary = screen is primary
+    label = f"{g.width()} × {g.height()}" + (" · primary" if is_primary else "")
+    return (label, (int(g.width()), int(g.height())), (int(g.left()), int(g.top())))

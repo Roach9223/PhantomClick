@@ -64,7 +64,7 @@ def save_png(bmp: np.ndarray, path: Path | str) -> None:
 
 
 def _pick_anchor(bmp: np.ndarray) -> Tuple[int, int, Tuple[int, int, int]]:
-    """Pick an anchor pixel from `bmp` — the one with the least common
+    """Pick an anchor pixel from `bmp`, the one with the least common
     colour. Uses a quick histogram over quantised colour buckets. Returns
     (dx, dy, bgr) where (dx, dy) is the anchor's offset in the bitmap."""
     bh, bw = bmp.shape[:2]
@@ -117,7 +117,7 @@ def find(
     if bh > fh or bw > fw:
         return []
 
-    # 1) anchor prefilter via rs3vision color.find (Rust — fast).
+    # 1) anchor prefilter via rs3vision color.find (Rust, fast).
     ax, ay, anchor_bgr = _pick_anchor(bitmap)
     anchor_hits = rv.color.find(
         frame, tuple(anchor_bgr), cts=rv.CTS.CTS1, tol=float(tolerance), roi=roi

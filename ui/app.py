@@ -1,4 +1,4 @@
-"""PhantomClick Qt main window — landscape NavRail shell.
+"""PhantomClick Qt main window, landscape NavRail shell.
 
 QMainWindow with three pieces stacked: a 52-px ``TopBar`` (brand + status
 pill + Start/Stop + icon buttons), a left ``NavRail`` that switches the
@@ -13,6 +13,7 @@ and reach in. That's the same composition pattern from the Tk refactor.
 from __future__ import annotations
 
 import shutil
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -20,31 +21,28 @@ from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QHBoxLayout, QMainWindow, QStackedWidget, QVBoxLayout,
-    QWidget,
+    QWidget, QProgressDialog,
 )
 
 from modules.clicker import Clicker, ClickerState
 from modules.hotkey_manager import HotkeyManager
 from modules.key_timer import deserialize_timers
 from modules.recorder import (
-    KIND_CLICK, KIND_COLOR, KIND_PAUSE, KIND_TRACK, deserialize_steps,
-    serialize_steps,
+    KIND_CLICK, KIND_COLOR, KIND_KEY, KIND_PAUSE, KIND_TRACK,
+    deserialize_steps, serialize_steps,
 )
 from modules.stats import Stats
 from modules.tracker import TemplateTracker, TrackerConfig
 from modules.zone_selector import Zone
 
-from ui.config_io import DEFAULTS, _config_dir, load_config, save_config
+from ui.config_io import DEFAULTS, _config_dir, load_config, save_config, wiki_cache_root
 from utils import dpi_cursor
 from utils.logger import get_logger
 
-from . import engine_bridge, theme as t
-from .cards.behavior import BehaviorCard
-from .cards.hotkeys import HotkeysCard
-from .cards.hover_zones import HoverZonesCard
+from . import engine_bridge, screen_utils, theme as t
 from .cards.record_mode import RecordModeTab
-from .cards.stats import StatsCard
 from .commands import register_all as register_commands
+from .debounce import Debouncer
 from .pages.ai_page import build_ai_page
 from .pages.behavior_page import build_behavior_page
 from .pages.click_page import ClickPage
@@ -59,11 +57,15 @@ from .pages.timers_page import build_timers_page
 from .monitor_server import MonitorServer
 from .qss import build_stylesheet
 from .overlay_manager import OverlayManager
-from .topbar import TopBar
 from .tracker_preview import TrackerPreview
 from .widget_lock import WidgetLocker
-from .widgets.nav_rail import NavRail
 from .widgets.toast import ToastHost
+
+APP_VERSION = "2.1"
+
+# Nav ids that are engine modes rather than config pages. Shared by both
+# shells so a palette command or a card's "go to X" lands the same way.
+_MODE_PAGE_IDS = ("click", "record", "ai")
 
 
 class App(QMainWindow):
@@ -75,16 +77,23 @@ class App(QMainWindow):
 
     # Engine-thread → Qt-main marshal for the click-marker flash. The
     # engine fires ``on_click_fired`` from its own daemon thread, so this
-    # follows the same Signal pattern as ``_captureHotkeyFired`` — naked
+    # follows the same Signal pattern as ``_captureHotkeyFired``, naked
     # ``QTimer.singleShot`` from a non-event-loop thread is silently
     # dropped in Qt6.
     _engineClickFired = Signal(int, int, int, int, str)
     # tx, ty, ax, ay, kind
 
+    # Engine-thread → Qt-main marshal for ``clicker.on_event`` (kind, text),
+    # the feed behind the deck's EVENT LOG. Same reasoning as above.
+    _engineEventFired = Signal(str, str)
+
     def __init__(self):
         super().__init__()
         self.log = get_logger()
         self.cfg = load_config()
+        self._ai_preparing = False
+        self._asset_job = None
+        self._closing = False
 
         # Snapshot DIP / physical screen geometry so the engine thread can
         # convert between Qt's DIP coords (used for zones, overlays) and
@@ -92,9 +101,12 @@ class App(QMainWindow):
         # Without this, on a >100% DPI monitor pynput moves at 1/DPR of
         # the requested DIP coord and clicks miss the visible zone.
         dpi_cursor.refresh_screens()
+        from ui.monitor_identity import remember_legacy
+        remember_legacy(self.cfg)
 
         def _on_screens_changed(_s=None):
             dpi_cursor.refresh_screens()
+            self._monitor_size_init()
             # Settings card may not exist yet during early init.
             card = getattr(self, "settings_card", None)
             if card is not None:
@@ -102,6 +114,9 @@ class App(QMainWindow):
                     card.refresh_monitors()
                 except Exception:
                     pass
+            ai_card = getattr(self, "ai_card", None)
+            if ai_card is not None:
+                ai_card.config._populate_monitors()
             # Also re-push monitor bounds to the engine so a freshly
             # plugged-in display becomes the new auto-detect target.
             self._push_config_to_clicker()
@@ -110,11 +125,22 @@ class App(QMainWindow):
         QApplication.instance().screenRemoved.connect(_on_screens_changed)
 
         self.setWindowTitle("PhantomClick")
-        self.setMinimumSize(t.WINDOW_W_MIN, t.WINDOW_H_MIN)
-        self.resize(
-            int(self.cfg.get("window_w", t.WINDOW_W_DEFAULT)),
-            int(self.cfg.get("window_h", t.WINDOW_H_DEFAULT)),
-        )
+        # "deck" is the command-deck shell (default); "classic" rebuilds the
+        # TopBar + NavRail layout as a fallback.
+        shell = str(self.cfg.get("ui_shell", "deck") or "deck").strip().lower()
+        self.ui_shell = "classic" if shell == "classic" else "deck"
+        if self.ui_shell == "deck":
+            from . import deck as _deck
+            self.setMinimumSize(_deck.WINDOW_W_MIN, _deck.WINDOW_H_MIN)
+            # Saved rect only if it still lands on a screen, else 80% of
+            # the screen under the cursor; never below the minimum.
+            self.setGeometry(_deck.initial_geometry(self.cfg))
+        else:
+            self.setMinimumSize(t.WINDOW_W_MIN, t.WINDOW_H_MIN)
+            self.resize(
+                int(self.cfg.get("window_w", t.WINDOW_W_DEFAULT)),
+                int(self.cfg.get("window_h", t.WINDOW_H_DEFAULT)),
+            )
         QApplication.instance().setStyleSheet(build_stylesheet())
 
         # -- Core state ----------------------------------------------------
@@ -124,6 +150,9 @@ class App(QMainWindow):
             on_state_change=lambda s: engine_bridge.on_clicker_state(self, s),
         )
         self.clicker.on_click_fired = self._on_engine_click_fired
+        # Optional on the engine side; assigning it is harmless before
+        # the engine grows the hook.
+        self.clicker.on_event = self._on_engine_event
         self.clicker.on_track_error = lambda sid, reason: (
             engine_bridge.on_track_error(self, sid, reason)
         )
@@ -133,20 +162,37 @@ class App(QMainWindow):
         self.clicker.on_engine_halt = lambda msg, level: (
             engine_bridge.on_engine_halt(self, msg, level)
         )
-        # AI mode — RS3_AI bot framework with PhantomClick as actuator.
+        # AI mode, RS3_AI bot framework with PhantomClick as actuator.
         # Construct lazily-imported so users without the ai/ tree on disk
         # (e.g. an auto-clicker-only fork) still launch.
         self.bot_runner = None
         self.ai_actuator = None
+        self.ai_available = False
         try:
             from ai.bot.runner import BotRunner as _BotRunner
             from ai.input.clicker_actuator import ClickerActuatorBackend
             self.bot_runner = _BotRunner()
             self.ai_actuator = ClickerActuatorBackend(self)
+            self.ai_available = True
         except Exception as e:
-            self.log.warning("AI mode disabled — could not import: %s", e)
+            self.log.warning("AI mode disabled, could not import: %s", e)
+        # The bot runner feeds the same topbar state machine as the
+        # clicker: START disables, STOP enables, pill shows running and
+        # the WidgetLocker engages for the whole run. The runner has no
+        # "started" signal; _on_start_ai flips it on after play() and
+        # these hooks flip it off (or confirm it on) from the worker.
+        if self.bot_runner is not None:
+            self.bot_runner.finished.connect(
+                lambda _reason: engine_bridge.on_bot_running_changed(self, False)
+            )
+            self.bot_runner.status.connect(self._on_bot_status)
         self.overlay_manager = OverlayManager(self)
-        # AI live overlay (D.2) — translucent click-through HUD wired
+        # One GUI-thread resolver for window-locked zones. Overlays, the
+        # deck viewport, zone map and status panels all read through it so
+        # a tick costs one Win32 round trip per zone, not one per panel.
+        from modules.zone_lock import LockResolver
+        self.zone_locks = LockResolver(max_hz=10.0)
+        # AI live overlay (D.2), translucent click-through HUD wired
         # to bot_runner.tick_started + block_executed. Lazy-imported so
         # AI failures don't break Click/Record mode startup. Lifetime
         # is App-scoped; visibility tracks bot run state + the topbar
@@ -156,9 +202,22 @@ class App(QMainWindow):
             from ui.overlays.bot_overlay import BotOverlay
             self.bot_overlay = BotOverlay()
         except Exception as e:
-            self.log.warning("BotOverlay disabled — could not import: %s", e)
-        self._bot_overlay_timer = None  # set up lazily once Qt is alive
+            self.log.warning("BotOverlay disabled, could not import: %s", e)
         self.locker = WidgetLocker()
+        # Recent click positions for the deck's viewport / zone map /
+        # cadence strip. Fed from the engine click callback on the GUI
+        # thread (see _flash_click_marker_main); harmless on the classic shell.
+        from .deck import ClickRing, EventLog
+        self.click_ring = ClickRing()
+        # Engine events + clicks for the deck's EVENT LOG (200 entries).
+        self.event_log = EventLog(200)
+        # SESSION chip id, regenerated on every engine START.
+        self.session_id = _session_id()
+        self._session_started_at = 0.0
+        # Slider drags persist through these instead of writing config.json
+        # on every valueChanged tick. Flushed in closeEvent.
+        self._cfg_debounce = Debouncer(parent=self)
+        self._steps_debounce = Debouncer(parent=self)
         self._monitor_size_init()
         self.hotkeys = HotkeyManager(
             start_name=self.cfg.get("hotkey_start", "f6"),
@@ -177,6 +236,9 @@ class App(QMainWindow):
         self._engineClickFired.connect(
             self._flash_click_marker_main, Qt.QueuedConnection,
         )
+        self._engineEventFired.connect(
+            self._on_engine_event_main, Qt.QueuedConnection,
+        )
 
         # User data
         self._zone: Optional[Zone] = Zone.from_json(self.cfg.get("zone"))
@@ -187,12 +249,19 @@ class App(QMainWindow):
         ]
         self._hover_shape: str = self.cfg.get("hover_zone_shape", "rect")
         self._steps = deserialize_steps(self.cfg.get("recorder_steps", []))
-        # In-GUI AI bot authoring — each AIBotStep maps to one synthesized
-        # @bot.rule at Start time via ai.bot.compile_user_bot.
-        from ai.bot.authoring import deserialize_steps as _deserialize_ai_steps
-        self._ai_user_steps = _deserialize_ai_steps(
-            self.cfg.get("ai_user_bot_steps", [])
-        )
+        # In-GUI AI bot authoring: each AIBotStep maps to one synthesized
+        # @bot.rule at Start time via ai.bot.compile_user_bot. Optional for
+        # the same reason the runner import above is: a fork without ai/
+        # still has to launch.
+        self._ai_user_steps: list = []
+        if self.ai_available:
+            try:
+                from ai.bot.authoring import deserialize_steps as _deserialize_ai_steps
+                self._ai_user_steps = _deserialize_ai_steps(
+                    self.cfg.get("ai_user_bot_steps", [])
+                )
+            except Exception as e:
+                self.log.warning("AI authoring disabled, could not import: %s", e)
         # Names of wiki-sourced items the user has added to this bot's
         # library. Each name has a cached icon under debug/wiki_cache/items/.
         # The library is rebuilt at Start time (App._build_ai_item_library)
@@ -210,6 +279,12 @@ class App(QMainWindow):
         self._step_trash_listeners: list = []
         self._key_timers = deserialize_timers(self.cfg.get("key_timers", []))
         self._active_mode: str = self.cfg.get("active_mode", "clicker")
+        # _state_str is what the UI shows: the clicker's state OR'd with
+        # the bot runner (engine_bridge.effective_state). The two inputs
+        # are latched separately so one engine stopping can't hide the
+        # other still running.
+        self._clicker_state_str: str = ClickerState.IDLE
+        self._bot_running: bool = False
         self._state_str: str = ClickerState.IDLE
         self._tracker: TemplateTracker = TemplateTracker(TrackerConfig())
         self.tracker_preview = TrackerPreview(self)
@@ -239,7 +314,7 @@ class App(QMainWindow):
         if self._zone is not None and self.cfg.get("show_zone_overlay", True) \
                 and self._active_mode == "clicker":
             self.overlay_manager.show_main(
-                self._zone, self.cfg["zone_color"], self.cfg["zone_opacity"],
+                self._zone, t.ZONE_DEFAULT_COLOR, self.cfg["zone_opacity"],
             )
         self.overlay_manager.refresh_hover_overlays()
         self.overlay_manager.refresh_step_overlays()
@@ -272,17 +347,21 @@ class App(QMainWindow):
             qa.setStyleSheet(qa.styleSheet() + extra)
 
     def _monitor_size_init(self) -> None:
-        try:
-            import ctypes
-            u = ctypes.windll.user32
-            self.monitor_w, self.monitor_h = (u.GetSystemMetrics(0), u.GetSystemMetrics(1))
-        except Exception:
-            self.monitor_w, self.monitor_h = (1920, 1080)
+        """Snapshot the virtual desktop (union of every screen, DIP space).
+
+        ``virtual_rect`` is ``(x, y, w, h)`` and the origin can be
+        negative on multi-monitor layouts. ``monitor_w`` / ``monitor_h``
+        stay as the virtual size for callers that only need a magnitude
+        (Behavior's drift radius cap). The old SM_CXSCREEN read covered
+        the primary monitor only, so a zone drawn on a secondary screen
+        failed the off-screen preflight check.
+        """
+        self.virtual_rect = screen_utils.virtual_screen_dip_rect()
+        self.monitor_w, self.monitor_h = self.virtual_rect[2], self.virtual_rect[3]
 
     # -- UI construction --------------------------------------------------
 
     def _build_ui(self) -> None:
-        # -- Shell: TopBar / NavRail / QStackedWidget ---------------------
         central = QWidget(self)
         central.setObjectName("central")
         central_layout = QVBoxLayout(central)
@@ -290,114 +369,39 @@ class App(QMainWindow):
         central_layout.setSpacing(0)
         self.setCentralWidget(central)
 
-        # Topbar (status pill + Start/Stop + palette + overlay toggle).
-        # Pinned full-width at the top.
-        self.topbar = TopBar(self)
-        # Engine bridge / hotkeys / commands look for these on the App.
-        self.start_btn = self.topbar.start_btn
-        self.stop_btn = self.topbar.stop_btn
-        # The HotkeysCard rebind flow calls ``app.action_bar.refresh_hint()``
-        # to update the Start/Stop button tooltips after rebind. Topbar
-        # exposes the same method, so we alias it for back-compat.
-        self.action_bar = self.topbar
-        central_layout.addWidget(self.topbar)
-
-        # Body: rail on the left, swappable pages on the right.
-        body = QWidget(central)
-        body_layout = QHBoxLayout(body)
-        body_layout.setContentsMargins(0, 0, 0, 0)
-        body_layout.setSpacing(0)
-        central_layout.addWidget(body, 1)
-
-        nav_items = [
-            ("click",    "▣", "Click"),
-            ("record",   "▦", "Record"),
-            ("ai",       "🧠", "AI"),
-            ("hover",    "⌖", "Hover"),
-            ("behavior", "⚙", "Behavior"),
-            ("hotkeys",  "⌨", "Hotkeys"),
-            ("timers",   "⏲", "Timers"),
-            ("stats",    "📊", "Stats"),
-            ("monitor",  "📡", "Monitor"),
-            ("settings", "🖥", "Settings"),
-            ("help",     "❔", "Help"),
-        ]
-        self.nav_rail = NavRail(nav_items, body)
-        self.nav_rail.currentChanged.connect(self._on_nav_changed)
-        body_layout.addWidget(self.nav_rail)
-
-        self.stack = QStackedWidget(body)
-        body_layout.addWidget(self.stack, 1)
-
-        # -- Pages: instantiate the cards inside their host widgets. ------
-        # Click + Record use bespoke pages; the small-card pages
-        # (Hover/Behavior/Hotkeys/Stats) use TwoColPage with a context-
-        # aware InfoPanel on the right so the wide canvas isn't empty.
-        # The card builders return (page, card) so App can keep a direct
-        # reference to the card for engine_bridge / commands.
-        self.click_page = ClickPage(self)
-        self.record_mode_tab = RecordModeTab(self)
-
-        # commands.py reads app.commands during palette population;
-        # build_hotkeys_page() needs the registry to render the
-        # shortcut reference, so commands are registered before pages.
-        self.commands = register_commands(self)
-
-        ai_page, self.ai_card = build_ai_page(self)
-        hover_page, self.hover_zones_card = build_hover_page(self)
-        behavior_page, self.behavior_card = build_behavior_page(self)
-        hotkeys_page, self.hotkeys_card = build_hotkeys_page(self)
-        timers_page, self.key_timers_card = build_timers_page(self)
-        stats_page, self.stats_card = build_stats_page(self)
-        # MonitorServer must exist before the page — MonitorCard reads
-        # self.app.monitor_server.lan_url() during init for the URL display.
-        self.monitor_server = MonitorServer(self)
-        monitor_page, self.monitor_card = build_monitor_page(self)
-        settings_page, self.settings_card = build_settings_page(self)
-        help_page = HelpPage(self)
-
-        self._page_index: dict[str, int] = {}
-        for item_id, page in [
-            ("click",    self.click_page),
-            ("record",   SimplePage(self.record_mode_tab, max_card_w=None)),
-            ("ai",       ai_page),
-            ("hover",    hover_page),
-            ("behavior", behavior_page),
-            ("hotkeys",  hotkeys_page),
-            ("timers",   timers_page),
-            ("stats",    stats_page),
-            ("monitor",  monitor_page),
-            ("settings", settings_page),
-            ("help",     help_page),
-        ]:
-            self._page_index[item_id] = self.stack.addWidget(page)
-
-        # -- Tickers ------------------------------------------------------
-        # Topbar pill ticks every frame (state + countdown). Stats card too,
-        # since its values move continuously while the engine runs.
-        self._ticking_cards = [self.topbar, self.stats_card, self.ai_card]
+        if self.ui_shell == "classic":
+            self._build_classic_shell(central, central_layout)
+        else:
+            self._build_deck_shell(central, central_layout)
 
         # -- Toast host (floats over everything) --------------------------
         self.toasts = ToastHost(central)
         self.toasts.setGeometry(0, 0, 1, 1)  # repositioned on resize
 
         # If load_config() backed up a corrupt config.json, tell the user
-        # — silent fallback to defaults is a footgun for anyone who's
+        #, silent fallback to defaults is a footgun for anyone who's
         # configured a long sequence and doesn't notice it's gone.
         backup_path = self.cfg.pop("_corrupt_backup", None)
+        repaired = self.cfg.pop("_repaired_fields", [])
         if backup_path:
             from pathlib import Path as _Path
             QTimer.singleShot(150, lambda p=backup_path: self.toasts.post(
-                f"⚠ config.json was corrupt — backed up to "
-                f"{_Path(p).name}. Defaults loaded.",
+                f"⚠ config.json was corrupt, backed up to "
+                f"{_Path(p).name}. Invalid settings were reset.",
                 kind="warn",
             ))
+        if repaired:
+            QTimer.singleShot(200, lambda: self.toasts.post(
+                "Repaired settings: " + ", ".join(repaired), kind="warn"))
 
         # -- Restore last-selected nav section ---------------------------
         last = str(self.cfg.get("nav_section", "click"))
-        if last not in self._page_index:
-            last = "click"
-        self.nav_rail.set_current(last)
+        if self.ui_shell == "classic":
+            if last not in self._page_index:
+                last = "click"
+            self.nav_rail.set_current(last)
+        # The deck restores the mode from active_mode itself; a stored
+        # config-page id would only pop the drawer open on launch.
 
         # -- Command palette shortcuts ------------------------------------
         # ``self.commands`` was registered above before pages so the
@@ -417,6 +421,133 @@ class App(QMainWindow):
         # top of a visible app rather than a black screen.
         if self.cfg.get("monitor_enabled", False):
             QTimer.singleShot(200, self._auto_start_monitor)
+
+    # -- Pages shared by both shells --------------------------------------
+
+    def _build_pages(self) -> dict[str, QWidget]:
+        """Instantiate every page and card once. Returns ``{page_id: widget}``
+        for the shell to place. The card builders return (page, card) so
+        App keeps a direct card reference for engine_bridge / commands."""
+        self.click_page = ClickPage(self)
+        self.record_mode_tab = RecordModeTab(self)
+
+        # commands.py reads app.commands during palette population;
+        # build_hotkeys_page() needs the registry to render the
+        # shortcut reference, so commands are registered before pages.
+        self.commands = register_commands(self)
+
+        ai_page, self.ai_card = build_ai_page(self)
+        hover_page, self.hover_zones_card = build_hover_page(self)
+        behavior_page, self.behavior_card = build_behavior_page(self)
+        hotkeys_page, self.hotkeys_card = build_hotkeys_page(self)
+        timers_page, self.key_timers_card = build_timers_page(self)
+        stats_page, self.stats_card = build_stats_page(self)
+        # MonitorServer must exist before the page: MonitorCard reads
+        # self.app.monitor_server.lan_url() during init for the URL display.
+        self.monitor_server = MonitorServer(self)
+        monitor_page, self.monitor_card = build_monitor_page(self)
+        settings_page, self.settings_card = build_settings_page(self)
+        self.help_page = HelpPage(self)
+
+        return {
+            "click": self.click_page,
+            "record": SimplePage(self.record_mode_tab, max_card_w=None),
+            "ai": ai_page,
+            "hover": hover_page,
+            "behavior": behavior_page,
+            "hotkeys": hotkeys_page,
+            "timers": timers_page,
+            "stats": stats_page,
+            "monitor": monitor_page,
+            "settings": settings_page,
+            "help": self.help_page,
+        }
+
+    # -- Classic shell: TopBar / NavRail / QStackedWidget ------------------
+
+    def _build_classic_shell(self, central: QWidget, central_layout: QVBoxLayout) -> None:
+        # Classic-only widgets; the deck never pays for these imports.
+        from .topbar import TopBar
+        from .widgets.nav_rail import NavRail
+        # Topbar (status pill + Start/Stop + palette + overlay toggle).
+        # Pinned full-width at the top.
+        self.topbar = TopBar(self)
+        # Engine bridge / hotkeys / commands look for these on the App.
+        self.start_btn = self.topbar.start_btn
+        self.stop_btn = self.topbar.stop_btn
+        self.pill = self.topbar.pill
+        # The HotkeysCard rebind flow calls ``app.action_bar.refresh_hint()``
+        # to update the Start/Stop button tooltips after rebind. Topbar
+        # exposes the same method, so we alias it for back-compat.
+        self.action_bar = self.topbar
+        central_layout.addWidget(self.topbar)
+
+        # Body: rail on the left, swappable pages on the right.
+        body = QWidget(central)
+        body_layout = QHBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(0)
+        central_layout.addWidget(body, 1)
+
+        # (id, icon name in ui.icons, label)
+        nav_items = [
+            ("click",    "click",    "Click"),
+            ("record",   "record",   "Record"),
+            ("ai",       "ai",       "AI"),
+            ("hover",    "hover",    "Hover"),
+            ("behavior", "behavior", "Behavior"),
+            ("hotkeys",  "hotkeys",  "Hotkeys"),
+            ("timers",   "timers",   "Timers"),
+            ("stats",    "stats",    "Stats"),
+            ("monitor",  "monitor",  "Monitor"),
+            ("settings", "settings", "Settings"),
+            ("help",     "help",     "Help"),
+        ]
+        self.nav_rail = NavRail(nav_items, body)
+        self.nav_rail.currentChanged.connect(self._on_nav_changed)
+        body_layout.addWidget(self.nav_rail)
+
+        self.stack = QStackedWidget(body)
+        body_layout.addWidget(self.stack, 1)
+
+        pages = self._build_pages()
+        self._page_index: dict[str, int] = {}
+        for item_id, _icon, _label in nav_items:
+            self._page_index[item_id] = self.stack.addWidget(pages[item_id])
+
+        # Topbar pill ticks every frame (state + countdown). Stats card too,
+        # since its values move continuously while the engine runs.
+        self._ticking_cards = [self.topbar, self.stats_card, self.ai_card]
+
+    # -- Deck shell: header + three columns + settings drawer ---------------
+
+    def _build_deck_shell(self, central: QWidget, central_layout: QVBoxLayout) -> None:
+        from .deck import DeckShell
+        pages = self._build_pages()
+        mode_pages = {k: pages[k] for k in _MODE_PAGE_IDS}
+        config_pages = {k: v for k, v in pages.items() if k not in _MODE_PAGE_IDS}
+        self.deck = DeckShell(self, mode_pages, config_pages, parent=central)
+        central_layout.addWidget(self.deck, 1)
+
+        # Same attribute surface the classic shell exposes.
+        self.header = self.deck.header
+        self.start_btn = self.header.start_btn
+        self.stop_btn = self.header.stop_btn
+        self.pill = self.header.pill
+        self.action_bar = self.header
+        self.nav_rail = self.deck.nav
+        self._page_index = {k: i for i, k in enumerate(pages)}
+        # The deck's own tick fans out to header / columns / viewport.
+        self._ticking_cards = [self.deck, self.stats_card, self.ai_card]
+
+    def show_page(self, page_id: str) -> None:
+        """Route a nav id the way the active shell wants: mode ids switch
+        the engine mode, config ids open the page (drawer on the deck,
+        stack on the classic shell)."""
+        if self.ui_shell == "deck":
+            self.deck.show_page(page_id)
+        else:
+            self.nav_rail.set_current(page_id)
 
     def _auto_start_monitor(self) -> None:
         ok = self.monitor_server.start()
@@ -450,12 +581,26 @@ class App(QMainWindow):
         except Exception:
             self.log.exception(f"command failed: {cmd.id}")
 
+    def refresh_hotkey_labels(self) -> None:
+        """A global hotkey was rebound: re-derive every surface that shows
+        the binding as text (palette shortcut column, Help page)."""
+        from modules.hotkey_manager import name_to_display
+        from .commands import HOTKEY_COMMANDS
+        for cmd in self.commands:
+            key = HOTKEY_COMMANDS.get(cmd.id)
+            if key:
+                cmd.shortcut = name_to_display(str(self.cfg.get(key, "")))
+        try:
+            self.help_page.rebuild()
+        except Exception:
+            pass
+
     # -- Nav change ------------------------------------------------------
 
     def _on_nav_changed(self, nav_id: str) -> None:
         idx = self._page_index.get(nav_id)
         if idx is not None:
-            # Direct switch — earlier prototypes used a QGraphicsOpacityEffect
+            # Direct switch, earlier prototypes used a QGraphicsOpacityEffect
             # cross-fade but it's lifecycle-fragile during app shutdown
             # (animation outlives its target widget). Plain swap is fine.
             self.stack.setCurrentIndex(idx)
@@ -472,6 +617,37 @@ class App(QMainWindow):
         self.cfg["nav_section"] = nav_id
         save_config(self.cfg)
 
+    def set_overlay_visible(self, on: bool) -> None:
+        """Show or hide every on-screen zone outline. One entry point for
+        the header eye button, the Click editor's ON SCREEN switch, the
+        classic topbar and the palette command, so each surface mirrors
+        the others after a toggle."""
+        on = bool(on)
+        if bool(self.cfg.get("show_zone_overlay", True)) != on:
+            self.cfg["show_zone_overlay"] = on
+            save_config(self.cfg)
+        self.overlay_manager.apply_visibility()
+        # The AI BotOverlay rides the same toggle. Its tick re-shows it
+        # when enabled; hide it now so the change is immediate.
+        ov = getattr(self, "bot_overlay", None)
+        if ov is not None and not on:
+            try:
+                ov.clear()
+                ov.hide()
+            except Exception:
+                pass
+        for owner, name in ((getattr(self, "action_bar", None), "_sync_overlay_icon"),
+                            (getattr(self, "click_page", None), "sync_overlay_switch")):
+            fn = getattr(owner, name, None)
+            if callable(fn):
+                try:
+                    fn()
+                except Exception:
+                    pass
+
+    def toggle_overlay_visible(self) -> None:
+        self.set_overlay_visible(not bool(self.cfg.get("show_zone_overlay", True)))
+
     def _set_active_mode(self, mode: str) -> None:
         if mode == self._active_mode:
             return
@@ -479,14 +655,22 @@ class App(QMainWindow):
         self.cfg["active_mode"] = mode
         save_config(self.cfg)
         engine_bridge.push_config_to_clicker(self)
-        # Swap which set of zone overlays paints on screen — click-mode
-        # main overlay vs. per-step overlays — so the user sees only the
+        # Swap which set of zone overlays paints on screen, click-mode
+        # main overlay vs. per-step overlays, so the user sees only the
         # active tab's drawn lines.
         self.overlay_manager.apply_visibility()
 
     # -- Periodic tick ---------------------------------------------------
 
     def _tick(self) -> None:
+        error = self.cfg.get("_save_error", "")
+        if error != getattr(self, "_shown_save_error", ""):
+            self._shown_save_error = error
+            self.statusBar().showMessage(error)
+            self.statusBar().setVisible(bool(error))
+            if error:
+                self.toasts.post(error, kind="error")
+        self.click_page.tick()
         for card in getattr(self, "_ticking_cards", []):
             try:
                 card.tick()
@@ -497,11 +681,21 @@ class App(QMainWindow):
             self.tracker_preview.tick()
         except Exception:
             pass
+        # Window-locked zone outlines follow their window while idle.
+        try:
+            self.overlay_manager.tick()
+        except Exception:
+            pass
 
     # -- Slots invoked from non-Qt threads -------------------------------
 
     @Slot()
     def _on_start(self) -> None:
+        if self._ai_preparing:
+            return
+        if engine_bridge.bot_is_running(self):
+            self.toasts.post("A bot is already running. Stop it first.", kind="warn")
+            return
         if self._active_mode == "ai":
             self._on_start_ai()
             return
@@ -511,11 +705,85 @@ class App(QMainWindow):
             for msg in failures:
                 self.toasts.post(msg, kind="error")
             return
+        self._begin_session()
         self.clicker.start()
+
+    def _test_click_once(self) -> None:
+        """Use the normal stoppable engine lifecycle for a single-click rehearsal."""
+        if self._active_mode != "clicker" or self._state_str != ClickerState.IDLE:
+            return
+        failures = self._preflight_failures()
+        if failures:
+            self.toasts.post(failures[0], kind="error")
+            return
+        self._push_config_to_clicker()
+        self.clicker.stop_after_clicks_enabled = True
+        self.clicker.stop_after_clicks = 1
+        self.clicker.click_mode = "single"
+        self.clicker.key_timers = []
+        self._begin_session()
+        self.clicker.start()
+
+    def _begin_session(self) -> None:
+        """New SESSION id and start clock for the deck header. Called on
+        every engine START (click engine or bot)."""
+        self.session_id = _session_id()
+        self._session_started_at = time.monotonic()
+
+    def _on_bot_status(self, msg: str) -> None:
+        """Runner status text ("running", "stopped", ...). Used only to
+        confirm the running flag; ``finished`` is the authoritative off."""
+        if "running" in str(msg).lower() and engine_bridge.bot_is_running(self):
+            engine_bridge.on_bot_running_changed(self, True)
+
+    # ── Key input backend readiness ──────────────────────────────────
+
+    def _sequence_uses_keys(self) -> bool:
+        """True when a Click / Record start would send keystrokes: an
+        enabled KEY step with a combo, or an enabled key timer."""
+        from modules.key_timer import parse_combo
+        if self._active_mode == "recorder":
+            for s in self._steps:
+                if (s.kind == KIND_KEY and getattr(s, "enabled", True)
+                        and s.key_combo and parse_combo(s.key_combo) is not None):
+                    return True
+        for kt in self._key_timers:
+            if getattr(kt, "enabled", False) and parse_combo(kt.key) is not None:
+                return True
+        return False
+
+    def key_backend_status(self) -> tuple[bool, str]:
+        """``(available, message)`` for the configured key input method.
+
+        Prefers ``Clicker.key_backend_status`` (engine contract) so the
+        UI and the engine agree on the answer; falls back to probing the
+        backend directly for builds where the engine method isn't there.
+        """
+        probe = getattr(self.clicker, "key_backend_status", None)
+        if callable(probe):
+            try:
+                ok, msg = probe()
+                return bool(ok), str(msg or "")
+            except Exception as e:
+                return False, f"key backend probe failed: {e}"
+        try:
+            from modules import key_input_backend
+            kb = key_input_backend.get_backend(
+                str(self.cfg.get("key_input_method", "auto") or "auto"),
+                serial_port=str(self.cfg.get("serial_hid_port", "") or ""),
+            )
+        except Exception as e:
+            return False, f"could not load key backend: {e}"
+        ok = bool(getattr(kb, "available", True))
+        msg = getattr(kb, "name", type(kb).__name__)
+        if not ok:
+            msg = getattr(kb, "_init_error", "") or f"{msg} unavailable"
+        return ok, str(msg)
 
     @Slot()
     def _on_stop(self) -> None:
-        # Stop both engines unconditionally — the inactive one's stop()
+        self._cancel_asset_preparation()
+        # Stop both engines unconditionally, the inactive one's stop()
         # is a no-op, and Esc / F7 should always halt whatever's running.
         try:
             self.clicker.stop()
@@ -532,7 +800,7 @@ class App(QMainWindow):
         """Pynput-listener-thread entry point for the capture hotkey.
 
         Marshals to the Qt main thread via the ``_captureHotkeyFired``
-        queued-connection signal — pynput's listener has no Qt event
+        queued-connection signal, pynput's listener has no Qt event
         loop, so ``QTimer.singleShot`` from here is silently dropped.
         """
         try:
@@ -579,7 +847,7 @@ class App(QMainWindow):
         if bundle is None:
             try:
                 self.toasts.post(
-                    "⚠ Capture hotkey needs an active bundle — pick one "
+                    "⚠ Capture hotkey needs an active bundle, pick one "
                     "on the AI tab.",
                     kind="warn",
                 )
@@ -603,25 +871,38 @@ class App(QMainWindow):
                 f"⚠ Capture failed: {type(e).__name__}: {e}", kind="error",
             )
 
-    def _on_start_ai(self) -> None:
+    def _on_start_ai(self, *, assets_prepared: bool = False) -> None:
+        if self._ai_preparing or self._closing:
+            return
         runner = getattr(self, "bot_runner", None)
         actuator = getattr(self, "ai_actuator", None)
         if runner is None or actuator is None:
             self.toasts.post(
-                "⚠ AI mode unavailable — ai/ subpackage didn't load.",
+                "⚠ AI mode unavailable, ai/ subpackage didn't load.",
                 kind="error",
             )
             return
         if runner.is_running():
             return
+        if self.clicker.state != ClickerState.IDLE:
+            self.toasts.post(
+                "The click engine is running. Stop it before starting a bot.",
+                kind="warn",
+            )
+            return
         # Three start paths in priority order:
-        #   1. Active bundle (bots/<slug>/) — preferred for new bots
-        #   2. Legacy in-cfg "Custom Bot (in-GUI)" — back-compat
-        #   3. Library bot (ai/tasks/library/) — Python-authored bots
+        #   1. Active bundle (bots/<slug>/), preferred for new bots
+        #   2. Legacy in-cfg "Custom Bot (in-GUI)", back-compat
+        #   3. Library bot (ai/tasks/library/), Python-authored bots
         active_bundle = (
             self.ai_card.active_bundle()
             if hasattr(self.ai_card, "active_bundle") else None
         )
+        if (not assets_prepared and active_bundle is None
+                and self.cfg.get("ai_use_user_bot") and self.cfg.get("ai_wiki_fetch_enabled")
+                and self._ai_item_names):
+            self._prepare_ai_assets()
+            return
         bundle_world_calibration = None
         if active_bundle is not None:
             bot = self._compile_bundle_bot(active_bundle)
@@ -634,17 +915,17 @@ class App(QMainWindow):
             bot, errors = compile_user_bot(
                 self._ai_user_steps,
                 name=str(self.cfg.get("ai_user_bot_name") or "Custom Bot"),
-                tick_rate_hz=float(self.cfg.get("ai_tick_rate_hz", 5.0)),
-                dry_run=bool(self.cfg.get("ai_dry_run", False)),
-                auto_camera=bool(self.cfg.get("ai_auto_camera", False)),
-                auto_stop_dry_ticks=int(self.cfg.get("ai_auto_stop_dry_ticks", 60)),
-                watchdog_no_click_s=float(self.cfg.get("ai_watchdog_no_click_s", 600.0)),
+                tick_rate_hz=float(self.cfg.get("ai_tick_rate_hz", DEFAULTS["ai_tick_rate_hz"])),
+                dry_run=bool(self.cfg.get("ai_dry_run", DEFAULTS["ai_dry_run"])),
+                auto_camera=bool(self.cfg.get("ai_auto_camera", DEFAULTS["ai_auto_camera"])),
+                auto_stop_dry_ticks=int(self.cfg.get("ai_auto_stop_dry_ticks", DEFAULTS["ai_auto_stop_dry_ticks"])),
+                watchdog_no_click_s=float(self.cfg.get("ai_watchdog_no_click_s", DEFAULTS["ai_watchdog_no_click_s"])),
                 item_library=item_library,
             )
             for err in errors:
                 self.toasts.post(f"⚠ {err}", kind="warn")
             if not bot.rules:
-                # No registerable rules — fail loudly rather than spinning.
+                # No registerable rules, fail loudly rather than spinning.
                 return
         else:
             bot = self.ai_card.load_current_bot()
@@ -663,18 +944,21 @@ class App(QMainWindow):
                 serial_port=str(self.cfg.get("serial_hid_port", "") or ""),
             )
             key_timer.set_backend(kb)
-            if (str(self.cfg.get("key_input_method", "")).lower() == "serial_hid"
-                    and not getattr(kb, "available", True)):
-                self.toasts.post(
-                    "⚠ Serial HID picked but board unavailable: "
-                    + getattr(kb, "_init_error", "unknown error"),
-                    kind="warn",
-                )
         except Exception:
             pass
+        # Same refusal as the Click / Record preflight: a bot whose rules
+        # press keys would otherwise fail silently on its first keystroke.
+        kb_ok, kb_msg = self.key_backend_status()
+        if not kb_ok:
+            self.toasts.post(
+                f"⚠ Key input method unavailable: {kb_msg}. Fix it under "
+                "Settings, Input.",
+                kind="error",
+            )
+            return
 
         # Hand the bot the user's awareness-layer calibration. None
-        # entries are tolerated by WorldState — bots that read
+        # entries are tolerated by WorldState, bots that read
         # uncalibrated surfaces just see None and should bail.
         # Bundles bring their own calibration; everything else falls
         # back to the global cfg keys.
@@ -689,7 +973,7 @@ class App(QMainWindow):
         # realism level so a bot tuned at, say, 0.7 doesn't drift when
         # the user later moves the slider for a different bot. We snap
         # the slider to the bundle's value for the run and restore the
-        # prior value when the runner finishes — see
+        # prior value when the runner finishes, see
         # ``_restore_realism_after_bot`` for the restore hook.
         self._pre_bot_realism = None
         if active_bundle is not None:
@@ -714,20 +998,23 @@ class App(QMainWindow):
                         except Exception:
                             pass
 
+        self._begin_session()
         runner.play(
             bot,
-            tick_rate_hz=float(self.cfg.get("ai_tick_rate_hz", 5.0)),
-            default_monitor=int(self.cfg.get("ai_monitor", 1)),
-            dry_run=bool(self.cfg.get("ai_dry_run", False)),
+            tick_rate_hz=float(self.cfg.get("ai_tick_rate_hz", DEFAULTS["ai_tick_rate_hz"])),
+            default_monitor=self.resolved_ai_monitor(),
+            dry_run=bool(self.cfg.get("ai_dry_run", DEFAULTS["ai_dry_run"])),
             actuator=actuator,
             world_calibration=world_calibration,
             bundle=active_bundle,
         )
+        if runner.is_running():
+            engine_bridge.on_bot_running_changed(self, True)
 
     def _restore_realism_after_bot(self) -> None:
         """Restore the global realism slider after a per-bot override.
 
-        Hooked into ``bot_runner.finished`` from the AI card — called
+        Hooked into ``bot_runner.finished`` from the AI card, called
         once per run, no-ops when no override was active.
         """
         prior = getattr(self, "_pre_bot_realism", None)
@@ -747,24 +1034,42 @@ class App(QMainWindow):
 
     @Slot()
     def _emergency_stop(self) -> None:
-        self.clicker.stop()
+        # Esc and the corner watchdog must halt whichever engine is live,
+        # so this mirrors _on_stop rather than stopping the clicker alone.
+        self._on_stop()
+
+    @Slot()
+    def _toggle_pause(self) -> None:
+        """HOLD / RESUME for whatever is running: the pause hotkey, the
+        deck's HOLD button and the palette all land here. A bot pauses
+        through its runner; Click / Record through ``Clicker.toggle_pause``
+        when the engine has it. No-op while idle."""
+        from modules.hotkey_manager import name_to_display
+        key = name_to_display(str(self.cfg.get("hotkey_pause", DEFAULTS["hotkey_pause"])))
+        runner = getattr(self, "bot_runner", None)
+        if runner is not None and engine_bridge.bot_is_running(self):
+            new_state = runner.toggle_pause()
+            if new_state is None:
+                return
+            self.toasts.post(f"Bot paused, {key} to resume." if new_state else "Bot resumed.",
+                             kind="info")
+            return
+        if self.clicker.state == ClickerState.IDLE:
+            return
+        toggle = getattr(self.clicker, "toggle_pause", None)
+        if not callable(toggle):
+            self.toasts.post("This click engine has no pause. Use Stop.", kind="info")
+            return
+        new_state = toggle()
+        if new_state is None:
+            new_state = engine_bridge.engine_paused(self)
+        self.toasts.post(f"Engine on hold, {key} to resume." if new_state else "Engine resumed.",
+                         kind="info")
 
     @Slot()
     def _toggle_ai_pause(self) -> None:
-        """F8 toggles AI bot pause/resume. No-op when no bot is running.
-
-        Click/Record mode are unaffected — pause is AI-mode only.
-        """
-        runner = getattr(self, "bot_runner", None)
-        if runner is None or not runner.is_running():
-            return
-        new_state = runner.toggle_pause()
-        if new_state is None:
-            return
-        if new_state:
-            self.toasts.post("⏸ Bot paused — F8 to resume.", kind="info")
-        else:
-            self.toasts.post("▶ Bot resumed.", kind="info")
+        """Older name for :meth:`_toggle_pause`, kept for callers."""
+        self._toggle_pause()
 
     @Slot()
     def _sync_overlay_for_state(self) -> None:
@@ -783,9 +1088,9 @@ class App(QMainWindow):
         else:
             label = f"track step {idx}"
         if reason == "no_template_path":
-            msg = f"⚠ {label.capitalize()} has no captured template — capture one to fix."
+            msg = f"⚠ {label.capitalize()} has no captured template, capture one to fix."
         else:
-            msg = f"⚠ {label.capitalize()} template missing or unreadable — recapture to fix."
+            msg = f"⚠ {label.capitalize()} template missing or unreadable, recapture to fix."
         self.toasts.post(msg, kind="error")
 
     @Slot(str)
@@ -824,7 +1129,7 @@ class App(QMainWindow):
 
     def _on_engine_click_fired(self, target_x, target_y, actual_x, actual_y, kind):
         # Marshal to Qt main thread via queued signal. ``QTimer.singleShot``
-        # from the engine thread is silently dropped in Qt6 — see the class
+        # from the engine thread is silently dropped in Qt6, see the class
         # docstring on ``_engineClickFired``.
         self._engineClickFired.emit(
             int(target_x), int(target_y),
@@ -833,7 +1138,19 @@ class App(QMainWindow):
 
     @Slot(int, int, int, int, str)
     def _flash_click_marker_main(self, tx: int, ty: int, ax: int, ay: int, kind: str) -> None:
+        self.click_ring.add(ax, ay)
+        self.event_log.add("CLK", f"X {ax:04d} · Y {ay:04d}")
         self.overlay_manager.flash_click_marker(tx, ty, ax, ay, kind)
+
+    # -- Engine events (background thread) ----------------------------------
+
+    def _on_engine_event(self, kind, text) -> None:
+        # Engine thread: hop to the GUI thread through the queued signal.
+        self._engineEventFired.emit(str(kind), str(text))
+
+    @Slot(str, str)
+    def _on_engine_event_main(self, kind: str, text: str) -> None:
+        self.event_log.add(kind, text)
 
     # -- Mode readiness (called by start guard + status card) ------------
 
@@ -842,20 +1159,48 @@ class App(QMainWindow):
 
         Shared by :meth:`target_screen` (drawers) and
         :meth:`target_screen_bounds` (engine ambient features) so that
-        an explicit pick honors the same screen everywhere — only the
+        an explicit pick honors the same screen everywhere, only the
         ``"auto"`` fallback differs between the two.
         """
-        target = str(self.cfg.get("target_monitor", "auto"))
-        if target == "auto":
-            return None
+        from ui.monitor_identity import target_index
+        return target_index(self.cfg)
+
+    def resolved_ai_monitor(self, monitors=None) -> int:
+        from ui.monitor_identity import ai_index
+        return ai_index(self.cfg, monitors)
+
+    def set_target_monitor(self, value) -> None:
+        """Change ``target_monitor``: ``"auto"`` or a 0-based Qt screen
+        index (int or str). Saves, pushes the bounds to the engine, and
+        refreshes every surface that shows the choice (Settings combo,
+        viewport, zone map)."""
+        new_val = "auto" if value in (None, "auto") else str(int(value))
+        cfg = self.cfg
+        from ui.monitor_identity import select_target
+        select_target(cfg, new_val)
+        save_config(cfg)
+        self._push_config_to_clicker()
+        card = getattr(self, "settings_card", None)
+        if card is not None:
+            try:
+                card.refresh_monitors()
+            except Exception:
+                pass
+        deck = getattr(self, "deck", None)
+        if deck is not None:
+            try:
+                deck.viewport.tick()
+                deck.right.zone_map.update()
+            except Exception:
+                pass
+        if new_val == "auto":
+            text = "Target monitor: auto (follows the click area)"
+        else:
+            text = f"Target monitor: MON{int(new_val) + 1}"
         try:
-            idx = int(target)
-        except ValueError:
-            return None
-        screens = QApplication.instance().screens()
-        if 0 <= idx < len(screens):
-            return idx
-        return None
+            self.toasts.post(text, kind="success")
+        except Exception:
+            pass
 
     def target_screen(self):
         """Return the ``QScreen`` to use for fullscreen drawers (zone /
@@ -921,98 +1266,9 @@ class App(QMainWindow):
         g = primary.geometry()
         return (g.left(), g.top(), g.width(), g.height())
 
-    def _is_mode_ready(self) -> bool:
-        if self._active_mode == "recorder":
-            return any(
-                (s.kind == KIND_CLICK and s.zone is not None)
-                or (s.kind == KIND_TRACK and s.template_path)
-                or (s.kind == KIND_COLOR and s.color_target_rgb is not None)
-                for s in self._steps
-            )
-        return self._zone is not None
-
     def _preflight_failures(self) -> list[str]:
-        """Return a list of user-facing strings describing why the engine
-        can't start right now. Empty list = green-light. Toasts come from
-        ``_on_start`` which posts one per item. Designed so future checks
-        can be added without touching the start path itself.
-        """
-        import os
-        failures: list[str] = []
-        # Hotkey conflict — covers the case where an external edit slipped
-        # past the rebind validator (e.g. config.json hand-edit).
-        seen: dict[str, str] = {}
-        for k, v in self.cfg.items():
-            if not str(k).startswith("hotkey_"):
-                continue
-            name = str(v).lower()
-            if not name:
-                continue
-            if name in seen and seen[name] != k:
-                failures.append(
-                    f"⚠ Hotkey '{name}' is bound to two actions "
-                    f"({seen[name][len('hotkey_'):]} and "
-                    f"{str(k)[len('hotkey_'):]})."
-                )
-            else:
-                seen[name] = str(k)
-
-        if self._active_mode == "recorder":
-            if not self._steps:
-                failures.append("⚠ Record mode has no steps. Add a Click / Track / Color step.")
-            else:
-                runnable = False
-                for i, s in enumerate(self._steps):
-                    user_label = (getattr(s, "label", "") or "").strip()
-                    label = (f"step {i + 1} '{user_label}'" if user_label
-                             else f"step {i + 1}")
-                    if s.kind == KIND_CLICK:
-                        if s.zone is None:
-                            failures.append(f"⚠ Click {label} has no zone — draw one or remove the step.")
-                            continue
-                        runnable = True
-                    elif s.kind == KIND_TRACK:
-                        if not s.template_path:
-                            failures.append(f"⚠ Track {label} has no captured template.")
-                            continue
-                        # Resolve relative to install root (mirrors _read_template_png).
-                        path = s.template_path
-                        if not os.path.isabs(path):
-                            path = os.path.join(_config_dir(), path)
-                        if not os.path.exists(path):
-                            failures.append(
-                                f"⚠ Track {label} template missing on disk — recapture to fix."
-                            )
-                            continue
-                        runnable = True
-                    elif s.kind == KIND_COLOR:
-                        if s.color_target_rgb is None:
-                            failures.append(f"⚠ Color {label} has no target color picked.")
-                            continue
-                        runnable = True
-                    elif s.kind == KIND_PAUSE:
-                        # Pause-only sequences are valid (loop/idle), but we
-                        # need at least one runnable step somewhere.
-                        pass
-                    else:
-                        # Loop / unknown — handled in engine; not a pre-flight failure.
-                        pass
-                if not runnable:
-                    failures.append(
-                        "⚠ Record mode has no runnable Click / Track / Color step."
-                    )
-        else:
-            if self._zone is None:
-                failures.append("⚠ Click mode has no zone. Press 'Draw on screen' first.")
-            else:
-                # Sanity: zone AABB intersects the screen at all.
-                x1, y1, x2, y2 = self._zone.aabb()
-                if x2 < 0 or y2 < 0 or x1 > self.monitor_w or y1 > self.monitor_h:
-                    failures.append(
-                        "⚠ Click zone is entirely off-screen "
-                        "(maybe resolution changed). Redraw it."
-                    )
-        return failures
+        from .readiness import preflight_failures
+        return preflight_failures(self)
 
     # -- Color picker entry point -----------------------------------------
 
@@ -1021,7 +1277,7 @@ class App(QMainWindow):
         from .overlays.color_picker import ColorPicker
         self.overlay_manager.hide_for_drawing()
         self.showMinimized()
-        # Bind the picker to a single screen — same mixed-DPI fix as
+        # Bind the picker to a single screen, same mixed-DPI fix as
         # the ZoneDrawer. Without this, Qt6 paints a scrim across the
         # virtual desktop but only one monitor accepts events, locking
         # the user out of dismissing the overlay on the other monitor.
@@ -1043,13 +1299,18 @@ class App(QMainWindow):
 
     # -- Zone drawer entry point ------------------------------------------
 
-    def open_zone_drawer(self, shape: str, on_done) -> None:
+    def open_zone_drawer(self, shape: str, on_done, *,
+                         attach_lock: bool = False) -> None:
         """Spawn a fullscreen ZoneDrawer for ``shape``; ``on_done(zone_or_none)``
         fires when the user commits or cancels.
 
         Hides every overlay first so the drawer has a clean canvas. Restores
         the main window's visibility after capture so the user lands back
         in the app even if they cancelled.
+
+        ``attach_lock=True`` ties the drawn zone to the top-level window
+        under its centre when ``zone_lock_default`` is "window". Click and
+        Record click areas pass it; track captures and hover zones do not.
         """
         from .overlays.zone_drawer import ZoneDrawer
         self.overlay_manager.hide_for_drawing()
@@ -1061,7 +1322,18 @@ class App(QMainWindow):
         drawer = ZoneDrawer(shape, screen=self.target_screen())
 
         def _finished(zone):
-            # Restore the main window BEFORE invoking the callback —
+            # The lock query runs while our main window is still minimized
+            # and before the drawer is torn down, so the window under the
+            # zone centre is the one the user drew over. The finder skips
+            # our own process, so the drawer itself is never the answer.
+            if (zone is not None and attach_lock
+                    and str(self.cfg.get("zone_lock_default", "window")) == "window"):
+                try:
+                    from modules.zone_lock import attach_window_lock
+                    zone = attach_window_lock(zone)
+                except Exception:
+                    self.log.warning("window lock attach failed", exc_info=True)
+            # Restore the main window BEFORE invoking the callback ,
             # ``on_done`` typically opens a QInputDialog (asset name
             # prompt for snapshots / recordings), and Qt picks the
             # dialog's screen from the active window. Without this the
@@ -1085,6 +1357,19 @@ class App(QMainWindow):
         save_config(self.cfg)
         engine_bridge.push_config_to_clicker(self)
 
+    def save_config_later(self) -> None:
+        """Debounced ``save_config`` + engine push for slider drags. The
+        caller has already mutated ``self.cfg``; only the disk write and
+        the push wait for the drag to settle."""
+        def _persist() -> None:
+            save_config(self.cfg)
+            engine_bridge.push_config_to_clicker(self)
+        self._cfg_debounce.call(_persist)
+
+    def save_steps_later(self) -> None:
+        """Debounced ``_save_steps`` for per-step sliders."""
+        self._steps_debounce.call(self._save_steps)
+
     def _save_ai_user_steps(self) -> None:
         """Persist the in-GUI AI bot's step list to its active source.
 
@@ -1092,7 +1377,7 @@ class App(QMainWindow):
         ``procedures.json`` under the entry procedure. Otherwise they
         land in the legacy ``ai_user_bot_steps`` cfg key.
 
-        The bot runner doesn't read this on the fly — steps are baked
+        The bot runner doesn't read this on the fly, steps are baked
         into a compiled :class:`Bot` at Start time. So edits while the
         bot is running don't affect the live snapshot.
         """
@@ -1177,7 +1462,7 @@ class App(QMainWindow):
 
         # Pre-run sanity check (B.3): surface things compile won't catch
         # (missing snapshots, uncalibrated ROIs, dangling handlers, …).
-        # Non-blocking — incremental authoring may legitimately have
+        # Non-blocking, incremental authoring may legitimately have
         # unfinished steps, so we toast the count and dump details to
         # the log rather than refusing to start.
         try:
@@ -1188,7 +1473,7 @@ class App(QMainWindow):
         if issues:
             self.toasts.post(
                 f"⚠ {len(issues)} lint issue{'s' if len(issues) != 1 else ''} "
-                f"— check log for details. Starting anyway.",
+                f",  check log for details. Starting anyway.",
                 kind="warn",
             )
             try:
@@ -1203,11 +1488,11 @@ class App(QMainWindow):
         bot, errors = compile_program(
             program,
             name=bundle.name,
-            tick_rate_hz=float(settings.get("tick_rate_hz", self.cfg.get("ai_tick_rate_hz", 5.0))),
-            dry_run=bool(settings.get("dry_run", self.cfg.get("ai_dry_run", False))),
-            auto_camera=bool(settings.get("auto_camera", self.cfg.get("ai_auto_camera", False))),
-            auto_stop_dry_ticks=int(settings.get("auto_stop_dry_ticks", self.cfg.get("ai_auto_stop_dry_ticks", 60))),
-            watchdog_no_click_s=float(settings.get("watchdog_no_click_s", self.cfg.get("ai_watchdog_no_click_s", 600.0))),
+            tick_rate_hz=float(settings.get("tick_rate_hz", self.cfg.get("ai_tick_rate_hz", DEFAULTS["ai_tick_rate_hz"]))),
+            dry_run=bool(settings.get("dry_run", self.cfg.get("ai_dry_run", DEFAULTS["ai_dry_run"]))),
+            auto_camera=bool(settings.get("auto_camera", self.cfg.get("ai_auto_camera", DEFAULTS["ai_auto_camera"]))),
+            auto_stop_dry_ticks=int(settings.get("auto_stop_dry_ticks", self.cfg.get("ai_auto_stop_dry_ticks", DEFAULTS["ai_auto_stop_dry_ticks"]))),
+            watchdog_no_click_s=float(settings.get("watchdog_no_click_s", self.cfg.get("ai_watchdog_no_click_s", DEFAULTS["ai_watchdog_no_click_s"]))),
             item_library=item_library,
             bundle=bundle,
         )
@@ -1239,6 +1524,61 @@ class App(QMainWindow):
             lib.add_from_path(name, icon_path)
         return lib if len(lib) else None
 
+    def _prepare_ai_assets(self):
+        from .asset_preparation import AssetPreparation
+        job = AssetPreparation(list(self._ai_item_names), wiki_cache_root(), self)
+        self._asset_job = job
+        self._ai_preparing = True
+        self._state_str = engine_bridge.effective_state(self)
+        engine_bridge.refresh_action_buttons(self, self._state_str)
+        dialog = QProgressDialog("Preparing bot images…", "Cancel", 0, len(job.names), self)
+        dialog.setWindowTitle("Preparing bot")
+        dialog.setWindowModality(Qt.WindowModal)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        self._asset_dialog = dialog
+        dialog.canceled.connect(self._cancel_asset_preparation)
+        job.progress.connect(self._asset_progress)
+        job.completed.connect(self._assets_ready)
+        dialog.show()
+        job.start()
+
+    @Slot(int, int, str)
+    def _asset_progress(self, current, total, name):
+        if self.sender() is not self._asset_job:
+            return
+        self._asset_dialog.setMaximum(total)
+        self._asset_dialog.setValue(current)
+        self._asset_dialog.setLabelText(f"Preparing {name} ({current + 1}/{total})")
+
+    def _cancel_asset_preparation(self):
+        job = self._asset_job
+        if job is None:
+            return
+        job.cancel()
+        self._asset_job = None
+        self._ai_preparing = False
+        self._asset_dialog.close()
+        self._state_str = engine_bridge.effective_state(self)
+        engine_bridge.refresh_action_buttons(self, self._state_str)
+
+    @Slot(object)
+    def _assets_ready(self, errors):
+        job = self.sender()
+        if job is not self._asset_job or job.cancelled.is_set() or self._closing:
+            job.deleteLater()
+            return
+        self._asset_job = None
+        self._ai_preparing = False
+        self._asset_dialog.close()
+        self._state_str = engine_bridge.effective_state(self)
+        engine_bridge.refresh_action_buttons(self, self._state_str)
+        job.deleteLater()
+        if errors:
+            self.toasts.post("Bot not started. " + "; ".join(errors), kind="error")
+            return
+        self._on_start_ai(assets_prepared=True)
+
     def _build_ai_item_library(self):
         """Construct an :class:`ai.algorithms.items.ItemLibrary` from the
         user's added item names + cached wiki icons. Returns None when
@@ -1248,30 +1588,26 @@ class App(QMainWindow):
         names = list(self._ai_item_names or [])
         if not names:
             return None
-        from pathlib import Path
         from ai.algorithms.items import ItemLibrary
-        from ai.wiki import default_client
         from ai.wiki.client import _slugify
-        cache_root = Path("debug/wiki_cache")
+        cache_root = wiki_cache_root()
         items_dir = cache_root / "items"
-        client = default_client(cache_root)
+        # Outbound HTTP is opt-in (Settings, Network). When off, only the
+        # on-disk cache is consulted and missing icons are reported.
+        fetch_ok = bool(self.cfg.get("ai_wiki_fetch_enabled", False))
         lib = ItemLibrary()
         missing: list[str] = []
         for nm in names:
             slug = _slugify(nm)
             path = items_dir / f"{slug}.png"
-            if not path.exists():
-                # Lazy refresh — re-fetch on Start if the cache was wiped.
-                fetched = client.fetch_item_image(nm)
-                if fetched is not None:
-                    path = fetched
             if path.exists():
                 lib.add_from_path(nm, path)
             else:
                 missing.append(nm)
         if missing:
+            hint = "" if fetch_ok else " (wiki fetch is off in Settings)"
             self.toasts.post(
-                f"⚠ Couldn't load item icons for: {', '.join(missing)}",
+                f"⚠ Couldn't load item icons for: {', '.join(missing)}{hint}",
                 kind="warn",
             )
         return lib if len(lib) else None
@@ -1291,7 +1627,7 @@ class App(QMainWindow):
 
         ``template_paths`` are absolute paths to PNGs that should be
         moved aside (KIND_TRACK primary + extra views). For non-track
-        steps pass an empty list — there's nothing on disk to move.
+        steps pass an empty list, there's nothing on disk to move.
 
         Past the capacity, the oldest entry's files are actually unlinked
         (the trash is in-memory; an entry that falls off the cap can no
@@ -1396,10 +1732,50 @@ class App(QMainWindow):
     # -- Lifecycle -------------------------------------------------------
 
     def closeEvent(self, event):  # noqa: N802 (Qt name)
-        self.cfg["window_w"] = self.width()
-        self.cfg["window_h"] = self.height()
-        save_config(self.cfg)
-        # Trash is in-memory only — drop the parked PNGs on the way out
+        self._on_stop()
+        # Pending debounced slider saves land before the final write so a
+        # drag finished right before Close isn't lost.
+        for deb in (self._steps_debounce, self._cfg_debounce):
+            try:
+                deb.flush()
+            except Exception:
+                pass
+        # Normal geometry when maximized or fullscreen, so a restore does
+        # not bake a screen-sized window into config.
+        geo = (self.normalGeometry() if (self.isMaximized() or self.isFullScreen())
+               else self.geometry())
+        if not geo.isValid():
+            geo = self.geometry()
+        self.cfg["window_x"] = geo.x()
+        self.cfg["window_y"] = geo.y()
+        self.cfg["window_w"] = geo.width()
+        self.cfg["window_h"] = geo.height()
+        if not save_config(self.cfg):
+            self.toasts.post(self.cfg.get("_save_error", "Settings save failed"), kind="error")
+            self.statusBar().showMessage("Settings are unsaved. Fix the folder permissions and close again.")
+            self.statusBar().show()
+            event.ignore()
+            return
+        self._closing = True
+        self._cancel_asset_preparation()
+        runner = getattr(self, "bot_runner", None)
+        if runner is not None and not runner.wait(100):
+            # Keep Qt objects alive until the worker actually unwinds.
+            # A pending capture may take longer than a normal stop.
+            self.statusBar().showMessage("Stopping the bot before closing…")
+            self.statusBar().show()
+            event.ignore()
+            QTimer.singleShot(250, self.close)
+            return
+        # Deck shell: stop the viewport capture thread and close the
+        # settings drawer before anything it reads is torn down.
+        deck = getattr(self, "deck", None)
+        if deck is not None:
+            try:
+                deck.shutdown()
+            except Exception:
+                self.log.exception("deck shutdown failed")
+        # Trash is in-memory only: drop the parked PNGs on the way out
         # so they don't accumulate across sessions.
         self._purge_step_trash_dir()
         try:
@@ -1408,6 +1784,32 @@ class App(QMainWindow):
             pass
         try:
             self.clicker.stop()
+        except Exception:
+            pass
+        ov = getattr(self, "bot_overlay", None)
+        if ov is not None:
+            try:
+                ov.hide()
+                ov.deleteLater()
+            except Exception:
+                pass
+            self.bot_overlay = None
+        # Pending hotkey rebind / key-step capture timers would fire into
+        # dead widgets after close.
+        try:
+            self.hotkeys_card.cancel_all()
+        except Exception:
+            pass
+        try:
+            self.record_mode_tab._row_builder.cancel_all_captures()
+        except Exception:
+            pass
+        # A mouse trace left recording would hold its JSONL open with no
+        # trace_end record.
+        try:
+            from utils import mouse_trace
+            if mouse_trace.is_enabled():
+                mouse_trace.disable()
         except Exception:
             pass
         # Stop the Monitor HTTP server so the listening port is freed
@@ -1439,6 +1841,12 @@ class App(QMainWindow):
             except Exception:
                 pass
         super().closeEvent(event)
+
+
+def _session_id() -> str:
+    """``PC-MMDD-HHMM``: the SESSION chip's id, minted at every START."""
+    from datetime import datetime
+    return datetime.now().strftime("PC-%m%d-%H%M")
 
 
 def run() -> None:

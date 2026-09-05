@@ -1,4 +1,4 @@
-"""Minimap reader — player-position click target, motion detection,
+"""Minimap reader, player-position click target, motion detection,
 and run-energy orb percentage.
 
 The minimap is a fixed-size HUD region in the top-right of the NXT
@@ -18,7 +18,7 @@ classes of detection cheap:
   pixels in the orb sub-region; calibrated max_fill at 100% scales
   to a percentage.
 
-The reader is *stateful* — to compute motion it needs the previous
+The reader is *stateful*, to compute motion it needs the previous
 tick's minimap crop. Construct one :class:`MinimapTracker` per worker
 and call :meth:`tick` once per frame.
 """
@@ -42,7 +42,7 @@ _ORB_FRACTION_Y = 0.0
 _ORB_FRACTION_W = 0.22
 _ORB_FRACTION_H = 0.18
 
-# Saturation threshold — pixels whose (max-channel - min-channel)
+# Saturation threshold, pixels whose (max-channel - min-channel)
 # exceeds this are "coloured", everything else is grey/dark UI. The
 # run-energy orb's fill is bright orange-yellow, well above this floor.
 _SAT_THRESHOLD = 50
@@ -68,7 +68,7 @@ class MinimapState:
     """One tick's parsed minimap snapshot."""
 
     roi: Tuple[int, int, int, int]      # (x, y, w, h) used for the scan
-    player_xy_screen: Tuple[int, int]   # absolute screen px — minimap centre
+    player_xy_screen: Tuple[int, int]   # absolute screen px, minimap centre
     motion_score: float                 # 0..1 fraction of pixels changed
     motion_tiles: float                 # motion_score × _TILE_SCALE
     run_energy_pct: Optional[float]     # 0..100 or None if uncalibrated
@@ -134,7 +134,7 @@ class MinimapTracker:
         self._prev_crop = crop.copy()
         self._prev_roi = (x, y, w, h)
 
-        # Run-energy orb — sub-region of the minimap ROI.
+        # Run-energy orb, sub-region of the minimap ROI.
         ox = int(round(w * _ORB_FRACTION_X))
         oy = int(round(h * _ORB_FRACTION_Y))
         ow = max(8, int(round(w * _ORB_FRACTION_W)))
@@ -170,7 +170,7 @@ def calibrate_run_energy_max_fill(
     """Capture the run-energy orb's saturated-pixel count at 100%.
 
     Called by the AI tab's "Calibrate Minimap ROI" handler immediately
-    after the user draws the minimap rect — assumes the player is at
+    after the user draws the minimap rect, assumes the player is at
     100% run-energy. Stored as part of the bundle's calibration so
     runtime percentages are meaningful.
     """

@@ -9,7 +9,7 @@ Format::
 
 The blank line + "Shortcut:" suffix is enough visual separation in
 :class:`QToolTip` (which auto-wraps body text). We deliberately don't read
-the command registry here — the registry is the source of truth for what's
+the command registry here, the registry is the source of truth for what's
 *bound*, but the displayed text is the card's responsibility. Decoupling
 lets us evolve labels independently from binding state.
 """

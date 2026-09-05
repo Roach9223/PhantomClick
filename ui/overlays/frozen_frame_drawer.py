@@ -1,4 +1,4 @@
-"""``FrozenFrameDrawer`` — fullscreen overlay showing a *pre-captured*
+"""``FrozenFrameDrawer``, fullscreen overlay showing a *pre-captured*
 frame as an opaque background, with rect-drag selection on top.
 
 Used by the "Capture frame" hotkey (default F9). The game underneath
@@ -9,16 +9,16 @@ the frozen pixels and the result is cropped from the captured frame
 Sibling of :class:`ZoneDrawer`. Differences worth calling out:
 
 - **Background is the captured frame**, not a translucent scrim. This
-  is the "freeze" — pixels stop updating, the cursor is still free
+  is the "freeze", pixels stop updating, the cursor is still free
   to move, the user can take their time framing the crop.
-- **Cursor marker** — a teal ring drawn at the cursor position at the
+- **Cursor marker**, a teal ring drawn at the cursor position at the
   moment the hotkey fired. Helpful when capturing tooltips that
   appeared while hovering an in-game element: the marker shows where
   the cursor was so the user remembers the anchor.
-- **Single-screen scope** — same Qt6 mixed-DPI workaround as
+- **Single-screen scope**, same Qt6 mixed-DPI workaround as
   ZoneDrawer / ColorPicker. The captured frame must be for the same
   screen the drawer is bound to.
-- **Output is PHYSICAL pixels** — matches the rest of the capture
+- **Output is PHYSICAL pixels**, matches the rest of the capture
   pipeline (see ``project_capture_units_physical_px`` memory).
 """
 
@@ -70,7 +70,7 @@ class FrozenFrameDrawer(QWidget):
 
         # Bind to the screen the frame was captured from. Mixed-DPI
         # across monitors makes a single-window-spanning-both-screens
-        # overlay misrender — see ZoneDrawer for the full story.
+        # overlay misrender, see ZoneDrawer for the full story.
         if screen is None:
             try:
                 from PySide6.QtGui import QCursor
@@ -99,7 +99,7 @@ class FrozenFrameDrawer(QWidget):
         if self._pixmap is not None:
             self._pixmap.setDevicePixelRatio(self._dpr)
 
-        # Cursor marker — convert the cursor's physical xy to DIPs in
+        # Cursor marker, convert the cursor's physical xy to DIPs in
         # this screen's coordinate space so we can draw it.
         self._cursor_marker_dip: Optional[Tuple[int, int]] = None
         try:
@@ -226,7 +226,7 @@ class FrozenFrameDrawer(QWidget):
             p.drawText(
                 self.rect(),
                 Qt.AlignCenter,
-                "Failed to load captured frame — Esc to cancel.",
+                "Failed to load captured frame, Esc to cancel.",
             )
 
         # Subtle scrim to make the rect outline pop.
@@ -253,7 +253,7 @@ class FrozenFrameDrawer(QWidget):
             p.setBrush(Qt.NoBrush)
             p.drawRect(r)
 
-        # Cursor marker — small teal ring at the pre-hotkey cursor xy.
+        # Cursor marker, small teal ring at the pre-hotkey cursor xy.
         if self._cursor_marker_dip is not None:
             cx, cy = self._cursor_marker_dip
             p.setPen(QPen(QColor(t.ACCENT), 2))
@@ -294,7 +294,7 @@ def _frame_to_pixmap(frame: np.ndarray) -> Optional[QPixmap]:
             fmt = QImage.Format_RGB888
         h, w = rgb.shape[:2]
         stride = rgb.strides[0]
-        # ``.copy()`` so the QImage owns its buffer — the ndarray
+        # ``.copy()`` so the QImage owns its buffer, the ndarray
         # passed in may be freed by the caller after this call.
         img = QImage(rgb.data, w, h, stride, fmt).copy()
         return QPixmap.fromImage(img)

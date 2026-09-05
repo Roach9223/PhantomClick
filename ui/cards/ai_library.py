@@ -1,7 +1,7 @@
-"""Global capture library — browser card for ``ai/captures/global/``.
+"""Global capture library, browser card for ``ai/captures/global/``.
 
 Sits below the Captures card on the AI page. Lists every capture that
-has been promoted via the Captures card's "★ Promote…" button, so a
+has been promoted via the Captures card's "Promote…" button, so a
 user authoring a new bot can see at a glance which Seren-spirit /
 Brooch-proc / bank-chest reference assets exist and how to import them.
 
@@ -10,10 +10,10 @@ Each row offers:
 - A thumbnail (colour swatch / snapshot first-frame / recording first
   frame) so the user recognises the asset visually.
 - The slug + display name.
-- A "📋 Copy import" button that puts the appropriate Python import
+- A "Copy import" button that puts the appropriate Python import
   line (``from ai.captures import color`` or ``snapshot`` or
   ``recording``) on the clipboard.
-- A "🗑" delete button (with a confirm dialog).
+- A "" delete button (with a confirm dialog).
 
 The card refreshes when:
 
@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
 
 from ai import captures as global_captures
 
-from .. import theme as t
+from .. import icons, theme as t
 from ..widgets.card import Card
 
 
@@ -53,18 +53,18 @@ class AILibrarySection(Card):
         super().__init__("Global capture library")
         self.app = app
 
-        # Header strip — count + refresh button.
+        # Header strip, count + refresh button.
         head_row = QWidget()
         head = QHBoxLayout(head_row)
         head.setContentsMargins(0, 0, 0, 0)
         head.setSpacing(t.SP_SM)
 
         self._summary = QLabel("")
+        self._summary.setWordWrap(True)
         self._summary.setStyleSheet(
             f"color: {t.TEXT_SECONDARY}; font-size: {t.SIZE_SM}px;"
         )
-        head.addWidget(self._summary)
-        head.addStretch(1)
+        head.addWidget(self._summary, 1)
 
         refresh = QPushButton("⟳ Refresh")
         refresh.setMinimumHeight(t.BUTTON_H)
@@ -74,7 +74,7 @@ class AILibrarySection(Card):
 
         self.add(head_row)
 
-        # The content host gets cleared and rebuilt on every refresh —
+        # The content host gets cleared and rebuilt on every refresh , 
         # keeps the layout simple and avoids stale rows when assets get
         # promoted/deleted out from under us.
         self._host = QWidget()
@@ -83,7 +83,7 @@ class AILibrarySection(Card):
         self._host_col.setSpacing(t.SP_MD)
         self.add(self._host)
 
-        # Foot hint — only the once.
+        # Foot hint, only the once.
         self._hint = QLabel(
             "Promoted from a bot bundle's Captures card. "
             "Bots reference these by name: "
@@ -103,7 +103,7 @@ class AILibrarySection(Card):
 
     # ── Public ──────────────────────────────────────────────────
     def refresh(self) -> None:
-        # Tear down the existing rows and rebuild — small dataset,
+        # Tear down the existing rows and rebuild, small dataset,
         # no point diffing.
         while self._host_col.count():
             item = self._host_col.takeAt(0)
@@ -118,7 +118,7 @@ class AILibrarySection(Card):
             dtms = global_captures.list_global("dtms")
             rois = global_captures.list_global("rois")
         except Exception as e:
-            self._summary.setText(f"⚠ library unavailable: {e}")
+            self._summary.setText(f"library unavailable: {e}")
             return
 
         n_total = (
@@ -127,7 +127,7 @@ class AILibrarySection(Card):
         if n_total == 0:
             self._summary.setText(
                 "No promoted captures yet. Use the Captures card's "
-                "★ Promote… button to start your library."
+                "Promote… button to start your library."
             )
             empty = QLabel("(library is empty)")
             empty.setAlignment(Qt.AlignCenter)
@@ -177,7 +177,7 @@ class AILibrarySection(Card):
         QApplication.clipboard().setText(text)
         try:
             self.app.toasts.post(
-                f"📋 Copied to clipboard: {label}", kind="info",
+                f"Copied to clipboard: {label}", kind="info",
             )
         except Exception:
             pass
@@ -197,7 +197,7 @@ class AILibrarySection(Card):
         if ok:
             try:
                 self.app.toasts.post(
-                    f"🗑 Deleted {kind}: {name}", kind="warn",
+                    f"Deleted {kind}: {name}", kind="warn",
                 )
             except Exception:
                 pass
@@ -210,7 +210,7 @@ class AILibrarySection(Card):
 
 
 class _GroupHeader(QLabel):
-    """Teal eyebrow — same visual rhythm as Section labels."""
+    """Teal eyebrow, same visual rhythm as Section labels."""
 
     def __init__(self, title: str) -> None:
         super().__init__(title)
@@ -232,7 +232,7 @@ class _RowBase(QFrame):
         self.setObjectName("library-row")
         self.setStyleSheet(
             "QFrame#library-row {"
-            f"  background: {t.SURFACE_2 if hasattr(t, 'SURFACE_2') else '#1a1d23'};"
+            f"  background: {t.SURFACE_HIGH};"
             f"  border-radius: 8px;"
             "}"
         )
@@ -296,7 +296,8 @@ class _ColorRow(_RowBase):
         self._row.addWidget(wrap, 1)
 
         # Action buttons
-        copy_btn = QPushButton("📋 Copy import")
+        copy_btn = QPushButton("Copy import")
+        copy_btn.setIcon(icons.icon("copy"))
         copy_btn.setCursor(Qt.PointingHandCursor)
         copy_btn.setMinimumHeight(t.BUTTON_H)
         copy_btn.setToolTip(
@@ -305,7 +306,9 @@ class _ColorRow(_RowBase):
         copy_btn.clicked.connect(self._on_copy)
         self._row.addWidget(copy_btn)
 
-        del_btn = QPushButton("🗑")
+        del_btn = QPushButton()
+
+        del_btn.setIcon(icons.icon("trash"))
         del_btn.setCursor(Qt.PointingHandCursor)
         del_btn.setMinimumHeight(t.BUTTON_H)
         del_btn.setMinimumWidth(t.BUTTON_H)
@@ -338,7 +341,7 @@ class _SnapshotRow(_RowBase):
         thumb = QLabel()
         thumb.setFixedSize(_THUMB_W, _THUMB_H)
         thumb.setStyleSheet(
-            "background: #0a0a0a; border-radius: 4px;"
+            f"background: {t.BG}; border-radius: 4px;"
         )
         try:
             img = QImage(str(path))
@@ -379,13 +382,16 @@ class _SnapshotRow(_RowBase):
         wrap.setLayout(txt)
         self._row.addWidget(wrap, 1)
 
-        copy_btn = QPushButton("📋 Copy import")
+        copy_btn = QPushButton("Copy import")
+        copy_btn.setIcon(icons.icon("copy"))
         copy_btn.setCursor(Qt.PointingHandCursor)
         copy_btn.setMinimumHeight(t.BUTTON_H)
         copy_btn.clicked.connect(self._on_copy)
         self._row.addWidget(copy_btn)
 
-        del_btn = QPushButton("🗑")
+        del_btn = QPushButton()
+
+        del_btn.setIcon(icons.icon("trash"))
         del_btn.setCursor(Qt.PointingHandCursor)
         del_btn.setMinimumHeight(t.BUTTON_H)
         del_btn.setMinimumWidth(t.BUTTON_H)
@@ -416,7 +422,7 @@ class _RecordingRow(_RowBase):
 
         thumb = QLabel()
         thumb.setFixedSize(_THUMB_W, _THUMB_H)
-        thumb.setStyleSheet("background: #0a0a0a; border-radius: 4px;")
+        thumb.setStyleSheet(f"background: {t.BG}; border-radius: 4px;")
         # Use frame_000.png as the cover image.
         first_frame = path / "frame_000.png"
         if first_frame.exists():
@@ -466,13 +472,16 @@ class _RecordingRow(_RowBase):
         wrap.setLayout(txt)
         self._row.addWidget(wrap, 1)
 
-        copy_btn = QPushButton("📋 Copy import")
+        copy_btn = QPushButton("Copy import")
+        copy_btn.setIcon(icons.icon("copy"))
         copy_btn.setCursor(Qt.PointingHandCursor)
         copy_btn.setMinimumHeight(t.BUTTON_H)
         copy_btn.clicked.connect(self._on_copy)
         self._row.addWidget(copy_btn)
 
-        del_btn = QPushButton("🗑")
+        del_btn = QPushButton()
+
+        del_btn.setIcon(icons.icon("trash"))
         del_btn.setCursor(Qt.PointingHandCursor)
         del_btn.setMinimumHeight(t.BUTTON_H)
         del_btn.setMinimumWidth(t.BUTTON_H)
@@ -503,7 +512,7 @@ class _DtmRow(_RowBase):
 
         thumb = QLabel()
         thumb.setFixedSize(_THUMB_W, _THUMB_H)
-        thumb.setStyleSheet("background: #0a0a0a; border-radius: 4px;")
+        thumb.setStyleSheet(f"background: {t.BG}; border-radius: 4px;")
         # Paired PNG sits next to the YAML; use it as the thumbnail.
         png_path = path.with_suffix(".png")
         if png_path.exists():
@@ -550,13 +559,16 @@ class _DtmRow(_RowBase):
         wrap.setLayout(txt)
         self._row.addWidget(wrap, 1)
 
-        copy_btn = QPushButton("📋 Copy import")
+        copy_btn = QPushButton("Copy import")
+        copy_btn.setIcon(icons.icon("copy"))
         copy_btn.setCursor(Qt.PointingHandCursor)
         copy_btn.setMinimumHeight(t.BUTTON_H)
         copy_btn.clicked.connect(self._on_copy)
         self._row.addWidget(copy_btn)
 
-        del_btn = QPushButton("🗑")
+        del_btn = QPushButton()
+
+        del_btn.setIcon(icons.icon("trash"))
         del_btn.setCursor(Qt.PointingHandCursor)
         del_btn.setMinimumHeight(t.BUTTON_H)
         del_btn.setMinimumWidth(t.BUTTON_H)
@@ -588,11 +600,11 @@ class _RoiRow(_RowBase):
         # Outline rect thumbnail to convey "this is a search rectangle".
         thumb = QLabel()
         thumb.setFixedSize(_THUMB_W, _THUMB_H)
-        thumb.setStyleSheet("background: #0a0a0a; border-radius: 4px;")
+        thumb.setStyleSheet(f"background: {t.BG}; border-radius: 4px;")
         try:
             from PySide6.QtGui import QPainter, QPen
             pix = QPixmap(_THUMB_W, _THUMB_H)
-            pix.fill(QColor("#0a0a0a"))
+            pix.fill(QColor(t.BG))
             p = QPainter(pix)
             p.setRenderHint(QPainter.Antialiasing, False)
             p.setPen(QPen(QColor(t.ACCENT), 2))
@@ -637,13 +649,16 @@ class _RoiRow(_RowBase):
         wrap.setLayout(txt)
         self._row.addWidget(wrap, 1)
 
-        copy_btn = QPushButton("📋 Copy import")
+        copy_btn = QPushButton("Copy import")
+        copy_btn.setIcon(icons.icon("copy"))
         copy_btn.setCursor(Qt.PointingHandCursor)
         copy_btn.setMinimumHeight(t.BUTTON_H)
         copy_btn.clicked.connect(self._on_copy)
         self._row.addWidget(copy_btn)
 
-        del_btn = QPushButton("🗑")
+        del_btn = QPushButton()
+
+        del_btn.setIcon(icons.icon("trash"))
         del_btn.setCursor(Qt.PointingHandCursor)
         del_btn.setMinimumHeight(t.BUTTON_H)
         del_btn.setMinimumWidth(t.BUTTON_H)

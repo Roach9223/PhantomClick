@@ -33,10 +33,59 @@ KIND_KEY = "key"
 _VALID_KINDS = (KIND_CLICK, KIND_PAUSE, KIND_TRACK, KIND_LOOP, KIND_COLOR,
                 KIND_KEY)
 
+# Coordinate space tags for ``RecorderStep.capture_rect``. See the field
+# comment on the dataclass for why both exist.
+CAPTURE_SPACE_DIP = "dip"
+CAPTURE_SPACE_PHYSICAL = "physical"
+# Same two tags for ``RecorderStep.color_search_rect``. Kept as separate
+# names so a grep for either field's space finds only its own call sites.
+COLOR_SEARCH_SPACE_DIP = CAPTURE_SPACE_DIP
+COLOR_SEARCH_SPACE_PHYSICAL = CAPTURE_SPACE_PHYSICAL
+
 
 def _new_step_id() -> str:
     """Stable per-step ID used to key the on-disk template PNG file."""
     return uuid.uuid4().hex[:12]
+
+
+def new_view_id() -> str:
+    """Suffix for an alternate-view PNG: ``<step_id>_view_<view_id>.png``."""
+    return uuid.uuid4().hex[:8]
+
+
+def template_paths_of(step: "RecorderStep") -> list[str]:
+    """Every template path (primary + extra views) a step references.
+    Empty for non-track steps and for track steps with nothing captured."""
+    if step.kind != KIND_TRACK:
+        return []
+    out: list[str] = []
+    if step.template_path:
+        out.append(str(step.template_path))
+    for p in step.extra_template_paths or []:
+        if p:
+            out.append(str(p))
+    return out
+
+
+def orphaned_template_paths(step: "RecorderStep",
+                            remaining: list["RecorderStep"]) -> list[str]:
+    """Template paths of ``step`` that no step in ``remaining`` still uses.
+
+    Duplicated steps from older builds share one PNG, so removing a step
+    must only take a file with it when it is the last reference. Paths
+    are compared as normalized strings; both sides come from the same
+    ``os.path.relpath`` writer so that is sufficient.
+    """
+    def _norm(p: str) -> str:
+        return str(p).replace("\\", "/").lower()
+
+    still_used = {
+        _norm(p)
+        for other in remaining
+        if other is not step
+        for p in template_paths_of(other)
+    }
+    return [p for p in template_paths_of(step) if _norm(p) not in still_used]
 
 
 def _parse_rgb(raw: object) -> Optional[tuple[int, int, int]]:
@@ -56,7 +105,7 @@ def _parse_rgb(raw: object) -> Optional[tuple[int, int, int]]:
 @dataclass
 class RecorderStep:
     zone: Optional[Zone] = None
-    click_type: str = "left"        # "left" | "right"
+    click_type: str = "left"        # "left" | "right" | "middle"
     click_mode: str = "single"      # "single" | "double"
     shape: str = "rect"             # default shape if user hasn't drawn yet
     click_count: int = 1            # how many clicks fire here before advancing
@@ -64,7 +113,7 @@ class RecorderStep:
     delay_max: float = 3.0
     kind: str = KIND_CLICK
     # User-controlled enable flag. When False, the engine rotates past
-    # this step without firing — equivalent to "comment it out for now."
+    # this step without firing, equivalent to "comment it out for now."
     # Persists across sessions so disabled steps survive a restart. Used
     # for testing iteration ("does the macro work without the key step?")
     # without forcing the user to delete + recreate.
@@ -76,13 +125,24 @@ class RecorderStep:
 
     # KIND_TRACK fields (ignored otherwise). template_path is relative to the
     # config dir so launching from a different cwd still finds the PNG.
-    # extra_template_paths holds additional "views" of the same target —
+    # extra_template_paths holds additional "views" of the same target,
     # useful when an NPC rotates / changes camera angle. The engine matches
     # against ALL of them every frame and uses whichever scores highest.
+    #
+    # capture_rect is ``(x1, y1, x2, y2)`` of the region the primary template
+    # was grabbed from. New captures store it in PHYSICAL pixels (the mss
+    # ``monitors[0]`` space, matching what the tracker searches and what
+    # the template PNG actually contains) and set ``capture_rect_space`` to
+    # "physical". Configs written before that change hold Qt DIP coords and
+    # load with ``capture_rect_space == "dip"``; consumers must convert
+    # (``utils.dpi_cursor.dip_rect_to_physical``) before handing the rect
+    # to mss or the tracker. On a 100% DPI single-monitor setup the two
+    # spaces coincide, which is why the bug went unnoticed for so long.
     step_id: str = field(default_factory=_new_step_id)
     template_path: Optional[str] = None
     template_size: tuple[int, int] = (0, 0)        # (w, h) of the primary template
-    capture_rect: Optional[tuple[int, int, int, int]] = None  # original screen rect
+    capture_rect: Optional[tuple[int, int, int, int]] = None
+    capture_rect_space: str = CAPTURE_SPACE_PHYSICAL
     extra_template_paths: list[str] = field(default_factory=list)
     extra_template_sizes: list[tuple[int, int]] = field(default_factory=list)
     tracker_threshold: float = 0.65
@@ -108,12 +168,14 @@ class RecorderStep:
 
     # KIND_COLOR fields. The engine clicks any pixel within `color_tolerance`
     # (RGB euclidean distance) of `color_target_rgb` OR any colour in
-    # ``color_extra_rgbs`` — useful for buttons with multi-tone gradients,
+    # ``color_extra_rgbs``, useful for buttons with multi-tone gradients,
     # anti-aliased edges, or game UI that varies slightly between states.
     # Tolerance is shared across all colors. 0 = exact match; ~30 is a
-    # sensible default; ~80 is permissive. ``color_search_rect`` bounds the
-    # per-cycle scan to a single monitor (the one the user picked the
-    # primary color on); ``None`` falls back to the full virtual screen.
+    # sensible default; ~80 is permissive. ``color_search_rect`` is
+    # ``(x1, y1, x2, y2)`` in PHYSICAL pixels (mss ``monitors[0]`` space)
+    # bounding the per-cycle scan to the monitor the primary color was
+    # picked on; ``None`` falls back to the full virtual screen. ``zone``
+    # (DIP, like every other zone) optionally narrows where matches count.
     color_target_rgb: Optional[tuple[int, int, int]] = None
     color_tolerance: int = 30
     color_search_rect: Optional[tuple[int, int, int, int]] = None
@@ -122,13 +184,19 @@ class RecorderStep:
     # KIND_KEY fields. ``key_combo`` is a +-joined modifier-then-key string
     # parsed by ``modules.key_timer.parse_combo`` (e.g. "z", "f1",
     # "ctrl+shift+f5"). ``key_hold_s`` keeps the key down for that many
-    # seconds before releasing — useful for charge-then-release game inputs;
+    # seconds before releasing, useful for charge-then-release game inputs;
     # 0 = ordinary tap. ``key_repeat`` fires the same combo N times back to
     # back within the step (default 1) to handle "press space three times to
     # eat" macros without needing three separate steps.
     key_combo: str = ""
     key_hold_s: float = 0.0
     key_repeat: int = 1
+    # Coordinate space of ``color_search_rect``. New steps are written in
+    # physical mss pixels (the eyedropper stores the picked monitor's
+    # physical bounds). Configs saved before this tag existed carry Qt
+    # DIPs, so from_json defaults an untagged rect to "dip" and the
+    # engine converts at grab time.
+    color_search_rect_space: str = COLOR_SEARCH_SPACE_PHYSICAL
 
     def to_json(self) -> dict:
         out: dict = {
@@ -150,6 +218,7 @@ class RecorderStep:
                 "template_size": list(self.template_size),
                 "capture_rect": (list(self.capture_rect)
                                   if self.capture_rect is not None else None),
+                "capture_rect_space": str(self.capture_rect_space or CAPTURE_SPACE_PHYSICAL),
                 "extra_template_paths": list(self.extra_template_paths),
                 "extra_template_sizes": [list(sz)
                                           for sz in self.extra_template_sizes],
@@ -175,6 +244,8 @@ class RecorderStep:
                 "color_search_rect": (list(self.color_search_rect)
                                         if self.color_search_rect is not None
                                         else None),
+                "color_search_rect_space": str(
+                    self.color_search_rect_space or COLOR_SEARCH_SPACE_PHYSICAL),
                 "color_extra_rgbs": [list(rgb) for rgb in self.color_extra_rgbs],
                 "timeout_seconds": float(self.timeout_seconds),
                 "on_timeout": str(self.on_timeout or "skip"),
@@ -201,15 +272,26 @@ class RecorderStep:
         cap_tuple = (tuple(int(v) for v in cap)
                       if isinstance(cap, (list, tuple)) and len(cap) == 4
                       else None)
+        # Configs written before the physical-pixel change carry no space
+        # tag; those rects were Qt DIPs, so default the tag accordingly.
+        cap_space = d.get("capture_rect_space")
+        if cap_space not in (CAPTURE_SPACE_DIP, CAPTURE_SPACE_PHYSICAL):
+            cap_space = CAPTURE_SPACE_DIP if cap_tuple is not None else CAPTURE_SPACE_PHYSICAL
         csr = d.get("color_search_rect")
         csr_tuple = (tuple(int(v) for v in csr)
                       if isinstance(csr, (list, tuple)) and len(csr) == 4
                       else None)
+        # Same "missing tag = dip" rule as capture_rect_space, and for the
+        # same reason: the untagged rects were written from Qt geometry.
+        csr_space = d.get("color_search_rect_space")
+        if csr_space not in (COLOR_SEARCH_SPACE_DIP, COLOR_SEARCH_SPACE_PHYSICAL):
+            csr_space = (COLOR_SEARCH_SPACE_DIP if csr_tuple is not None
+                         else COLOR_SEARCH_SPACE_PHYSICAL)
         ts = d.get("template_size")
         ts_tuple = (int(ts[0]), int(ts[1])) if (
             isinstance(ts, (list, tuple)) and len(ts) == 2) else (0, 0)
         # Extra views (multi-template). Older configs won't have these keys
-        # — they default to empty lists, behavior is identical to before.
+        #, they default to empty lists, behavior is identical to before.
         ext_paths = d.get("extra_template_paths") or []
         ext_paths = [str(p) for p in ext_paths if isinstance(p, str) and p]
         ext_sizes_raw = d.get("extra_template_sizes") or []
@@ -236,6 +318,7 @@ class RecorderStep:
             template_path=d.get("template_path"),
             template_size=ts_tuple,
             capture_rect=cap_tuple,
+            capture_rect_space=cap_space,
             extra_template_paths=ext_paths,
             extra_template_sizes=ext_sizes,
             tracker_threshold=float(d.get("tracker_threshold", 0.65)),
@@ -248,6 +331,7 @@ class RecorderStep:
             color_target_rgb=_parse_rgb(d.get("color_target_rgb")),
             color_tolerance=max(0, min(255, int(d.get("color_tolerance", 30) or 30))),
             color_search_rect=csr_tuple,
+            color_search_rect_space=csr_space,
             color_extra_rgbs=[
                 rgb for rgb in (
                     _parse_rgb(item) for item in (d.get("color_extra_rgbs") or [])

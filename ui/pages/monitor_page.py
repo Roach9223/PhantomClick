@@ -1,4 +1,4 @@
-"""Monitor page — :class:`PageHeader` + :class:`MonitorCard`.
+"""Monitor page, :class:`PageHeader` + :class:`MonitorCard`.
 
 Single left-aligned column with content max-width capped at
 :data:`ui.theme.PAGE_CONTENT_MAX_WIDTH`. Mirrors the structure of

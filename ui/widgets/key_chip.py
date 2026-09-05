@@ -1,7 +1,8 @@
-"""``KeyChip`` — visual key cap for hotkey display.
+"""``KeyChip``: visual key cap for hotkey display.
 
-Mono uppercase text inside a bordered, slightly elevated rectangle.
-Looks like a keyboard key, reads like a value.
+Mono uppercase text inside a bordered rectangle on the panel colour.
+Looks like a key, reads like a value. Text is TEXT_PRIMARY; lime is not
+used here because a bound key is not a live state.
 """
 
 from __future__ import annotations
@@ -19,19 +20,17 @@ class KeyChip(QLabel):
         super().__init__(text.upper() if text else "", parent)
         self.setObjectName("key-chip")
         self.setAlignment(Qt.AlignCenter)
-        self.setMinimumHeight(28)
-        self.setMinimumWidth(48)
-        # Padding so single-letter keys still feel like keys.
+        self.setMinimumHeight(26)
+        self.setMinimumWidth(44)
         self.setStyleSheet(
-            f"background: {t.SURFACE_HIGH}; "
-            f"color: {t.ACCENT}; "
+            f"background: {t.SURFACE_PANEL}; "
+            f"color: {t.TEXT_PRIMARY}; "
             f"font-family: {t.FONT_MONO}; "
             f"font-size: {t.SIZE_KEY_CHIP}px; "
-            f"font-weight: 700; "
-            f"letter-spacing: 0.5px; "
+            f"font-weight: 600; "
             f"border: 1px solid {t.BORDER_STRONG}; "
             f"border-radius: {t.RADIUS_INPUT}px; "
-            f"padding: 4px 12px;"
+            f"padding: 3px 10px;"
         )
 
     def set_text(self, text: str) -> None:

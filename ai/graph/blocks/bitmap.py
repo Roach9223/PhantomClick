@@ -1,4 +1,4 @@
-"""Bitmap (template) matching blocks — backed by
+"""Bitmap (template) matching blocks, backed by
 `rs3vision_studio.algorithms.bitmap`.
 
 Give it a reference PNG of what you're looking for and a tolerance; it
@@ -29,7 +29,7 @@ def _list_bitmap_templates() -> list:
 
 
 # ─────────────────────────────────────────────────────────────────
-# BITMAP CACHE — loads PNGs once per (path, mtime).
+# BITMAP CACHE, loads PNGs once per (path, mtime).
 # ─────────────────────────────────────────────────────────────────
 
 _BMP_CACHE: Dict[str, tuple] = {}  # path → (mtime, ndarray)

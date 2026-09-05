@@ -3,7 +3,7 @@
 Lets the runner consume a sequence of saved frames (PNG files in a
 directory, or a single PNG) instead of live ``mss`` capture. Used by
 the AI tab's "▶ Replay" button to iterate on procedures without the
-game running — feed it a ``runs/<session>/failures/`` directory and
+game running, feed it a ``runs/<session>/failures/`` directory and
 the bot ticks against the same frames the user last saw fail.
 
 The replay source matches the runner's ``_capture()`` contract:
@@ -32,7 +32,7 @@ class FrameReplay:
       None. Recurses one level so ``runs/<session>/failures/`` and
       similar nested layouts work without glob fiddling.
 
-    Each frame is loaded once on first access and cached in memory —
+    Each frame is loaded once on first access and cached in memory , 
     the typical replay set is a handful of failure frames or one
     fishing-spot recording, so RAM pressure is fine. If we ever ship
     multi-thousand-frame video replay we'll swap to lazy decode.

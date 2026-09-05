@@ -1,24 +1,25 @@
-"""Click page — :class:`PageHeader` + :class:`ClickZoneCard` +
-:class:`TimingCard`.
+"""Click page: the SETUP pane for Click mode.
 
-Two-column grid above ``CLICK_PAGE_TWO_COL_MIN``, single-column stack below.
-The flip happens via a ``resizeEvent`` watcher that re-positions cards inside
-a single persistent :class:`QGridLayout` — never swaps the layout itself, which
-avoids the Qt ownership-transfer fragility that segfaults at runtime. Cards
-hug the top of the page (``addStretch(1)`` after the grid) so empty space
-never floats below configured cards.
+The deck already runs the daily loop for Click mode (REDRAW ZONE, MIN /
+MAX / REALISM sliders, L / R / M, RUN), so this pane holds only what is
+set once: the click area itself (:class:`ClickZoneCard`) and, behind a
+collapsed expander, the timing details (:class:`TimingCard`: presets,
+button, pattern). Realism lives on the deck slider and the Behavior page,
+not here.
+
+The card keeps the ``zone_card`` / ``timing_card`` attributes the deck and
+the palette commands drive.
 """
 
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (
-    QGridLayout, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
-)
+from PySide6.QtWidgets import QLabel, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
 from .. import theme as t
 from ..cards.click_mode import ClickZoneCard, TimingCard
-from ..widgets.page_header import PageHeader
+from ..widgets.expander import Expander
+from ..widgets.page_header import EditorHeader
 
 
 class ClickPage(QWidget):
@@ -40,62 +41,55 @@ class ClickPage(QWidget):
         page.setContentsMargins(t.SP_SM, t.SP_SM, t.SP_SM, t.SP_LG)
         page.setSpacing(t.SP_MD)
 
-        page.addWidget(PageHeader(
-            "Click mode",
-            "One zone, clicks forever with humanized timing",
-        ))
+        self.header = EditorHeader(
+            "Click setup",
+            "1. Draw an area → 2. Choose an interval → 3. Test once → Start.",
+        )
+        page.addWidget(self.header)
 
-        # Cards.
         self.zone_card = ClickZoneCard(app)
-        self.timing_card = TimingCard(app)
         self.zone_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        page.addWidget(self.zone_card)
+
+        # Timing details fold away: presets, button and pattern are set
+        # once, and the interval itself is on the deck's MIN / MAX sliders.
+        self.timing_card = TimingCard(app)
         self.timing_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.timing_expander = Expander("Timing details", preview="presets, button, pattern")
+        self.timing_expander.setToolTip(
+            "Interval presets, which mouse button fires and single or double "
+            "click. The interval itself is also on the deck's MIN / MAX sliders.")
+        self.timing_expander.set_content(self.timing_card)
+        self.timing_expander.set_open(False)
+        page.addWidget(self.timing_expander)
 
-        # Persistent grid that hosts both cards. We only re-place the cards
-        # and toggle column stretches when flipping between two-col / one-col;
-        # the layout object itself is never swapped (which would segfault).
-        self._cards_holder = QWidget()
-        self._cards_holder.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self._cards_grid = QGridLayout(self._cards_holder)
-        self._cards_grid.setContentsMargins(0, 0, 0, 0)
-        self._cards_grid.setHorizontalSpacing(t.SP_MD)
-        self._cards_grid.setVerticalSpacing(t.SP_MD)
-        self._cards_grid.setAlignment(Qt.AlignTop)
-        page.addWidget(self._cards_holder)
+        self.readiness = QLabel()
+        self.readiness.setWordWrap(True)
+        self.readiness.setProperty("role", "body")
+        page.addWidget(self.readiness)
+        self.test_btn = QPushButton("Test one click")
+        self.test_btn.setToolTip("After the start countdown, click once in the area and stop. F7 cancels.")
+        self.test_btn.clicked.connect(app._test_click_once)
+        app.locker.register(self.test_btn)
+        page.addWidget(self.test_btn)
 
-        # Push cards to the top — they hug their content; no empty space below.
         page.addStretch(1)
 
         scroll.setWidget(self._inner)
         outer.addWidget(scroll)
 
-        self._is_two_col: bool | None = None
-        self._apply_layout(two_col=True)
+    def tick(self) -> None:
+        from ui.readiness import readiness_message
+        message = readiness_message(self.app) if self.app._active_mode == "clicker" else ""
+        ready = self.app._zone is not None and not message
+        self.test_btn.setEnabled(ready and self.app._state_str == "idle")
+        self.readiness.setText("Ready. Test one click, then use Start to repeat."
+                               if ready else message or "Draw an area to enable the one-click test.")
 
-    def _apply_layout(self, *, two_col: bool) -> None:
-        if two_col == self._is_two_col:
-            return
-        # Detach cards from the grid first; addWidget at new positions
-        # re-attaches them. This avoids tearing down the grid itself.
-        self._cards_grid.removeWidget(self.zone_card)
-        self._cards_grid.removeWidget(self.timing_card)
+    def reveal_timing(self) -> None:
+        """Open the timing details (the deck's INTERVAL row lands here)."""
+        self.timing_expander.set_open(True)
 
-        if two_col:
-            # 1.15fr / 1fr ratio from the mockup (115 / 100).
-            self._cards_grid.setColumnStretch(0, 115)
-            self._cards_grid.setColumnStretch(1, 100)
-            self._cards_grid.addWidget(self.zone_card, 0, 0)
-            self._cards_grid.addWidget(self.timing_card, 0, 1)
-        else:
-            self._cards_grid.setColumnStretch(0, 1)
-            self._cards_grid.setColumnStretch(1, 0)
-            self._cards_grid.addWidget(self.zone_card, 0, 0)
-            self._cards_grid.addWidget(self.timing_card, 1, 0)
-
-        self._is_two_col = two_col
-
-    def resizeEvent(self, event):  # noqa: N802 (Qt name)
-        super().resizeEvent(event)
-        want_two_col = self.width() >= t.CLICK_PAGE_TWO_COL_MIN
-        if want_two_col != self._is_two_col:
-            self._apply_layout(two_col=want_two_col)
+    def sync_overlay_switch(self) -> None:
+        """Mirror the on-screen outline toggle (App.set_overlay_visible)."""
+        self.zone_card.sync_overlay_switch()

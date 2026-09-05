@@ -1,9 +1,9 @@
 """Quiet button variants for the form-style pages.
 
-:class:`QuietAccentButton` — tinted-coral primary action. Reads as
+:class:`QuietAccentButton`, tinted-coral primary action. Reads as
 "important" without the loud solid-fill of a hero CTA.
 
-:class:`BorderlessButton` — transparent secondary action that fills only
+:class:`BorderlessButton`, transparent secondary action that fills only
 on hover. Used for menu triggers (``Rect ▾``) and footer links.
 
 Both apply their visual via the QSS ``role`` attribute, so the actual

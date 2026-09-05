@@ -23,7 +23,7 @@ class OnStartBlock(Block):
             default="",
             kind="text",
             description=(
-                "Optional phase label — appears on the Dashboard phase chip "
+                "Optional phase label, appears on the Dashboard phase chip "
                 "while this tick is running. Leave blank to keep the current phase."
             ),
         ),
@@ -68,7 +68,7 @@ class WaitBlock(Block):
             default="",
             kind="text",
             description=(
-                "Optional phase label — e.g. 'waiting' or 'recovering'. Shows "
+                "Optional phase label, e.g. 'waiting' or 'recovering'. Shows "
                 "on the Dashboard chip while this block runs."
             ),
         ),

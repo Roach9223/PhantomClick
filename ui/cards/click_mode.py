@@ -1,12 +1,15 @@
-"""Click mode cards — :class:`ClickZoneCard` (zone setup, visual preview) +
-:class:`TimingCard` (interval, presets, button, pattern, realism).
+"""Click mode editor cards, :class:`ClickZoneCard` (the area on screen) +
+:class:`TimingCard` (interval, presets, button, pattern).
 
-The 2026 redesign flattens both cards: instead of a stack of ``Section``
-wrappers, each card body reads top-to-bottom as a single rhythm — preview /
-controls / actions in the zone card, interval / presets / button-and-pattern
-/ nested realism panel in the timing card. Section wrappers are reserved for
-heavier groupings on the Behavior page; here we lean on :class:`SectionLabel`
-eyebrows and inline rows so the card hugs its content.
+Built for the deck's editor pane, which is 480 to 700 px wide and sits
+beside the live viewport: one column, every row reads label on the left
+and control on the right, and the one primary action (DRAW AREA) is the
+widest thing on the card. Nothing here needs more than the pane's minimum
+width, so the pane never clips.
+
+The zone outline on screen is always the theme accent; the card only
+offers whether it shows and how solid the fill is. The ON SCREEN switch
+is the same toggle as the header's eye button (``App.set_overlay_visible``).
 """
 
 from __future__ import annotations
@@ -14,35 +17,75 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QGuiApplication
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QColorDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
-    QMessageBox, QPushButton, QSlider, QVBoxLayout, QWidget,
+    QGridLayout, QHBoxLayout, QLabel, QMessageBox, QPushButton, QSlider,
+    QWidget,
 )
 
 from ui.config_io import save_config
 from ui.tooltip_fmt import tooltip
 
-from .. import theme as t
+from .. import icons, theme as t
+from ..screen_utils import zone_screen_info
 from ..widgets.card import Card
 from ..widgets.field import value_label
 from ..widgets.interval_display import IntervalDisplay
+from ..widgets.ios_switch import IOSSwitch
+from ..widgets.lock_control import ZoneLockControl
 from ..widgets.preset_card import PresetCard
 from ..widgets.range_spin_slider import RangeSpinSlider
-from ..widgets.section_label import SectionLabel
 from ..widgets.segmented import SegmentedControl
 from ..widgets.state_pill import StatePill
-from ..widgets.zone_preview import ZonePreview
+
+# Left column of every label / control row, so the controls line up down
+# the card.
+_ROW_LABEL_W = 96
 
 
-def _primary_monitor_info() -> Tuple[str, Tuple[int, int]]:
-    """Return ("WxH · primary", (w, h)) for the OS-reported primary screen."""
-    screen = QGuiApplication.primaryScreen()
-    if screen is None:
-        return ("", (0, 0))
-    geom = screen.geometry()
-    w, h = int(geom.width()), int(geom.height())
-    return (f"{w} × {h} · primary", (w, h))
+def row_label(text: str, tip: str = "") -> QLabel:
+    """Uppercase tracked row label in TEXT_TERTIARY, fixed width."""
+    lbl = QLabel(text.upper())
+    lbl.setProperty("role", "section-label")
+    font = lbl.font()
+    font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, t.LABEL_TRACKING)
+    lbl.setFont(font)
+    lbl.setFixedWidth(_ROW_LABEL_W)
+    if tip:
+        lbl.setToolTip(tip)
+    return lbl
+
+
+def control_row(label: str, *widgets: QWidget, stretch_last: bool = False,
+                tip: str = "") -> QHBoxLayout:
+    """``LABEL   [control] [control]`` on one line."""
+    row = QHBoxLayout()
+    row.setContentsMargins(0, 0, 0, 0)
+    row.setSpacing(t.SP_SM)
+    row.addWidget(row_label(label, tip))
+    for i, w in enumerate(widgets):
+        last = i == len(widgets) - 1
+        row.addWidget(w, 1 if (stretch_last and last) else 0)
+    if not stretch_last:
+        row.addStretch(1)
+    return row
+
+
+def zone_summary(zone) -> str:
+    """One line describing ``zone``: size, position and screen."""
+    if zone is None:
+        return "No area yet. Draw one on screen; clicks land at random points inside it."
+    label, _size, _origin = zone_screen_info(zone)
+    screen = label.split(" · ")[0]
+    if zone.shape == "rect":
+        x1, y1, x2, y2 = zone.rect
+        body = f"{x2 - x1} × {y2 - y1} px at ({x1}, {y1})"
+    elif zone.shape == "circle":
+        cx, cy, r = zone.circle
+        body = f"circle, radius {r} px, centre ({cx}, {cy})"
+    else:
+        body = f"custom shape with {len(zone.vertices)} corners"
+    return f"{body} on the {screen} screen"
 
 
 class ClickZoneCard(Card):
@@ -50,97 +93,113 @@ class ClickZoneCard(Card):
         super().__init__("Click area")
         self.app = app
 
-        # Header pill: tracks zone state. Update via _refresh_pill().
         self.pill = StatePill("Not set", tone="neutral")
         self.add_to_header(self.pill)
 
         body = self.body_layout()
         body.setSpacing(t.SP_SM)
 
-        # 1) Visual zone preview ------------------------------------------
-        self.preview = ZonePreview()
-        body.addWidget(self.preview)
+        # 1) One line of facts about the zone (or what to do next). The
+        # area itself is drawn on the real screen and shown in the live
+        # viewport and the zone map, so there is no mini-map here.
+        self.summary = QLabel("")
+        self.summary.setProperty("role", "body")
+        self.summary.setWordWrap(True)
+        body.addWidget(self.summary)
 
-        # 2) Inline controls row: shape segmented (left), overlay swatch +
-        #    opacity slider + value chip (right).
-        controls_row = QHBoxLayout()
-        controls_row.setContentsMargins(0, 0, 0, 0)
-        controls_row.setSpacing(t.SP_MD)
+        # 3) The action row. DRAW is the one primary button on the card.
+        actions = QHBoxLayout()
+        actions.setContentsMargins(0, 0, 0, 0)
+        actions.setSpacing(t.SP_SM)
 
-        shape_lbl = QLabel("Shape")
-        shape_lbl.setProperty("role", "body")
-        controls_row.addWidget(shape_lbl)
-
-        self._shape = SegmentedControl(
-            [("rect", "Rect"), ("circle", "Circle"), ("polygon", "Custom")],
-            value=app._zone_shape,
-        )
-        self._shape.valueChanged.connect(self._on_shape)
-        controls_row.addWidget(self._shape)
-
-        controls_row.addSpacing(t.SP_MD)
-
-        self.color_btn = app.locker.register(QPushButton(""))
-        self.color_btn.setFixedSize(22, 22)
-        self.color_btn.setCursor(Qt.PointingHandCursor)
-        self.color_btn.setToolTip("Pick the zone overlay color.")
-        self._sync_color_btn(app.cfg["zone_color"])
-        self.color_btn.clicked.connect(self._on_pick_color)
-        controls_row.addWidget(self.color_btn)
-
-        self.opacity_slider = QSlider(Qt.Horizontal)
-        self.opacity_slider.setRange(5, 100)
-        self.opacity_slider.setValue(int(app.cfg["zone_opacity"] * 100))
-        self.opacity_slider.valueChanged.connect(self._on_opacity)
-        self.opacity_slider.setMinimumWidth(80)
-        controls_row.addWidget(self.opacity_slider, 1)
-
-        self.opacity_value = value_label(f"{int(app.cfg['zone_opacity']*100)}%")
-        controls_row.addWidget(self.opacity_value)
-
-        body.addLayout(controls_row)
-
-        # 3) Action row ---------------------------------------------------
-        action_row = QHBoxLayout()
-        action_row.setContentsMargins(0, 0, 0, 0)
-        action_row.setSpacing(t.SP_SM)
-
-        self.draw_btn = app.locker.register(QPushButton("↻  Redraw zone"))
+        self.draw_btn = app.locker.register(QPushButton("Draw area"))
+        self.draw_btn.setIcon(icons.icon("redraw", 16, t.TEXT_ON_ACCENT))
         self.draw_btn.setProperty("variant", "primary")
-        self.draw_btn.setMinimumHeight(t.BUTTON_H_PRIMARY)
+        self.draw_btn.setMinimumHeight(t.BUTTON_H_HERO)
         self.draw_btn.setCursor(Qt.PointingHandCursor)
         self.draw_btn.setToolTip(tooltip(
-            "Open a fullscreen overlay. Drag to define the zone. "
+            "Open a fullscreen overlay and drag the area to click in. "
             "Esc cancels.",
             shortcut="Ctrl+D",
         ))
         self.draw_btn.clicked.connect(self._on_draw)
-        action_row.addWidget(self.draw_btn, 1)
+        actions.addWidget(self.draw_btn, 1)
 
         self.clear_btn = app.locker.register(QPushButton("Clear"))
-        self.clear_btn.setMinimumHeight(t.BUTTON_H)
-        self.clear_btn.setMinimumWidth(80)
+        self.clear_btn.setProperty("variant", "ghost")
+        self.clear_btn.setMinimumHeight(t.BUTTON_H_HERO)
         self.clear_btn.setCursor(Qt.PointingHandCursor)
-        self.clear_btn.setToolTip("Remove the current zone.")
+        self.clear_btn.setToolTip("Remove the current area.")
         self.clear_btn.clicked.connect(self._on_clear)
-        action_row.addWidget(self.clear_btn)
+        actions.addWidget(self.clear_btn)
+        body.addLayout(actions)
 
-        body.addLayout(action_row)
+        body.addSpacing(t.SP_XS)
+
+        # 4) Settings rows: shape, lock, on-screen outline.
+        self._shape = SegmentedControl(
+            [("rect", "Rect"), ("circle", "Circle"), ("polygon", "Custom")],
+            value=app._zone_shape,
+            tooltips={
+                "rect": "Next DRAW: drag a rectangle. Clicks land at random points inside it.",
+                "circle": "Next DRAW: drag a circle from its centre. Clicks land inside the circle.",
+                "polygon": "Next DRAW: click corner by corner to outline any shape, then close it.",
+            },
+        )
+        self._shape.valueChanged.connect(self._on_shape)
+        body.addLayout(control_row(
+            "Shape", self._shape,
+            tip="The shape the next DRAW AREA uses. Changing it does not alter the current area."))
+
+        self.lock_ctl = ZoneLockControl()
+        self.lock_ctl.modeChanged.connect(self._on_lock_mode)
+        app.locker.register(self.lock_ctl)
+        body.addWidget(self.lock_ctl)
+
+        self.overlay_switch = IOSSwitch()
+        self.overlay_switch.setToolTip(
+            "Show the area as a lime outline on your real screen so you can "
+            "see where clicks will land. Same as the eye button in the "
+            "header and Ctrl+H. The outline never blocks clicks; the engine "
+            "clicks straight through it."
+        )
+        self.overlay_switch.setChecked(bool(app.cfg.get("show_zone_overlay", True)))
+        self.overlay_switch.toggled.connect(self._on_overlay_switch)
+
+        self.opacity_slider = QSlider(Qt.Horizontal)
+        self.opacity_slider.setRange(5, 100)
+        self.opacity_slider.setValue(int(app.cfg["zone_opacity"] * 100))
+        self.opacity_slider.setToolTip(
+            "How solid the fill inside the on-screen outline is. Low keeps "
+            "the game readable through it; high makes the area obvious. "
+            "The border stays at full strength either way.")
+        self.opacity_slider.valueChanged.connect(self._on_opacity)
+        self.opacity_slider.setMinimumWidth(80)
+        self.opacity_value = value_label(f"{int(app.cfg['zone_opacity'] * 100)}%")
+
+        overlay_row = QHBoxLayout()
+        overlay_row.setContentsMargins(0, 0, 0, 0)
+        overlay_row.setSpacing(t.SP_SM)
+        overlay_row.addWidget(row_label(
+            "On screen",
+            "Draw the click area on your real screen as a lime outline. The "
+            "switch shows or hides it; the slider sets how solid the fill is."))
+        overlay_row.addWidget(self.overlay_switch)
+        overlay_row.addSpacing(t.SP_XS)
+        overlay_row.addWidget(self.opacity_slider, 1)
+        overlay_row.addWidget(self.opacity_value)
+        body.addLayout(overlay_row)
 
         self._refresh_preview()
 
-    # -- Behavior ----------------------------------------------------------
-
-    def _sync_color_btn(self, hex_color: str) -> None:
-        self.color_btn.setStyleSheet(
-            f"background: {hex_color}; "
-            f"border: 1px solid {t.BORDER_STRONG}; "
-            f"border-radius: 4px;"
-        )
+    # -- State -------------------------------------------------------------
 
     def _refresh_preview(self) -> None:
-        label, size = _primary_monitor_info()
-        self.preview.set_zone(self.app._zone, label, size)
+        zone = self.app._zone
+        self.lock_ctl.set_zone(zone)
+        self.summary.setText(zone_summary(zone))
+        self.draw_btn.setText("Redraw area" if zone is not None else "Draw area")
+        self.clear_btn.setEnabled(zone is not None)
         self._refresh_pill()
 
     def _refresh_pill(self, override: Optional[Tuple[str, str]] = None) -> None:
@@ -151,30 +210,53 @@ class ClickZoneCard(Card):
         if self.app._zone is None:
             self.pill.set_state("Not set", "neutral")
         else:
-            self.pill.set_state("Configured", "accent")
+            self.pill.set_state("Ready", "accent")
+
+    def sync_overlay_switch(self) -> None:
+        """Mirror ``show_zone_overlay`` without re-emitting the toggle."""
+        on = bool(self.app.cfg.get("show_zone_overlay", True))
+        if self.overlay_switch.isChecked() != on:
+            self.overlay_switch.blockSignals(True)
+            self.overlay_switch.setChecked(on)
+            self.overlay_switch.blockSignals(False)
+
+    # -- Handlers ----------------------------------------------------------
 
     def _on_shape(self, value: str) -> None:
         self.app._zone_shape = value
         self.app.cfg["zone_shape"] = value
         save_config(self.app.cfg)
 
+    def _on_lock_mode(self, mode: str) -> None:
+        zone = self.app._zone
+        if zone is None:
+            return
+        from modules.zone_lock import apply_lock_mode
+        new_zone = apply_lock_mode(zone, mode)
+        if mode == "window" and new_zone.lock is None:
+            self.app.toasts.post(
+                "No window under the zone centre, so it stays screen-locked.",
+                kind="warn",
+            )
+        self.app._zone = new_zone
+        self.app.cfg["zone"] = new_zone.to_json()
+        save_config(self.app.cfg)
+        self.app.zone_locks.forget("main")
+        self._refresh_preview()
+        self.app._push_config_to_clicker()
+        self.app.overlay_manager.apply_visibility()
+
     def _on_draw(self) -> None:
         from modules.clicker import ClickerState
         if self.app.clicker.state != ClickerState.IDLE:
             return
 
-        self._refresh_pill(("Drawing…", "accent"))
+        self._refresh_pill(("Drawing", "accent"))
 
         def _done(zone):
             if zone is None:
-                # Cancelled — restore overlay if we had one, restore pill.
-                if self.app._zone is not None and self.app.cfg.get("show_zone_overlay", True):
-                    self.app.overlay_manager.show_main(
-                        self.app._zone, self.app.cfg["zone_color"],
-                        self.app.cfg["zone_opacity"],
-                    )
-                self.app.overlay_manager.refresh_step_overlays()
-                self.app.overlay_manager.refresh_hover_overlays()
+                # Cancelled: put the overlays back and settle the pill.
+                self.app.overlay_manager.apply_visibility()
                 self._refresh_pill()
                 return
             self.app._zone = zone
@@ -182,21 +264,16 @@ class ClickZoneCard(Card):
             save_config(self.app.cfg)
             self._refresh_preview()
             self.app._push_config_to_clicker()
-            if self.app.cfg.get("show_zone_overlay", True):
-                self.app.overlay_manager.show_main(
-                    zone, self.app.cfg["zone_color"], self.app.cfg["zone_opacity"],
-                )
-            self.app.overlay_manager.refresh_hover_overlays()
-            self.app.overlay_manager.refresh_step_overlays()
+            self.app.overlay_manager.apply_visibility()
 
-        self.app.open_zone_drawer(self.app._zone_shape, _done)
+        self.app.open_zone_drawer(self.app._zone_shape, _done, attach_lock=True)
 
     def _on_clear(self) -> None:
         if self.app._zone is None:
             return
         if QMessageBox.question(
-            self, "Clear click zone",
-            "Remove the current zone?",
+            self, "Clear click area",
+            "Remove the current area?",
         ) != QMessageBox.Yes:
             return
         self.app._zone = None
@@ -206,63 +283,61 @@ class ClickZoneCard(Card):
         self._refresh_preview()
         self.app._push_config_to_clicker()
 
-    def _on_pick_color(self) -> None:
-        cfg = self.app.cfg
-        result = QColorDialog.getColor(QColor(cfg["zone_color"]), self,
-                                       "Zone color")
-        if result.isValid():
-            hex_color = result.name()
-            cfg["zone_color"] = hex_color
-            self._sync_color_btn(hex_color)
-            save_config(cfg)
-            if self.app._zone is not None and self.app.overlay_manager._main:
-                self.app.overlay_manager._main.update_style(
-                    hex_color, cfg["zone_opacity"],
-                )
+    def _on_overlay_switch(self, on: bool) -> None:
+        self.app.set_overlay_visible(bool(on))
 
     def _on_opacity(self, value: int) -> None:
         cfg = self.app.cfg
         cfg["zone_opacity"] = value / 100.0
         self.opacity_value.setText(f"{value}%")
-        save_config(cfg)
-        if self.app._zone is not None and self.app.overlay_manager._main:
-            self.app.overlay_manager._main.update_style(
-                cfg["zone_color"], cfg["zone_opacity"],
-            )
+        # Overlay repaints live; the disk write waits for the drag to end.
+        self.app.save_config_later()
+        main = self.app.overlay_manager._main
+        if self.app._zone is not None and main is not None:
+            main.update_style(t.ZONE_DEFAULT_COLOR, cfg["zone_opacity"])
 
 
 class TimingCard(Card):
     def __init__(self, app):
-        super().__init__("Timing")
+        # No card title: the page wraps this in a "Timing details" expander.
+        super().__init__(None)
         self.app = app
 
         body = self.body_layout()
         body.setSpacing(t.SP_SM)
 
-        # 1) Interval ----------------------------------------------------
-        body.addWidget(SectionLabel("Interval between clicks"))
+        hint = QLabel(
+            "How long the engine waits between clicks, which mouse button "
+            "fires and whether each fire is one click or a double click. "
+            "The deck's MIN / MAX sliders move the same interval.")
+        hint.setProperty("role", "hint")
+        hint.setWordWrap(True)
+        body.addWidget(hint)
 
+        # 1) Interval: big readout, log slider with typed min / max.
         self.interval_display = IntervalDisplay()
+        self.interval_display.setToolTip(
+            "Shortest and longest wait between two clicks. Each wait is a "
+            "random draw from this range, weighted toward the low end.")
         self.interval_display.set_values(
             float(app.cfg["min_delay"]), float(app.cfg["max_delay"])
         )
         body.addWidget(self.interval_display)
 
-        # Log-scaled slider with companion spinboxes — same behavior as
-        # the per-step delay slider on the Record tab. Sub-second values
-        # occupy roughly half the drag distance instead of <1 %.
         self.range_slider = RangeSpinSlider(
             from_=0.01, to=300.0,
             init_min=app.cfg["min_delay"], init_max=app.cfg["max_delay"],
         )
+        self.range_slider.setToolTip(
+            "Every wait between clicks is drawn from this range. Drag the "
+            "ends or type exact values."
+        )
         self.range_slider.valueChanged.connect(self._on_range_change)
         body.addWidget(self.range_slider)
 
-        # 2) Quick presets (2x2 grid of PresetCards) ---------------------
-        body.addWidget(SectionLabel("Quick presets"))
-
+        # 2) Presets, 2 x 2 so they fit the pane.
         self._preset_defs = [
-            ("Bank-fast", "50 – 150 ms", 0.05, 0.15),
+            ("Bank", "50 – 150 ms", 0.05, 0.15),
             ("Fast", "0.5 – 2 s", 0.5, 2.0),
             ("Medium", "3 – 10 s", 3.0, 10.0),
             ("Slow", "10 – 30 s", 10.0, 30.0),
@@ -281,64 +356,37 @@ class TimingCard(Card):
             preset_grid.addWidget(card, row, col)
             self._preset_cards.append(card)
         body.addLayout(preset_grid)
-
         self._sync_preset_checks()
 
-        # Typographic spacing break (not a section hairline rule).
-        # Audit confirmed this is intentional rhythm whitespace separating
-        # the preset grid from the inline button/pattern rows — do not
-        # remove. Section hairlines were dropped from Section() in round 2;
-        # this divider is a different beast.
-        divider = QFrame()
-        divider.setProperty("role", "divider")
-        divider.setFixedHeight(1)
-        body.addSpacing(t.SP_XS)
-        body.addWidget(divider)
         body.addSpacing(t.SP_XS)
 
-        # 3) Button + Pattern (inline rows) ------------------------------
-        body.addLayout(self._segmented_row(
-            "Button",
-            SegmentedControl(
-                [("left", "Left"), ("right", "Right")],
-                value=app.cfg["click_type"],
-            ),
-            self._on_click_type,
-            attr_name="_button_seg",
-        ))
-        body.addLayout(self._segmented_row(
-            "Pattern",
-            SegmentedControl(
-                [("single", "Single"), ("double", "Double")],
-                value=app.cfg["click_mode"],
-            ),
-            self._on_click_mode,
-            attr_name="_pattern_seg",
-        ))
+        # 3) Button + pattern rows.
+        self._button_seg = SegmentedControl(
+            [("left", "Left"), ("right", "Right"), ("middle", "Middle")],
+            value=app.cfg["click_type"],
+            tooltips={
+                "left": "Fire the left mouse button. The usual choice.",
+                "right": "Fire the right mouse button, for context menus and RuneScape option menus.",
+                "middle": "Fire the middle button (wheel click).",
+            },
+        )
+        self._button_seg.valueChanged.connect(self._on_click_type)
+        body.addLayout(control_row(
+            "Button", self._button_seg,
+            tip="Which mouse button each click uses. Also on the deck as L / R / M."))
 
-        # 4) Nested Realism panel ----------------------------------------
-        from .behavior import RealismStub
-        panel = QFrame()
-        panel.setProperty("role", "panel")
-        panel_layout = QVBoxLayout(panel)
-        panel_layout.setContentsMargins(t.SP_MD, t.SP_SM, t.SP_MD, t.SP_SM)
-        panel_layout.setSpacing(t.SP_XS)
-        panel_layout.addWidget(RealismStub(app))
-        body.addSpacing(t.SP_XS)
-        body.addWidget(panel)
-
-    def _segmented_row(self, label_text, seg, handler, attr_name):
-        seg.valueChanged.connect(handler)
-        setattr(self, attr_name, seg)
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(t.SP_MD)
-        lbl = QLabel(label_text)
-        lbl.setProperty("role", "body")
-        row.addWidget(lbl)
-        row.addStretch(1)
-        row.addWidget(seg)
-        return row
+        self._pattern_seg = SegmentedControl(
+            [("single", "Single"), ("double", "Double")],
+            value=app.cfg["click_mode"],
+            tooltips={
+                "single": "One click per fire.",
+                "double": "Two clicks per fire, 40 to 120 ms apart, like a real double click.",
+            },
+        )
+        self._pattern_seg.valueChanged.connect(self._on_click_mode)
+        body.addLayout(control_row(
+            "Pattern", self._pattern_seg,
+            tip="Whether each fire is a single click or a double click."))
 
     # -- Behavior ----------------------------------------------------------
 
@@ -348,8 +396,8 @@ class TimingCard(Card):
         cfg["max_delay"] = float(hi)
         self.interval_display.set_values(float(lo), float(hi))
         self._sync_preset_checks()
-        save_config(cfg)
-        self.app._push_config_to_clicker()
+        # Fires on every slider pixel; persist once the drag settles.
+        self.app.save_config_later()
 
     def _on_preset_click(self, card: PresetCard) -> None:
         self._apply_preset(card.lo_seconds, card.hi_seconds)
@@ -364,10 +412,19 @@ class TimingCard(Card):
         save_config(cfg)
         self.app._push_config_to_clicker()
 
+    def _refresh_entries(self) -> None:
+        """Re-read the interval from config (palette commands write it
+        directly) and refresh every readout that shows it."""
+        cfg = self.app.cfg
+        lo, hi = float(cfg["min_delay"]), float(cfg["max_delay"])
+        self.range_slider.set_values(lo, hi)
+        self.interval_display.set_values(lo, hi)
+        self._sync_preset_checks()
+
     def _sync_preset_checks(self) -> None:
-        """Mark the preset card whose range matches the current cfg as
-        checked; clear all others. Tolerance is loose so floating-point
-        round-trip from JSON doesn't desync the visual."""
+        """Mark the preset whose range matches the current cfg as checked;
+        clear all others. Tolerance is loose so floating-point round-trip
+        from JSON doesn't desync the visual."""
         cfg = self.app.cfg
         lo = float(cfg["min_delay"])
         hi = float(cfg["max_delay"])
@@ -384,6 +441,14 @@ class TimingCard(Card):
         self.app.cfg["click_type"] = value
         save_config(self.app.cfg)
         self.app._push_config_to_clicker()
+        # The control deck's L / R / M mirror the same setting.
+        deck = getattr(self.app, "deck", None)
+        sync = getattr(getattr(deck, "control_deck", None), "_sync_click_type", None)
+        if callable(sync):
+            try:
+                sync()
+            except Exception:
+                pass
 
     def _on_click_mode(self, value: str) -> None:
         self.app.cfg["click_mode"] = value

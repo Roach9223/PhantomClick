@@ -1,4 +1,4 @@
-"""``BehaviorPageBody`` — Pre-start delay, Realism dial, Advanced overrides.
+"""``BehaviorPageBody``, Pre-start delay, Realism dial, Advanced overrides.
 
 The 2026 redesign flattens the prior single-:class:`Card`-with-Expander
 into a stack of :class:`SettingsGroup`s. The Realism dial gets a custom
@@ -24,7 +24,6 @@ from PySide6.QtWidgets import (
 from ui.config_io import save_config
 
 from .. import theme as t
-from ..widgets.feature_toggle import FeatureToggle
 from ..widgets.field import value_label
 from ..widgets.group_header import GroupHeader
 from ..widgets.ios_switch import IOSSwitch
@@ -63,7 +62,7 @@ class BehaviorPageBody(QWidget):
         prestart_group = SettingsGroup()
         prestart_group.add_row(self._build_slider_row(
             "Delay before first click",
-            "Time after pressing Start before the first click — gives "
+            "Time after pressing Start before the first click, gives "
             "you a window to alt-tab into the target window.",
             cfg_key="prestart_delay",
             from_=0.0, to=10.0, steps=100, value_fmt="{:.1f}s",
@@ -178,7 +177,7 @@ class BehaviorPageBody(QWidget):
         on_change=None,
     ) -> SettingsRow:
         """A row whose right-side control is a LabeledSlider with its
-        own internal label hidden — the row's title carries the label
+        own internal label hidden, the row's title carries the label
         instead. Slider value chip remains visible above the slider."""
         slider = LabeledSlider(
             self.app, "", cfg_key,
@@ -432,7 +431,7 @@ class BehaviorPageBody(QWidget):
         group.add_row(time_row)
 
         outer.addWidget(group)
-        # Two independent masters in this group — register one each.
+        # Two independent masters in this group, register one each.
         # _apply_master OR-aggregates them so the group's active stripe
         # shows whenever either master is on.
         self._register_group(clicks_master, group, [clicks_row])
@@ -482,13 +481,21 @@ class BehaviorPageBody(QWidget):
 
     def _on_realism_change(self, value: int) -> None:
         r = max(0.0, min(1.0, value / 100.0))
-        self.apply_realism_preset(r)
-        if (self.realism_slider.isSliderDown()
-                or self.realism_slider.hasFocus()):
-            self.app.toasts.post(
-                "↻  Replaced Advanced values for this dial position.",
-                kind="info",
-            )
+        # The dial fires per pixel. Only the readout follows live; the
+        # preset (a dozen cfg keys, a save, an engine push, animated
+        # Advanced sliders) and the toast wait for the drag to settle.
+        self.realism_value_lbl.setText(f"{int(r * 100)}%")
+        user_driven = (self.realism_slider.isSliderDown()
+                       or self.realism_slider.hasFocus())
+
+        def _commit(r=r, user_driven=user_driven) -> None:
+            self.apply_realism_preset(r)
+            if user_driven:
+                self.app.toasts.post(
+                    "Replaced Advanced values for this dial position.",
+                    kind="info",
+                )
+        self.app._cfg_debounce.call(_commit)
 
     def apply_realism_preset(self, r: float) -> None:
         app = self.app

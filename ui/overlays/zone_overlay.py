@@ -1,4 +1,4 @@
-"""``ZoneOverlay`` — frameless translucent widget that paints a zone outline
+"""``ZoneOverlay``, frameless translucent widget that paints a zone outline
 plus an optional label badge on the user's screen.
 
 Click-through: the OS layer must NOT route mouse events to this window,
@@ -65,6 +65,20 @@ class ZoneOverlay(QWidget):
         self._opacity = float(opacity)
         self.update()
 
+    def update_zone(self, zone=None, color: Optional[str] = None) -> None:
+        """Move the outline and / or recolor it without re-showing the
+        window. Used by the window-lock tick, where the zone follows a
+        dragged window and turns amber while that window is away."""
+        if zone is not None:
+            self._zone = zone
+            self._reposition()
+        if color is not None:
+            self._color = QColor(color)
+        self.update()
+
+    def current_zone(self):
+        return self._zone
+
     # -- Layout -----------------------------------------------------------
 
     def _reposition(self) -> None:
@@ -124,8 +138,10 @@ class ZoneOverlay(QWidget):
             self._draw_label(p, label_anchor)
 
     def _draw_label(self, p: QPainter, pos: QPointF) -> None:
-        font = QFont(t.FONT_FAMILY.split(",")[0].strip(), 9)
+        font = QFont(t.FONT_FAMILY.split(",")[0].strip())
+        font.setPixelSize(int(t.SIZE_SM))
         font.setBold(True)
+        font.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
         p.setFont(font)
         fm = QFontMetrics(font)
         text = self._label or ""
@@ -137,7 +153,8 @@ class ZoneOverlay(QWidget):
         p.setPen(Qt.NoPen)
         p.setBrush(bg_color)
         p.drawRoundedRect(rect, 4, 4)
-        p.setPen(QPen(QColor("#ffffff")))
+        # Near-black on the lime badge; white on lime is unreadable.
+        p.setPen(QPen(QColor(t.TEXT_ON_ACCENT)))
         p.drawText(rect.adjusted(6, 1, 0, -1), Qt.AlignVCenter | Qt.AlignLeft, text)
 
     # -- Win32 click-through reinforcement --------------------------------

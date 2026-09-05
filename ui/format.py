@@ -2,7 +2,7 @@
 
 Single source of truth for how the GUI renders delays, counts, rates,
 and screen positions. Centralizing these rules keeps the surface
-visually consistent — no tab gets to invent its own decimal precision
+visually consistent, no tab gets to invent its own decimal precision
 or comma-separator habit.
 
 Storage is always seconds (float) for delays. ``fmt_delay`` is the
@@ -18,7 +18,7 @@ from typing import Optional
 def fmt_delay(seconds: float) -> str:
     """Render a seconds value as ``X.XXX s`` (sub-10) or ``X.XX s`` (≥10).
 
-    Single global rule — no mixed ms/s units. Short delays read
+    Single global rule, no mixed ms/s units. Short delays read
     ``0.075 s`` not ``75 ms``; longer delays drop a decimal once they
     exceed 10 s where extra precision is noise. Storage is always
     seconds (float), so this is purely display.
@@ -32,7 +32,7 @@ def fmt_delay(seconds: float) -> str:
 def fmt_count(n: int) -> str:
     """Render an integer with locale-style comma separators.
 
-    Canonical for "how many things" displays — total clicks, event
+    Canonical for "how many things" displays, total clicks, event
     counts, list lengths. No unit; callers append the noun
     (``f"{fmt_count(n)} events"``).
     """
@@ -42,7 +42,7 @@ def fmt_count(n: int) -> str:
 def fmt_position(x: int, y: int) -> str:
     """Render a screen coordinate as ``(X, Y)``.
 
-    Canonical for any "where on screen" readout — last click pos, zone
+    Canonical for any "where on screen" readout, last click pos, zone
     center, click area origin. Space after the comma, parentheses
     around the pair.
     """

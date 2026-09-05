@@ -7,8 +7,14 @@ multi-scale search to tolerate minor zoom / animation. Last position is kept
 between frames so most ticks search a small region around it; if the score
 drops below threshold we optionally rescan the whole screen.
 
-This module is fully synchronous and Tk-free; the click engine spins it in its
+This module is fully synchronous and Qt-free; the click engine spins it in its
 own thread and the GUI reads ``state`` snapshots via the shared lock.
+
+Coordinates: everything the tracker reads or writes (``capture_rect``,
+``search_rect``, ``state.last_position``) is in PHYSICAL pixels on the mss
+virtual screen (``mss.monitors[0]`` space). Origins can be negative for
+monitors left of or above the primary. Callers working in Qt DIPs must
+convert with ``utils.dpi_cursor`` on the way in and out.
 """
 
 from __future__ import annotations
@@ -30,7 +36,7 @@ class TrackerConfig:
     template: Optional[np.ndarray] = None              # primary BGR pixels
     template_size: Tuple[int, int] = (0, 0)            # (w, h) of the primary
     capture_rect: Optional[Tuple[int, int, int, int]] = None
-    # Additional "views" of the same target — used for objects that look
+    # Additional "views" of the same target, used for objects that look
     # different from different angles (NPCs, etc.). Same target, same click;
     # the matcher tries each one and uses whichever scores highest.
     extras: list = field(default_factory=list)         # list[np.ndarray]
@@ -67,10 +73,14 @@ class TemplateTracker:
         self.cfg = cfg if cfg is not None else TrackerConfig()
         self.state = TrackerState()
         self._lock = threading.Lock()
+        # Bumped on every set_templates(). locate() matches without the
+        # lock held, so it re-reads this before writing and throws away
+        # a result computed against templates that were swapped mid-match.
+        self._template_gen: int = 0
         # Persistent mss handle. Each ``mss.mss()`` allocates a Windows
         # device context; the preview loop calls ``locate()`` ~20 Hz, so
         # constructing+closing per call burns ~72k DC handles per hour.
-        # Cache one and reuse — only torn down via ``close()``.
+        # Cache one and reuse, only torn down via ``close()``.
         self._sct = None
         self._sct_lock = threading.Lock()
 
@@ -124,6 +134,7 @@ class TemplateTracker:
         """
         x1, y1, x2, y2 = capture_rect
         with self._lock:
+            self._template_gen += 1
             self.cfg.template = primary
             self.cfg.template_size = (primary.shape[1], primary.shape[0])
             self.cfg.capture_rect = (x1, y1, x2, y2)
@@ -153,7 +164,7 @@ class TemplateTracker:
                 shot = sct.grab({"left": x1, "top": y1, "width": w, "height": h})
             img = np.array(shot)[:, :, :3]  # BGRA -> BGR
         except Exception:
-            # If the cached handle has gone bad (rare — Windows DC reset on
+            # If the cached handle has gone bad (rare, Windows DC reset on
             # display change), drop it so the next call rebuilds. Don't
             # propagate; the caller treats False as "couldn't capture."
             self.close()
@@ -182,9 +193,24 @@ class TemplateTracker:
 
     # -- core tick ---------------------------------------------------------
 
-    def locate(self, screen_w: int, screen_h: int) -> Optional[Tuple[int, int]]:
+    def locate(
+        self,
+        screen_w: int = 0,
+        screen_h: int = 0,
+        *,
+        search_rect: Optional[Tuple[int, int, int, int]] = None,
+    ) -> Optional[Tuple[int, int]]:
         """Find the target now. Returns (cx, cy) on success or None if no
-        template matches above threshold even after a full-screen rescan.
+        template matches above threshold even after a full-rect rescan.
+
+        ``search_rect`` is ``(x, y, w, h)`` in physical pixels on the mss
+        virtual screen; ``x`` / ``y`` may be negative. Defaults to the
+        whole virtual screen. The returned position (and
+        ``state.last_position``) is in that same physical space.
+
+        ``screen_w`` / ``screen_h`` are accepted for older callers and
+        ignored: they used to anchor the scan at (0, 0), which could
+        never reach a monitor left of, above, or beyond the primary.
 
         Iterates over the primary template plus all extras and keeps the
         single best (template, scale, position) across the whole set."""
@@ -200,8 +226,13 @@ class TemplateTracker:
             scale_max = float(self.cfg.scale_max)
             scale_steps = int(self.cfg.scale_steps)
             allow_full = bool(self.cfg.full_rescan_on_loss)
+            gen = self._template_gen
 
         if primary is None or primary_size[0] == 0:
+            return None
+
+        rect = search_rect if search_rect is not None else self._full_virtual_rect()
+        if rect is None:
             return None
 
         # Bundle (template, w, h, idx) for the matcher so the result can
@@ -216,19 +247,21 @@ class TemplateTracker:
         # 1) Local search around last_position.
         result = self._match_in_region(
             candidates, anchor, radius,
-            screen_w, screen_h, scale_min, scale_max, scale_steps, threshold,
+            rect, scale_min, scale_max, scale_steps, threshold,
         )
 
-        # 2) Full-screen fallback if we missed and the user hasn't disabled it.
+        # 2) Full-rect fallback if we missed and the user hasn't disabled it.
         if result is None and (allow_full or anchor is None):
             result = self._match_in_region(
                 candidates, None, -1,
-                screen_w, screen_h, scale_min, scale_max, scale_steps, threshold,
+                rect, scale_min, scale_max, scale_steps, threshold,
             )
 
         now = time.monotonic()
         if result is None:
             with self._lock:
+                if self._template_gen != gen:
+                    return None
                 self.state.is_locked = False
                 self.state.last_score = 0.0
                 self.state.last_update_ts = now
@@ -236,6 +269,11 @@ class TemplateTracker:
 
         cx, cy, score, tmpl_idx, tmpl_w, tmpl_h = result
         with self._lock:
+            if self._template_gen != gen:
+                # Templates were swapped while we matched against the old
+                # set; a "locked" write here would point at the wrong
+                # target. Drop it and let the next tick match fresh.
+                return None
             self.state.last_position = (cx, cy)
             self.state.last_score = score
             self.state.is_locked = True
@@ -246,20 +284,36 @@ class TemplateTracker:
 
     # -- internals ---------------------------------------------------------
 
+    def _full_virtual_rect(self) -> Optional[Tuple[int, int, int, int]]:
+        """``(x, y, w, h)`` of the whole virtual screen in physical
+        pixels, straight from mss so negative origins are preserved."""
+        try:
+            sct = self._get_sct()
+            with self._sct_lock:
+                v = sct.monitors[0]
+            return (int(v["left"]), int(v["top"]),
+                    int(v["width"]), int(v["height"]))
+        except Exception:
+            self.close()
+            return None
+
     def _match_in_region(
         self,
         candidates: list,           # list[(template, tw, th, idx)]
         anchor: Optional[Tuple[int, int]],
         radius: int,
-        sw: int,
-        sh: int,
+        rect: Tuple[int, int, int, int],
         scale_min: float,
         scale_max: float,
         scale_steps: int,
         threshold: float,
     ) -> Optional[Tuple[int, int, float, int, int, int]]:
-        """Try every candidate template (multi-scale) inside the search rect
-        and return the single best match across the whole set, or None.
+        """Try every candidate template (multi-scale) inside ``rect`` (or
+        a radius window around ``anchor`` clipped to it) and return the
+        single best match across the whole set, or None.
+
+        ``rect`` is ``(x, y, w, h)`` in physical mss pixels; ``x`` / ``y``
+        may be negative. Returned positions are in the same space.
 
         Return tuple: (cx, cy, score, template_idx, template_w, template_h).
         """
@@ -271,15 +325,17 @@ class TemplateTracker:
         max_tw = max(t[1] for t in candidates)
         max_th = max(t[2] for t in candidates)
 
+        rx, ry, rw_full, rh_full = rect
+        rx2, ry2 = rx + rw_full, ry + rh_full
         if anchor is None or radius <= 0:
-            sx1, sy1, sx2, sy2 = 0, 0, sw, sh
+            sx1, sy1, sx2, sy2 = rx, ry, rx2, ry2
         else:
             cx, cy = anchor
             r = max(radius, max_tw, max_th)
-            sx1 = max(0, cx - r)
-            sy1 = max(0, cy - r)
-            sx2 = min(sw, cx + r)
-            sy2 = min(sh, cy + r)
+            sx1 = max(rx, cx - r)
+            sy1 = max(ry, cy - r)
+            sx2 = min(rx2, cx + r)
+            sy2 = min(ry2, cy + r)
         rw, rh = sx2 - sx1, sy2 - sy1
         if rw < max_tw or rh < max_th:
             return None
@@ -290,7 +346,7 @@ class TemplateTracker:
                 shot = sct.grab({"left": sx1, "top": sy1, "width": rw, "height": rh})
             screen = np.array(shot)[:, :, :3]
         except Exception:
-            # Cached handle has gone bad — drop it and bail. Next tick
+            # Cached handle has gone bad, drop it and bail. Next tick
             # rebuilds it lazily; one missed frame is acceptable.
             self.close()
             return None

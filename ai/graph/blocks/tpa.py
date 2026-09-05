@@ -1,4 +1,4 @@
-"""Point-array blocks — thin wrappers over rs3vision's tpa primitives."""
+"""Point-array blocks, thin wrappers over rs3vision's tpa primitives."""
 
 from __future__ import annotations
 

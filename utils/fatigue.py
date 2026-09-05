@@ -46,12 +46,6 @@ class Fatigue:
         hours = (time.monotonic() - self.start_time) / 3600.0
         return min(1.0 + self.intensity * hours, 1.0 + self.intensity * 1.5)
 
-    def overshoot_bonus(self) -> float:
-        """Extra overshoot probability from fatigue (small)."""
-        if not self.enabled:
-            return 0.0
-        return (self.multiplier() - 1.0) * 0.4
-
     def record_click(self) -> None:
         self.click_count += 1
 

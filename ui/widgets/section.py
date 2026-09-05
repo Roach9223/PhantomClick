@@ -1,15 +1,17 @@
-"""``Section`` — header + content container used inside cards.
+"""``Section``: eyebrow + content container used inside cards.
 
-Renders a small uppercase label (with letter-spacing for visual weight)
-and a hairline divider, then a content area beneath. Cards add Sections
-to their body layout to break flat label-control stacks into named groups.
+Renders an uppercase 10.5 px mono eyebrow in TEXT_TERTIARY (lime is
+reserved for state, so headings never get it) with an optional inline
+hint, then a content area beneath. Cards add Sections to their body
+layout to break flat label-control stacks into named groups.
 """
 
 from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from .. import theme as t
 
@@ -21,21 +23,14 @@ class Section(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(t.SP_SM)
 
-        # Header row: uppercase teal label · optional inline hint.
-        # The trailing hairline rule was removed — the teal eyebrow alone
-        # carries the section marker, and the rule was rendering clipped
-        # short of the card's right edge in practice (looked like a bug).
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(t.SP_SM)
         label = QLabel(title.upper())
-        label.setStyleSheet(
-            f"color: {t.ACCENT}; "
-            f"font-family: {t.FONT_DISPLAY}; "
-            f"font-size: {t.SIZE_SECTION_LABEL}px; "
-            f"font-weight: 700; "
-            f"letter-spacing: 1.4px;"
-        )
+        label.setProperty("role", "section-label")
+        font = label.font()
+        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, t.LABEL_TRACKING)
+        label.setFont(font)
         header.addWidget(label)
         if hint:
             hint_lbl = QLabel(hint)
@@ -46,7 +41,6 @@ class Section(QWidget):
         header.addStretch(1)
         outer.addLayout(header)
 
-        # Body: where children get placed.
         self._body = QWidget(self)
         self._body_layout = QVBoxLayout(self._body)
         self._body_layout.setContentsMargins(0, 0, 0, 0)

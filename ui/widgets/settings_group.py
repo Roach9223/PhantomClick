@@ -1,4 +1,4 @@
-"""``SettingsGroup`` — rounded panel that contains :class:`SettingsRow`
+"""``SettingsGroup``, rounded panel that contains :class:`SettingsRow`
 instances stacked vertically with managed hairline separators.
 
 Manages the ``last`` flag on its rows so the trailing row's bottom border

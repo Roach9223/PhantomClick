@@ -1,16 +1,16 @@
-"""WorldState — per-tick parsed game-state cache.
+"""WorldState, per-tick parsed game-state cache.
 
 Every tick, :class:`ai.bot.runner._BotWorker` builds a fresh
 :class:`WorldState` and attaches it to ``ctx.world``. Bot rules read
 state through :func:`ai.bot.api.world` rather than re-scanning the
 frame in every rule body. Fields use ``@cached_property`` so a tick
 where no rule reads ``world().inventory`` skips the inventory scan
-entirely — zero overhead for unused awareness primitives.
+entirely, zero overhead for unused awareness primitives.
 
 ROIs come from user calibration persisted in ``config.json`` and
 plumbed through ``BotRunner.play(world_calibration={...})``. If the
 user hasn't calibrated a given surface, the corresponding property
-returns ``None`` (it does not raise) — bot rules should bail with
+returns ``None`` (it does not raise), bot rules should bail with
 ``if (inv := world().inventory) is None: return False``.
 
 Lifetime is tick-scoped:
@@ -20,11 +20,11 @@ Lifetime is tick-scoped:
     3. First access to a ``@cached_property`` runs the scan and stores
        the result in ``__dict__``.
     4. Subsequent accesses (same tick) return the stored value.
-    5. Next tick clobbers ``ctx.world`` with a new instance — the
+    5. Next tick clobbers ``ctx.world`` with a new instance, the
        prior one becomes garbage.
 
 Threading: WorldState lives entirely on the bot worker thread. Don't
-expose it on Qt signals — that would cross threads.
+expose it on Qt signals, that would cross threads.
 """
 
 from __future__ import annotations
@@ -42,17 +42,19 @@ class WorldState:
         self._ctx = ctx
         self.frame = frame
         self.tick = tick
-        # Calibration ROIs — pulled from ctx._world_calibration which
+        # Calibration ROIs, pulled from ctx._world_calibration which
         # the runner populates from config.json once at startup.
+        # Calibration rects are saved in screen pixels; the scanners
+        # slice the frame, so translate once here.
         calib = getattr(ctx, "_world_calibration", None) or {}
         self._inventory_rect: Optional[Tuple[int, int, int, int]] = (
-            _coerce_rect(calib.get("inventory_rect"))
+            _to_frame(ctx, _coerce_rect(calib.get("inventory_rect")))
         )
         self._orbs_rect: Optional[Tuple[int, int, int, int]] = (
-            _coerce_rect(calib.get("orbs_rect"))
+            _to_frame(ctx, _coerce_rect(calib.get("orbs_rect")))
         )
         self._minimap_rect: Optional[Tuple[int, int, int, int]] = (
-            _coerce_rect(calib.get("minimap_rect"))
+            _to_frame(ctx, _coerce_rect(calib.get("minimap_rect")))
         )
         self._orbs_max_fill: Dict[str, int] = dict(
             calib.get("orbs_max_fill") or {}
@@ -195,7 +197,7 @@ class WorldState:
             return
         setattr(self._ctx, flag, True)
         self._ctx.log(
-            f"[world] {surface} not calibrated — "
+            f"[world] {surface} not calibrated, "
             f"world().{surface} returns None. Run "
             f"\"Calibrate {surface.title()} ROI\" in the AI tab."
         )
@@ -211,6 +213,19 @@ def _coerce_rect(raw) -> Optional[Tuple[int, int, int, int]]:
         return (int(raw[0]), int(raw[1]), int(raw[2]), int(raw[3]))
     except (TypeError, ValueError):
         return None
+
+
+def _to_frame(ctx: Any, rect) -> Optional[Tuple[int, int, int, int]]:
+    """Screen rect to frame rect via the context mapper; None passes."""
+    if rect is None:
+        return None
+    fn = getattr(ctx, "screen_rect_to_frame", None)
+    if fn is None:
+        return rect
+    try:
+        return tuple(int(v) for v in fn(rect))
+    except Exception:
+        return rect
 
 
 def build_world(ctx: Any, frame: np.ndarray, tick: int) -> WorldState:

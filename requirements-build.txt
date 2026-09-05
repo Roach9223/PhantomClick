@@ -1,0 +1,7 @@
+# Tools needed only to produce dist\PhantomClick.exe. Not needed to run
+# from source.
+#
+#   py -3.11 -m pip install -r requirements.txt -r requirements-build.txt
+#   pwsh -File build.ps1
+
+pyinstaller>=6.0.0

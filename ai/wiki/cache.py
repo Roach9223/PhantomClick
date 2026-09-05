@@ -1,6 +1,6 @@
 """Disk-backed cache for RS Wiki responses.
 
-Lives at ``debug/wiki_cache/<sha1>.json`` — one file per unique
+Lives at ``debug/wiki_cache/<sha1>.json``, one file per unique
 ``(endpoint, params)`` tuple. Keeps the cache out of user-visible
 paths (just another debug artifact). 24 h TTL is enough for almost
 everything the wiki hosts; nothing in this cache is load-bearing so

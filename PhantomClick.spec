@@ -21,8 +21,8 @@
 #       the whole ai tree in is what stops a Start-time ModuleNotFoundError.
 #   - collect_submodules("pynput") : pynput resolves its win32 backend
 #       dynamically.
-#   - excludes tkinter/customtkinter : a legacy requirement; the runtime
-#       UI is 100% PySide6, so Tk is dead weight.
+#   - tkinter is NOT excluded even though the UI is pure PySide6: the
+#       PyInstaller Splash below renders through Tcl/Tk.
 
 from PyInstaller.utils.hooks import collect_submodules
 
@@ -30,6 +30,10 @@ datas = [
     ("ai/tasks/library", "ai/tasks/library"),
     ("rs3vision", "rs3vision"),
     ("packaging/phantomclick.ico", "packaging"),
+    # Deck theme assets: bundled OFL fonts (JetBrains Mono, Barlow) loaded in
+    # main.py via QFontDatabase, and the micrographic SVGs used by ui/icons.py.
+    ("ui/fonts", "ui/fonts"),
+    ("ui/assets", "ui/assets"),
 ]
 
 binaries = [
@@ -46,7 +50,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=["customtkinter"],   # keep tkinter: the splash renderer uses Tcl/Tk
+    excludes=[],
     noarchive=False,
 )
 

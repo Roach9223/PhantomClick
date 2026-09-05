@@ -1,9 +1,9 @@
-"""``MonitorCard`` — UI for the Monitor tab (LAN screen + remote control).
+"""``MonitorCard``, UI for the Monitor tab (LAN screen + remote control).
 
 Two opt-in toggles, layered for safety:
 1. **Enable streaming** starts the local HTTP server. Required for any
    remote interaction.
-2. **Allow remote control** additionally permits POST /control/* — start,
+2. **Allow remote control** additionally permits POST /control/*, start,
    stop, and Close-RuneScape from the phone. Off by default; the
    safer view-only mode is the default once streaming is on.
 
@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 
 from ui.config_io import save_config
 
-from .. import theme as t
+from .. import icons, theme as t
 from ..screen_utils import screen_label
 from ..widgets.card import Card
 from ..widgets.ios_switch import IOSSwitch
@@ -76,12 +76,14 @@ class MonitorCard(Card):
 
         url_group = SettingsGroup()
 
-        self.copy_btn = QPushButton("📋  Copy URL")
+        self.copy_btn = QPushButton("Copy URL")
+        self.copy_btn.setIcon(icons.icon("copy"))
         self.copy_btn.setMinimumHeight(t.BUTTON_H)
         self.copy_btn.setCursor(Qt.PointingHandCursor)
         self.copy_btn.clicked.connect(self._on_copy)
 
-        self.regen_btn = QPushButton("↻  Regenerate")
+        self.regen_btn = QPushButton("Regenerate")
+        self.regen_btn.setIcon(icons.icon("redraw"))
         self.regen_btn.setProperty("variant", "warn-outline")
         self.regen_btn.setMinimumHeight(t.BUTTON_H)
         self.regen_btn.setCursor(Qt.PointingHandCursor)
@@ -148,7 +150,7 @@ class MonitorCard(Card):
 
         # 60 fps cap matches what most phone displays can render; actual
         # achieved fps depends on source resolution + quality + CPU,
-        # which is fine — the slider expresses the *target*.
+        # which is fine, the slider expresses the *target*.
         self.fps_slider = QSlider(Qt.Horizontal)
         self.fps_slider.setRange(5, 60)
         self.fps_slider.setValue(int(app.cfg.get("monitor_fps", 15)))
@@ -248,7 +250,7 @@ class MonitorCard(Card):
         try:
             return self.app.monitor_server.lan_url()
         except AttributeError:
-            return "—"
+            return ", "
 
     def _set_listening(self, listening: bool) -> None:
         new = "true" if listening else "false"
@@ -280,13 +282,13 @@ class MonitorCard(Card):
         cfg = self.app.cfg
         if cfg.get("monitor_remote_control_enabled", False):
             self.warn_label.setText(
-                "⚠  Remote control is enabled — anyone on your network with this "
+                "Remote control is enabled, anyone on your network with this "
                 "URL can see your screen AND start, stop, and close RuneScape on "
                 "your PC. Disable when not monitoring."
             )
         elif cfg.get("monitor_enabled", False):
             self.warn_label.setText(
-                "⚠  Anyone on your network with this URL can see your screen. "
+                "Anyone on your network with this URL can see your screen. "
                 "Disable when not monitoring."
             )
         else:
@@ -330,16 +332,15 @@ class MonitorCard(Card):
         self.refresh()
 
     def _on_fps_change(self, value: int) -> None:
-        # Capture loop reads cfg every iteration; no restart needed.
-        cfg = self.app.cfg
-        cfg["monitor_fps"] = int(value)
-        save_config(cfg)
+        # Capture loop reads cfg every iteration; no restart needed. The
+        # disk write is debounced because this fires per slider pixel.
+        self.app.cfg["monitor_fps"] = int(value)
+        self.app.save_config_later()
 
     def _on_quality_change(self, value: int) -> None:
         # Capture loop reads cfg every iteration; no restart needed.
-        cfg = self.app.cfg
-        cfg["monitor_jpeg_quality"] = int(value)
-        save_config(cfg)
+        self.app.cfg["monitor_jpeg_quality"] = int(value)
+        self.app.save_config_later()
 
     def _on_resolution_change(self, _idx: int) -> None:
         cfg = self.app.cfg
@@ -355,12 +356,12 @@ class MonitorCard(Card):
         screens = QGuiApplication.screens() or []
         primary = QGuiApplication.primaryScreen()
 
-        # First entry: "Primary" — sticks to whichever monitor the OS marks
+        # First entry: "Primary", sticks to whichever monitor the OS marks
         # as primary at any given moment, so unplug/replug doesn't break the
         # selection.
         primary_label = "Primary"
         if primary is not None:
-            primary_label = f"Primary — {screen_label(primary)}"
+            primary_label = f"Primary, {screen_label(primary)}"
         self.monitor_combo.addItem(primary_label, userData="primary")
 
         for i, s in enumerate(screens):
@@ -397,7 +398,7 @@ class MonitorCard(Card):
         choice = str(self.app.cfg.get("monitor_capture_index", "primary"))
         geom = self._resolve_screen_geometry(choice)
         if geom is None and choice != "primary":
-            # Stale index — fall back to primary and persist the fallback so
+            # Stale index, fall back to primary and persist the fallback so
             # the dropdown agrees with reality next time.
             self.app.cfg["monitor_capture_index"] = "primary"
             geom = self._resolve_screen_geometry("primary")
@@ -417,7 +418,7 @@ class MonitorCard(Card):
         self.app.cfg["monitor_capture_index"] = choice
         self._sync_capture_rect_from_cfg()
         # Capture loop reads the rect from cfg every frame; no server
-        # restart needed — the next grab() picks up the new region.
+        # restart needed, the next grab() picks up the new region.
 
     def _on_remote_toggled(self, checked: bool) -> None:
         cfg = self.app.cfg
@@ -434,5 +435,5 @@ class MonitorCard(Card):
         srv = self.app.monitor_server
         srv.regenerate_token()
         self.refresh()
-        self.app.toasts.post("Token rotated — old links no longer work",
+        self.app.toasts.post("Token rotated, old links no longer work",
                              kind="info")

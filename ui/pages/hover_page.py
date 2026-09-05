@@ -1,4 +1,4 @@
-"""Hover page — :class:`PageHeader` + :class:`HoverPageBody`.
+"""Hover page, :class:`PageHeader` + :class:`HoverPageBody`.
 
 The 2026 redesign drops the prior :class:`TwoColPage` + :class:`InfoPanel`
 arrangement entirely. The page is now a single left-aligned column,

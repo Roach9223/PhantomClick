@@ -1,26 +1,28 @@
-"""``LabeledSlider`` — label + value (top), full-width slider (middle), hint (bottom).
+"""``LabeledSlider``: label + value (top), full-width slider (middle),
+optional tick ruler and hint (bottom).
 
-Vertical layout: the field label is left-aligned and semibold, the live
-value is right-aligned in mono accent, the slider fills the row beneath,
-and an optional hint line sits underneath in tertiary tone. This rhythm
-matches the :class:`Field` primitive so cards built from Sections + Fields
-read consistently.
+The field label is an uppercase tracked micro-label, the live value is a
+right-aligned mono readout, the slider fills the row beneath, and a
+:class:`TickRuler` sits under it when ``show_ruler`` is True (default).
 
-Sliders register themselves into the App's shared ``_adv_sliders`` dict
-so the Realism dial can push values back into the widgets.
+Sliders register themselves into the App's shared ``_adv_sliders`` dict so
+the Realism dial can push values back into the widgets. ``set()`` snaps
+the handle instantly; the deck does not glide.
 """
 
 from __future__ import annotations
 
 from typing import Callable, Optional
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QSlider, QVBoxLayout, QWidget,
 )
 
 from .. import theme as t
 from ui.config_io import save_config
+from .ruler import TickRuler
 
 
 class LabeledSlider(QWidget):
@@ -38,6 +40,8 @@ class LabeledSlider(QWidget):
         on_change: Optional[Callable[[float], None]] = None,
         hint: str = "",
         parent: Optional[QWidget] = None,
+        *,
+        show_ruler: bool = True,
     ):
         super().__init__(parent)
         self.app = app
@@ -52,16 +56,18 @@ class LabeledSlider(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(4)
 
-        # Top row: label · spacer · mono value.
         head = QHBoxLayout()
         head.setContentsMargins(0, 0, 0, 0)
         head.setSpacing(t.SP_SM)
-        self.label = QLabel(label.lstrip())
+        self.label = QLabel(label.lstrip().upper())
         self.label.setStyleSheet(
-            f"color: {t.TEXT_PRIMARY}; "
+            f"color: {t.TEXT_SECONDARY}; "
             f"font-size: {t.SIZE_FIELD_LABEL}px; "
             f"font-weight: 600;"
         )
+        font = self.label.font()
+        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, t.LABEL_TRACKING)
+        self.label.setFont(font)
         if tooltip:
             self.label.setToolTip(tooltip)
         head.addWidget(self.label)
@@ -69,7 +75,7 @@ class LabeledSlider(QWidget):
 
         self.value_lbl = QLabel("")
         self.value_lbl.setStyleSheet(
-            f"color: {t.ACCENT}; "
+            f"color: {t.TEXT_PRIMARY}; "
             f"font-family: {t.FONT_MONO}; "
             f"font-size: {t.SIZE_FIELD_VALUE}px;"
         )
@@ -78,7 +84,6 @@ class LabeledSlider(QWidget):
         head.addWidget(self.value_lbl)
         outer.addLayout(head)
 
-        # Slider fills the field width.
         self.slider = QSlider(Qt.Horizontal)
         self.slider.setRange(0, self._steps)
         initial = float(app.cfg.get(cfg_key, from_))
@@ -88,7 +93,12 @@ class LabeledSlider(QWidget):
             self.slider.setToolTip(tooltip)
         outer.addWidget(self.slider)
 
-        # Optional hint line under the slider.
+        self.ruler: Optional[TickRuler] = None
+        if show_ruler:
+            self.ruler = TickRuler(self._from, self._to, inset=5.0,
+                                   fmt=self._ruler_fmt)
+            outer.addWidget(self.ruler)
+
         if hint:
             self.hint = QLabel(hint)
             self.hint.setWordWrap(True)
@@ -98,9 +108,17 @@ class LabeledSlider(QWidget):
             outer.addWidget(self.hint)
 
         self._render_value(initial)
-
-        # Register so the Realism preset can push values back to us.
         app._adv_sliders[cfg_key] = (self, self.value_lbl, value_fmt, is_int)
+
+    def _ruler_fmt(self, v: float) -> str:
+        if self._is_int:
+            return f"{int(round(v))}"
+        span = abs(self._to - self._from)
+        if span >= 20:
+            return f"{v:.0f}"
+        if span >= 2:
+            return f"{v:.1f}".rstrip("0").rstrip(".")
+        return f"{v:.2f}".rstrip("0").rstrip(".")
 
     def _value_to_step(self, v: float) -> int:
         if self._to == self._from:
@@ -121,39 +139,21 @@ class LabeledSlider(QWidget):
         v = int(v) if self._is_int else float(v)
         self.app.cfg[self._key] = v
         self._render_value(v)
-        save_config(self.app.cfg)
-        self.app._push_config_to_clicker()
-        if self._on_change is not None:
-            self._on_change(v)
+
+        def _commit(value=v) -> None:
+            save_config(self.app.cfg)
+            self.app._push_config_to_clicker()
+            if self._on_change is not None:
+                self._on_change(value)
+        self.app._cfg_debounce.call(_commit)
 
     def set(self, value: float) -> None:
         """Push a value back into the widget without retriggering save/push.
-
-        Animated: when the Realism preset moves a slider, the handle
-        glides to the new step over ~220 ms instead of snapping.
-        """
+        Snaps instantly."""
         target = self._value_to_step(value)
-        current = self.slider.value()
-        if target == current:
-            self._render_value(value)
-            return
-        # Stop any in-flight animation so rapid presses don't pile up.
-        anim = getattr(self, "_set_anim", None)
-        if anim is not None and anim.state() == QPropertyAnimation.Running:
-            anim.stop()
         self.slider.blockSignals(True)
-        self._set_anim = QPropertyAnimation(self.slider, b"value", self)
-        self._set_anim.setDuration(220)
-        self._set_anim.setStartValue(current)
-        self._set_anim.setEndValue(target)
-        self._set_anim.setEasingCurve(QEasingCurve.OutCubic)
-        # Re-enable the slider's own signal once the animation lands so
-        # subsequent user drags fire normally.
-        def _done():
-            try:
-                self.slider.blockSignals(False)
-            except RuntimeError:
-                pass
-        self._set_anim.finished.connect(_done)
-        self._set_anim.start()
+        try:
+            self.slider.setValue(target)
+        finally:
+            self.slider.blockSignals(False)
         self._render_value(value)

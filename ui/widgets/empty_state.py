@@ -1,4 +1,4 @@
-"""``EmptyState`` — centered placeholder shown inside a :class:`SettingsGroup`
+"""``EmptyState``, centered placeholder shown inside a :class:`SettingsGroup`
 when the group has nothing to render.
 
 Three stacked elements: a 44 px abstract icon, a primary title, and a
@@ -22,7 +22,7 @@ from .. import theme as t
 
 class _EmptyStateIcon(QWidget):
     """Minimal 44×44 abstract icon: rounded panel with a centered rect
-    motif — represents a "zone" without naming it explicitly."""
+    motif, represents a "zone" without naming it explicitly."""
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -33,7 +33,7 @@ class _EmptyStateIcon(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         p.setBrush(QColor(t.SURFACE_HIGH))
         p.setPen(Qt.NoPen)
-        p.drawRoundedRect(self.rect(), 10, 10)
+        p.drawRoundedRect(self.rect(), t.RADIUS_CARD, t.RADIUS_CARD)
         p.setBrush(Qt.NoBrush)
         p.setPen(QColor(t.TEXT_DISABLED))
         p.drawRoundedRect(11, 15, 22, 14, 2, 2)
@@ -61,7 +61,7 @@ class EmptyState(QFrame):
         title_lbl = QLabel(title)
         title_lbl.setAlignment(Qt.AlignCenter)
         title_lbl.setStyleSheet(
-            f"font-size: 14px; font-weight: 500; color: {t.TEXT_PRIMARY};"
+            f"font-size: {t.SIZE_LG}px; font-weight: 600; color: {t.TEXT_PRIMARY};"
         )
         layout.addWidget(title_lbl)
         layout.addSpacing(4)
@@ -70,7 +70,7 @@ class EmptyState(QFrame):
         desc_lbl.setAlignment(Qt.AlignCenter)
         desc_lbl.setWordWrap(True)
         desc_lbl.setStyleSheet(
-            f"font-size: 12px; color: {t.TEXT_TERTIARY};"
+            f"font-size: {t.SIZE_SM}px; color: {t.TEXT_TERTIARY};"
         )
         layout.addWidget(desc_lbl)
 

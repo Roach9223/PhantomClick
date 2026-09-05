@@ -2,9 +2,9 @@
 
 Two discovery roots:
 
-1. **Library** — ``rs3vision_studio/tasks/library/`` (ships with the
-   app; read-only-ish; user can copy from here to customise).
-2. **User** — ``rs3vision-studio/tasks/`` (repo-local, gitignored) and
+1. **Library**: ``ai/tasks/library/`` (ships with the app; user can
+   copy from here to customise).
+2. **User**: ``<repo>/tasks/`` (repo-local, gitignored) and
    ``~/.rs3vision/tasks/`` (per-user). Writeable.
 
 Recents are kept via :class:`PySide6.QtCore.QSettings` so they survive
@@ -195,7 +195,7 @@ def _is_in_library(path: Path) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────
-# TaskStore — the object the app uses
+# TaskStore: the object the app uses
 # ─────────────────────────────────────────────────────────────────
 
 
@@ -203,7 +203,7 @@ class TaskStore:
     """In-memory catalogue of available tasks.
 
     Scans the library + user directories on construction (and on
-    explicit :meth:`refresh`). Raises nothing on per-file parse errors —
+    explicit :meth:`refresh`). Raises nothing on per-file parse errors;
     they're collected in :attr:`errors` and surfaced to the log.
     """
 
@@ -260,7 +260,7 @@ class TaskStore:
 
 
 # ─────────────────────────────────────────────────────────────────
-# Recent-tasks MRU (via QSettings — no disk footprint we manage)
+# Recent-tasks MRU (via QSettings: no disk footprint we manage)
 # ─────────────────────────────────────────────────────────────────
 
 
@@ -293,50 +293,25 @@ def set_last_active_slug(slug: str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────
-# Script resolution — turn a Task's script field into an rvscript dict
+# Implementation resolution
 # ─────────────────────────────────────────────────────────────────
 
 
-def resolve_script_dict(task: Task) -> Dict[str, Any]:
-    """Return the Task's underlying ``.rvscript`` payload as a dict.
-
-    Retained for back-compat. :func:`resolve_implementation` is the
-    newer entry point that handles both script and playbook tasks.
-    """
-    from ..graph.format import load_file  # late import — heavy deps
-
-    if task.script_inline:
-        return dict(task.script_inline)
-
-    if task.script_ref:
-        ref = Path(task.script_ref)
-        candidates = [ref]
-        if task.source_path is not None:
-            candidates.append(task.source_path.parent / task.script_ref)
-        candidates.append(_REPO_ROOT / task.script_ref)
-        candidates.append(_STUDIO_PKG_ROOT / task.script_ref)
-        for cand in candidates:
-            if cand.is_file():
-                return load_file(cand)
-        raise FileNotFoundError(
-            f"task {task.slug!r} script_ref {task.script_ref!r} not found "
-            f"(tried: {', '.join(str(c) for c in candidates)})"
-        )
-
-    raise ValueError(f"task {task.slug!r} has no script (inline nor ref)")
-
-
 def resolve_implementation(task: Task):
-    """Return the Task's implementation.
+    """Return the Task's implementation as ``("bot", Bot)``.
 
-    Return shape:
-    - ``("script", dict)`` for graph-backed tasks.
-    - ``("bot", Bot)`` for Python-DSL tasks (imports the script module
-      and returns its top-level ``bot`` object).
+    Imports the referenced Python script and returns its top-level
+    ``bot`` object. Graph-backed ``.rvscript`` tasks are no longer
+    runnable: the graph editor and its file loader left with the Studio
+    chrome, so a task that only carries ``script`` raises a clear error
+    instead of a missing-module traceback.
     """
     kind = task.implementation_kind()
     if kind == "script":
-        return "script", resolve_script_dict(task)
+        raise ValueError(
+            f"task {task.slug!r} is a graph script; graph tasks are not "
+            "supported in PhantomClick. Port it to a Python bot (bot: ref)."
+        )
     if kind == "bot":
         from ..bot import load_bot_from_path  # late import
         if not task.bot_script_ref:

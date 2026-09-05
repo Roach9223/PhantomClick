@@ -1,7 +1,7 @@
 """Compiled bitmap fonts for the rs3vision OCR engine.
 
 Ships:
-- ``plain_11.rvf`` — the RS3 NXT uptext / chatbox font, compiled from
+- ``plain_11.rvf``, the RS3 NXT uptext / chatbox font, compiled from
   our captured corpus via ``rs3vision-tools/build_uptext_font.py``.
 
 File is binary (``.rvf``) and lives in the same directory. If it

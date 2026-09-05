@@ -3,7 +3,7 @@
 We don't pull in a fuzzy library because the command set is small (~30
 items) and the desired behavior is opinionated: prefer matches at word
 boundaries, prefer consecutive runs, penalize gaps. This is well below
-30 lines of real logic — a dependency would be more code than the impl.
+30 lines of real logic, a dependency would be more code than the impl.
 
 Returns ``(score, indices)`` where higher score is a better match. ``score``
 is ``-1`` if the query is not a subsequence of the target.

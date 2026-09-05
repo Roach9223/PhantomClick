@@ -1,17 +1,17 @@
-"""DTM — Deformable Template Matching.
+"""DTM, Deformable Template Matching.
 
 A DTM is a tiny recipe describing a visual element by a handful of
 coloured points in a rigid relative layout. Example: an anvil has a
 dark grey top-left corner, a bright orange hot-spot in the middle, and
 a dark grey bottom-right corner. Those three points + their offsets
-uniquely identify an anvil in a scene — far more robust than a single
+uniquely identify an anvil in a scene, far more robust than a single
 colour match and far cheaper than a full bitmap.
 
 A template is:
 
     name, anchor{ color, tol, cts }, points[ {dx, dy, color, tol, cts}, ... ]
 
-Serialised as YAML (our `.rvscript` format's cousin) — human-readable,
+Serialised as YAML (our `.rvscript` format's cousin), human-readable,
 diffable, hand-editable.
 
 Matching procedure:
@@ -124,7 +124,7 @@ def save(template: Template, path: Path | str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────
-# Template synthesis from an image ROI — user UX helper
+# Template synthesis from an image ROI, user UX helper
 # ─────────────────────────────────────────────────────────────────
 
 
@@ -239,7 +239,7 @@ def find(
             px = ax + p.dx
             py = ay + p.dy
             if not (0 <= px < fw and 0 <= py < fh):
-                # Point falls outside frame — fail.
+                # Point falls outside frame, fail.
                 matched = 0
                 break
             # Single-pixel check via one-hit rv.color.find on a 1×1 ROI.
@@ -253,7 +253,7 @@ def find(
                 conf_sum += hits[0][2]
             else:
                 total += 1
-                # All secondary points must match — break on any miss.
+                # All secondary points must match, break on any miss.
                 matched = 0
                 break
         if matched == len(template.points) + 1:  # anchor + all points

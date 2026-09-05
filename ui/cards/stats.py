@@ -1,4 +1,4 @@
-"""``StatsPageBody`` — per-session counters as form rows.
+"""``StatsPageBody``, per-session counters as form rows.
 
 The 2026 redesign trades the prior 3+2 stat-tile grid for a
 :class:`SettingsGroup` of rows. Each metric becomes one row with the
@@ -27,14 +27,14 @@ _METRICS = (
     ("total", "Total clicks",
      "Clicks fired in the current session.", "0"),
     ("cpm", "Clicks per minute",
-     "Derived from the rolling average interval.", "—"),
+     "Derived from the rolling average interval.", ", "),
     ("elapsed", "Elapsed",
      "Time since the most recent Start press.", "00:00:00"),
     ("avg", "Average interval",
-     "Rolling 60-click average — reflects fatigue + idle wander, "
-     "not just your timing range.", "—"),
+     "Rolling 60-click average, reflects fatigue + idle wander, "
+     "not just your timing range.", ", "),
     ("last", "Last click position",
-     "Screen coordinates of the most recent click.", "—"),
+     "Screen coordinates of the most recent click.", ", "),
 )
 
 
@@ -84,11 +84,11 @@ class StatsPageBody(QWidget):
         self._values["total"].setText(fmt_count(snap["total"]))
         self._values["elapsed"].setText(format_elapsed(snap["elapsed"]))
         avg = snap["avg_interval"]
-        self._values["avg"].setText(fmt_delay(avg) if avg > 0 else "—")
+        self._values["avg"].setText(fmt_delay(avg) if avg > 0 else ", ")
         cpm = snap["cpm"]
-        self._values["cpm"].setText(fmt_rate(cpm, "CPM") if cpm > 0 else "—")
+        self._values["cpm"].setText(fmt_rate(cpm, "CPM") if cpm > 0 else ", ")
         lp = snap["last_pos"]
-        self._values["last"].setText(fmt_position(*lp) if lp else "—")
+        self._values["last"].setText(fmt_position(*lp) if lp else ", ")
 
 
 # Back-compat alias: ui/app.py still references StatsCard.

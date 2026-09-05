@@ -1,4 +1,4 @@
-"""Settings page — :class:`PageHeader` + :class:`SettingsPageBody`.
+"""Settings page, :class:`PageHeader` + :class:`SettingsPageBody`.
 
 Mirrors the structure of :mod:`ui.pages.hover_page`: single left-aligned
 column, content max-width capped at

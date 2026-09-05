@@ -1,4 +1,4 @@
-"""``BotOverlay`` — translucent click-through HUD that shows what the
+"""``BotOverlay``, translucent click-through HUD that shows what the
 bot "sees" at each tick.
 
 The overlay paints, in screen coordinates:
@@ -6,12 +6,12 @@ The overlay paints, in screen coordinates:
   search region matches the on-screen feature.
 - A small click marker at the last fire location, fading over a few
   ticks so the trail is readable but not noisy.
-- A status badge in the top-left of the ROI: ``proc:pc — kind`` so the
+- A status badge in the top-left of the ROI: ``proc:pc, kind`` so the
   user knows where in the program flow the bot currently is.
 
 Wired from ``BotRunner.block_executed`` (per-rule fire) and
 ``runner.tick_started`` (so the ROI updates even on dry ticks).
-Toggled via the topbar 👁 button (same flag as zone overlays —
+Toggled via the topbar 👁 button (same flag as zone overlays , 
 ``cfg.show_zone_overlay``). When the bot stops, the overlay hides
 itself; restart shows it again automatically when the toggle is on.
 """
@@ -31,7 +31,7 @@ from .. import theme as t
 class BotOverlay(QWidget):
     """Single transparent widget covering the virtual desktop. Paints
     the bot's current ROI + last-fire marker + status badge. Shared
-    across all bot runs — show/hide on bot start/stop."""
+    across all bot runs, show/hide on bot start/stop."""
 
     # Click-trail keeps this many fire locations, fading by age.
     _TRAIL_LEN = 5
@@ -132,7 +132,7 @@ class BotOverlay(QWidget):
                     painter, rect.left(), rect.top() - 4, self._status,
                 )
 
-        # Click trail — fade older markers.
+        # Click trail, fade older markers.
         now = time.monotonic()
         for x, y, ts in self._trail:
             age = max(0.0, now - ts)

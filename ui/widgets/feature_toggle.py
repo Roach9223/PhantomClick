@@ -1,4 +1,4 @@
-"""``FeatureToggle`` — checkbox row for binary humanization features.
+"""``FeatureToggle``, checkbox row for binary humanization features.
 
 Wraps a QCheckBox with a tooltip and registers itself into the App's
 shared ``_adv_vars`` dict so the Realism preset can flip it.
@@ -8,10 +8,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QWidget
 
-from .. import theme as t
 from ui.config_io import save_config
 
 

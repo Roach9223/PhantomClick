@@ -1,4 +1,4 @@
-"""``WidgetLocker`` — disables UI controls while the click engine is running.
+"""``WidgetLocker``, disables UI controls while the click engine is running.
 
 Cards register interactive widgets (Draw / Remove / Rebind / Add-step
 buttons, etc.) so the user can't poke them mid-run and silently no-op.

@@ -1,8 +1,8 @@
-"""BotBundle — per-bot folder layout + load/save.
+"""BotBundle, per-bot folder layout + load/save.
 
 Each user-authored bot lives under ``<root>/bots/<slug>/`` with its own
 metadata, procedures, calibration, settings, and asset library. This
-module is the single way to load/save that layout — the AI tab and
+module is the single way to load/save that layout, the AI tab and
 the runtime both go through ``BotBundle`` rather than reaching into
 files directly.
 
@@ -21,7 +21,7 @@ Folder shape::
     └── runs/                    # per-session telemetry (NOT loaded by Bundle)
 
 The plan called for ``bot.toml`` but JSON is used for every file in
-the bundle — same parser everywhere, no extra dependency, and editing
+the bundle, same parser everywhere, no extra dependency, and editing
 a JSON file by hand is no worse than TOML for this shape of data. If
 TOML is ever needed it can be added on top without changing the
 public surface.
@@ -58,7 +58,7 @@ _DEFAULT_BOT_META: Dict[str, Any] = {
 }
 
 _DEFAULT_PROCEDURES: Dict[str, Any] = {
-    # Empty bundle — until the user authors something. The compiler
+    # Empty bundle, until the user authors something. The compiler
     # treats this shape as "no rules to register" and surfaces an
     # error at Start, exactly like the v1 editor.
     "entry": "main",
@@ -81,7 +81,7 @@ _DEFAULT_SETTINGS: Dict[str, Any] = {
     "watchdog_no_click_s": 600.0,
     # Per-bot realism override. None = inherit from the global cfg slider
     # (the typical case). A float in [0.0, 1.0] pins this bot to a fixed
-    # realism level regardless of the global slider — useful when a bot's
+    # realism level regardless of the global slider, useful when a bot's
     # cadence has been tuned for a specific level and shouldn't drift if
     # the user later moves the slider for a different bot.
     "realism": None,
@@ -211,7 +211,7 @@ class BotBundle:
         """Resolve an asset name (e.g. ``"bank_chest"``) to its path.
 
         ``kind`` is one of ``"snapshot" | "recording" | "item" | "color"``.
-        Returns ``None`` if the asset doesn't exist in this bundle —
+        Returns ``None`` if the asset doesn't exist in this bundle , 
         callers can then fall back to the wiki cache.
         """
         slug = slugify(name)
@@ -233,7 +233,7 @@ class BotBundle:
     @classmethod
     def load(cls, root: Path) -> "BotBundle":
         """Load a bundle from a folder. Missing files use defaults
-        — a fresh / partial bundle is loadable without errors so
+       , a fresh / partial bundle is loadable without errors so
         the editor can populate it incrementally.
         """
         root = Path(root).resolve()
@@ -270,7 +270,7 @@ class BotBundle:
 
         ``root_parent`` is the ``bots/`` directory (parent of slug
         folders). Raises ``FileExistsError`` if the slug already
-        exists — caller is responsible for picking a unique slug.
+        exists, caller is responsible for picking a unique slug.
         """
         slug = slugify(slug)
         root = Path(root_parent) / slug
@@ -323,7 +323,7 @@ class BotBundle:
 
 
 def bundles_root(config_dir: Path) -> Path:
-    """``<config_dir>/bots/`` — created on first access."""
+    """``<config_dir>/bots/``, created on first access."""
     p = Path(config_dir) / "bots"
     p.mkdir(parents=True, exist_ok=True)
     return p
@@ -332,7 +332,7 @@ def bundles_root(config_dir: Path) -> Path:
 def list_bundles(config_dir: Path) -> List[BotBundle]:
     """Return every bundle in ``<config_dir>/bots/``, sorted by name.
 
-    Folders without a ``bot.json`` are tolerated — they load with
+    Folders without a ``bot.json`` are tolerated, they load with
     default metadata so the user can always see what's on disk.
     Folders without any of the four files are still included as long
     as they exist; this lets the editor recover broken bundles.
@@ -363,7 +363,7 @@ def find_bundle(config_dir: Path, slug: str) -> Optional[BotBundle]:
 
 
 # ─────────────────────────────────────────────────────────────────
-# JSON I/O — atomic writes so a crash mid-save can't corrupt
+# JSON I/O, atomic writes so a crash mid-save can't corrupt
 # ─────────────────────────────────────────────────────────────────
 
 
@@ -374,7 +374,7 @@ def _read_json(path: Path, default: Dict[str, Any]) -> Dict[str, Any]:
         with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception as e:
-        _log.warning("corrupt %s — using defaults (%s)", path, e)
+        _log.warning("corrupt %s, using defaults (%s)", path, e)
         return dict(default)
     if not isinstance(data, dict):
         return dict(default)
@@ -386,7 +386,7 @@ def _read_json(path: Path, default: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _write_json(path: Path, data: Dict[str, Any]) -> None:
-    """Atomic JSON write — write to a temp file, then rename."""
+    """Atomic JSON write, write to a temp file, then rename."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     payload = json.dumps(data, indent=2, ensure_ascii=False, sort_keys=True)

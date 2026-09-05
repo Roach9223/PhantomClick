@@ -1,11 +1,11 @@
-"""``Card`` — the elevated panel every group of controls sits in.
+"""``Card``: the bordered panel every group of controls sits in.
 
-Renders a rounded rectangle with a subtle border (per design tokens),
-an uppercase tracked-out title at the top, and a content area beneath.
-Children are added via :meth:`Card.body` to hide the inner layout.
+Deck panel: SURFACE fill, full 1 px BORDER, 8 px radius, no shadow. The
+header label is uppercase 11 px mono, 600 weight, 1.6 px tracking, in
+TEXT_PRIMARY. Children are added via :meth:`Card.body` / :meth:`Card.add`.
 
 Carries ``objectName="card"`` so the global stylesheet picks up its
-background + border without needing per-instance QSS.
+background + border without per-instance QSS.
 """
 
 from __future__ import annotations
@@ -13,9 +13,21 @@ from __future__ import annotations
 from typing import Optional
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from .. import theme as t
+
+
+def panel_header_label(title: str, parent: Optional[QWidget] = None) -> QLabel:
+    """Uppercase tracked panel header, shared by Card and any deck panel
+    that wants the same header without the Card frame."""
+    header = QLabel(title.upper(), parent)
+    header.setProperty("role", "card-header")
+    font = header.font()
+    font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, t.PANEL_HEADER_TRACKING)
+    header.setFont(font)
+    return header
 
 
 class Card(QFrame):
@@ -25,7 +37,7 @@ class Card(QFrame):
         self.setAttribute(Qt.WA_StyledBackground, True)
 
         self._outer = QVBoxLayout(self)
-        self._outer.setContentsMargins(t.SP_MD, t.SP_SM, t.SP_MD, t.SP_SM)
+        self._outer.setContentsMargins(t.CARD_PAD, t.SP_SM + 2, t.CARD_PAD, t.CARD_PAD)
         self._outer.setSpacing(t.SP_SM)
 
         self._header_row: Optional[QHBoxLayout] = None
@@ -34,9 +46,7 @@ class Card(QFrame):
             self._header_row = QHBoxLayout(header_widget)
             self._header_row.setContentsMargins(0, 0, 0, 0)
             self._header_row.setSpacing(t.SP_SM)
-            header = QLabel(title.upper())
-            header.setProperty("role", "card-header")
-            self._header_row.addWidget(header)
+            self._header_row.addWidget(panel_header_label(title))
             self._header_row.addStretch(1)
             self._outer.addWidget(header_widget)
 
@@ -52,8 +62,6 @@ class Card(QFrame):
         row. Stretch sits between the title and these widgets so they pack
         to the right edge."""
         if self._header_row is None:
-            # No title — nothing to attach to. Drop into body so we don't
-            # silently lose the widget.
             self._body_layout.addWidget(widget)
             return widget
         self._header_row.addWidget(widget)

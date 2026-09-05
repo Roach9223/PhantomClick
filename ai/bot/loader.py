@@ -47,6 +47,6 @@ def load_bot_from_path(path: Path) -> Bot:
             f"(got {type(bot).__name__})"
         )
     if not bot.rules:
-        # Not fatal, but warn — a bot with no rules is a no-op.
+        # Not fatal, but warn, a bot with no rules is a no-op.
         print(f"[loader] warning: bot {bot.name!r} has no @bot.rule definitions")
     return bot

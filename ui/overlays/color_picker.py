@@ -1,11 +1,11 @@
-"""``ColorPicker`` — frozen-screen eyedropper, multi-sample.
+"""``ColorPicker``, frozen-screen eyedropper, multi-sample.
 
 Captures one screen into a QPixmap, paints it fullscreen, and lets the
 user move the mouse to preview the pixel color under the cursor (with a
 magnifier loupe for precision). Each click adds a sample to a stack;
 Enter / Right-click commits the whole stack; Esc cancels.
 
-Single sample stays the natural workflow — click once, press Enter (or
+Single sample stays the natural workflow, click once, press Enter (or
 right-click) to save. For gradient targets like boon procs, just keep
 clicking distinct shades; the stack indicator at the top of the banner
 shows what's been captured so far.
@@ -16,7 +16,7 @@ elsewhere in the engine (avoids HiDPI scaling mismatches).
 Single-screen scope is intentional: Qt6 doesn't render one window
 cleanly across monitors with different DPI scales. A union-of-all-
 screens overlay would look grey-but-unresponsive on the secondary
-monitor when the primary has a different DPR — exactly the lock-up
+monitor when the primary has a different DPR, exactly the lock-up
 the ZoneDrawer hit, fixed there for the same reason. Caller can re-
 launch the picker if they need to pick from a different screen.
 """
@@ -44,7 +44,7 @@ class ColorPickResult:
     ``samples`` is the ordered list of (r, g, b) triples the user
     clicked (always non-empty on a successful commit). ``primary``
     is the first sample for convenience. ``last_xy`` is the final
-    click position in absolute screen coordinates — useful when the
+    click position in absolute screen coordinates, useful when the
     caller wants a witness pixel to anchor a JSON record on.
     """
 
@@ -92,7 +92,7 @@ class ColorPicker(QWidget):
         self.setFocusPolicy(Qt.StrongFocus)
         self.setCursor(Qt.CrossCursor)
 
-        # Bind to a single screen — same mixed-DPI workaround as ZoneDrawer.
+        # Bind to a single screen, same mixed-DPI workaround as ZoneDrawer.
         if screen is None:
             try:
                 cursor_pos = QCursor.pos()
@@ -116,7 +116,7 @@ class ColorPicker(QWidget):
         self._image: Optional[QImage] = None
         self._cursor_pos: Optional[QPoint] = None
         self._keyboard_grabbed: bool = False
-        # Multi-sample stack — one (r, g, b) per click.
+        # Multi-sample stack, one (r, g, b) per click.
         self._samples: List[Tuple[int, int, int]] = []
         self._last_click_xy: Optional[Tuple[int, int]] = None
         self._capture()
@@ -129,7 +129,7 @@ class ColorPicker(QWidget):
             # Qt's screen.geometry() returns DIPs (logical pixels), but mss
             # expects physical pixels. On a DPR>1 monitor (e.g. 4K at 150%)
             # passing DIP coords to mss grabs only the top-left portion of
-            # the actual physical screen — the user sees the picker
+            # the actual physical screen, the user sees the picker
             # "cut off" the right and bottom of their game. Convert via
             # the rect-aware helper so the entire physical monitor is
             # captured. Mirror fix to ai_captures._grab_full_frame.
@@ -180,7 +180,7 @@ class ColorPicker(QWidget):
         """Release the keyboard grab. Called from both ``closeEvent``
         and at the top of ``cancel()`` / ``_commit_stack()`` so any
         QInputDialog spawned by the ``finished`` callback receives
-        keystrokes immediately — without this, the still-alive picker
+        keystrokes immediately, without this, the still-alive picker
         keeps the keyboard until its deferred close finishes, leaving
         the asset-name prompt unable to receive input."""
         if self._keyboard_grabbed:
@@ -266,7 +266,7 @@ class ColorPicker(QWidget):
             p.fillRect(self.rect(), QColor("#0d0f12"))
             p.setPen(QColor("#ededed"))
             p.drawText(self.rect(), Qt.AlignCenter,
-                       "Failed to capture screen — Esc to cancel.")
+                       "Failed to capture screen, Esc to cancel.")
             return
         p.drawPixmap(0, 0, self._pixmap)
         p.fillRect(self.rect(), QColor(0, 0, 0, 40))
@@ -297,7 +297,7 @@ class ColorPicker(QWidget):
             QRect(12, 0, 160, banner_h),
             Qt.AlignVCenter | Qt.AlignLeft, count_text,
         )
-        # Swatch row — small filled squares so the user sees what they've stacked.
+        # Swatch row, small filled squares so the user sees what they've stacked.
         sw = 18
         sh = 18
         gap = 4

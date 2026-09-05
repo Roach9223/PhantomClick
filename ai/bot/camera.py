@@ -1,4 +1,4 @@
-"""Camera control — zoom, rotate, pitch.
+"""Camera control, zoom, rotate, pitch.
 
 A module-level API (like :mod:`rs3vision_studio.bot.api` for clicks
 and waits) so rule bodies can just call ``camera.zoom_in(3)`` without
@@ -12,7 +12,7 @@ Maps high-level concepts onto the humanized input backend:
 - ``pitch_up/down`` → same drag but vertical delta.
 
 Calibration constants live at module level; users can override by
-assigning to ``camera.PIXELS_PER_DEGREE`` before ``bot.run()``.
+assigning to ``camera.PIXELS_PER_DEGREE`` at the top of a bot script.
 """
 
 from __future__ import annotations
@@ -23,13 +23,13 @@ from . import api as _api
 
 
 # ─────────────────────────────────────────────────────────────────
-# Calibration — tune these if RS3 camera sensitivity is non-default
+# Calibration, tune these if RS3 camera sensitivity is non-default
 # ─────────────────────────────────────────────────────────────────
 
 # Middle-mouse drag distance (in pixels) that produces one degree of
 # camera rotation at RS3 default sensitivity on a 3840-wide monitor.
 # Empirically ~10; users can override by assigning a new value to
-# ``camera.PIXELS_PER_DEGREE`` in their bot script before ``bot.run()``.
+# ``camera.PIXELS_PER_DEGREE`` at the top of their bot script.
 PIXELS_PER_DEGREE = 10.0
 
 # Scroll notches → zoom step. One wheel notch in RS3 is typically one
@@ -43,24 +43,20 @@ ZOOM_NOTCH = 1
 
 
 def _viewport_center() -> Tuple[int, int]:
-    """Return a point safely inside the game viewport to anchor drags.
+    """Return a screen point safely inside the game viewport to anchor drags.
 
-    Best effort: the default target monitor's geometry centre minus a
-    small offset away from the minimap (top-right UI).
+    Uses the run's frame (its size) and frame origin, so it lands on
+    whatever the bot is actually looking at, whichever monitor or
+    capture device that is. Nudged away from the minimap (top-right)
+    and chatbox (bottom-left).
     """
     try:
-        import mss
         ctx = _api._ctx()
-        mon_idx = int(getattr(ctx, "default_monitor", 1))
-        with mss.mss() as sct:
-            mons = list(sct.monitors)
-            if 0 <= mon_idx < len(mons):
-                m = mons[mon_idx]
-                cx = int(m["left"]) + int(m["width"]) // 2
-                cy = int(m["top"]) + int(m["height"]) // 2
-                # Nudge slightly away from minimap (top-right) and
-                # chatbox (bottom-left).
-                return (cx - 100, cy - 50)
+        frame = getattr(ctx, "current_frame", None)
+        if frame is not None:
+            h, w = frame.shape[:2]
+            cx, cy = ctx.frame_to_screen((int(w) // 2, int(h) // 2))
+            return (cx - 100, cy - 50)
     except Exception:
         pass
     return (960, 540)
@@ -98,7 +94,7 @@ def _scroll(notches: int) -> None:
 
 
 def zoom_in(ticks: int = 3) -> None:
-    """Scroll up ``ticks`` wheel notches — zooms the RS3 camera in."""
+    """Scroll up ``ticks`` wheel notches, zooms the RS3 camera in."""
     if ticks <= 0:
         return
     _scroll(int(ticks) * int(ZOOM_NOTCH))
@@ -106,7 +102,7 @@ def zoom_in(ticks: int = 3) -> None:
 
 
 def zoom_out(ticks: int = 3) -> None:
-    """Scroll down ``ticks`` wheel notches — zooms the RS3 camera out."""
+    """Scroll down ``ticks`` wheel notches, zooms the RS3 camera out."""
     if ticks <= 0:
         return
     _scroll(-int(ticks) * int(ZOOM_NOTCH))
@@ -134,7 +130,7 @@ def pitch_down(degrees: float = 15) -> None:
 
 
 def rotate(horizontal: float = 0, vertical: float = 0) -> None:
-    """Composite rotation — positive horizontal = right, positive vertical = down."""
+    """Composite rotation, positive horizontal = right, positive vertical = down."""
     dx = int(round(float(horizontal) * PIXELS_PER_DEGREE))
     dy = int(round(float(vertical) * PIXELS_PER_DEGREE))
     if dx == 0 and dy == 0:

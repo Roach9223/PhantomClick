@@ -72,7 +72,7 @@ Elgato Capture Card  (Bot PC PCIe slot)
    │     ╲────────────────→ cv2.VideoCapture on Bot PC  (frames)
    │ HDMI passthrough out
    ▼
-Main Monitor  (the one you currently play on — RS3 displays here)
+Main Monitor  (the one you currently play on, RS3 displays here)
 
 
 ─── DMA PATH ───────────────────────────────────────────────────────
@@ -84,7 +84,7 @@ DMA Reader  (plug into Bot PC USB 3.0+ port)
    ↑
    ╰── LeechCore / MemProcFS read Main PC RAM through this cable
 
-   USB-C port 2 — typically unused on RS3 setups
+   USB-C port 2, typically unused on RS3 setups
                   (some Captain DMA models reserve for fiber, clock-
                   sync, or chained-reader use cases)
 
@@ -97,7 +97,7 @@ KMBox NET  (standalone unit, not inside either PC)
                           (Main PC enumerates this as a real mouse +
                           keyboard composite HID device)
 
-   Port B  USB-C/A in ─←  Your real physical mouse  (optional —
+   Port B  USB-C/A in ─←  Your real physical mouse  (optional , 
                           for "live override" modes where you play
                           and the bot augments your movement; leave
                           unused for pure bot operation)
@@ -106,7 +106,7 @@ KMBox NET  (standalone unit, not inside either PC)
 
    Port D  USB-C power ─←  5V power adapter
                           OR  some units draw power from Port A
-                          — check your manual
+                         , check your manual
 
    Ethernet RJ45      ─→  LAN switch / router
                           ↑
@@ -119,12 +119,12 @@ Pure bot setup needs only:  Port A + Ethernet + power.
 ─── BOT MONITOR ────────────────────────────────────────────────────
 
 The "extra monitor not currently in use" plugs into Bot PC's GPU
-directly — no Elgato involved.
+directly, no Elgato involved.
 
 Bot PC GPU
    │ HDMI cable
    ▼
-Bot Monitor — Python bot UI, log tail, cv2 imshow previews,
+Bot Monitor, Python bot UI, log tail, cv2 imshow previews,
               Ghidra (Phase 3 offset work), MemProcFS shell, etc.
 
 
@@ -147,11 +147,11 @@ crosses the open internet. If your router uses "AP isolation" or
 
 To NXT and Windows on Main PC, the world looks like:
 
-  • a HDMI monitor    (Elgato passthrough — passive sink)
-  • a USB HID device  (KMBox NET — generic mouse + keyboard composite)
-  • a PCIe device     (Captain DMA Fuser — generic vendor ID, no
+  • a HDMI monitor    (Elgato passthrough, passive sink)
+  • a USB HID device  (KMBox NET, generic mouse + keyboard composite)
+  • a PCIe device     (Captain DMA Fuser, generic vendor ID, no
                        driver interaction beyond enumeration)
-  • an Ethernet card  (already there — KMBox NET is on a different
+  • an Ethernet card  (already there, KMBox NET is on a different
                        cable; Main PC and KMBox don't talk)
 
 No process. No file. No driver. No window. Nothing software-side.
@@ -167,9 +167,9 @@ Every cable you need to physically run. All standard, no specialty parts.
 |---|---|---|---|
 | 1 | HDMI | Main PC GPU → Elgato HDMI IN | 4K60 capable; HDMI 2.0 or 2.1 |
 | 2 | HDMI | Elgato HDMI OUT → Main Monitor | Same spec as #1 |
-| 3 | USB-C | Captain DMA Fuser Port 1 → Bot PC USB 3.0+ | High-speed USB-C — comes with the DMA card typically |
+| 3 | USB-C | Captain DMA Fuser Port 1 → Bot PC USB 3.0+ | High-speed USB-C, comes with the DMA card typically |
 | 4 | USB-A | KMBox NET Port A → Main PC USB | Standard USB-A to USB-A (or whichever connector your KMBox uses for HID out) |
-| 5 | USB-C | Power adapter → KMBox NET power port | 5V, sufficient for unit's draw — check spec |
+| 5 | USB-C | Power adapter → KMBox NET power port | 5V, sufficient for unit's draw, check spec |
 | 6 | Ethernet (Cat5e/6) | KMBox NET RJ45 → LAN switch | Standard ethernet |
 | 7 | Ethernet | Main PC NIC → LAN switch | Already in place typically |
 | 8 | Ethernet | Bot PC NIC → LAN switch | Already in place typically |
@@ -188,16 +188,16 @@ Optional (real-mouse/keyboard passthrough mode):
 
 Walk through each row top-to-bottom. Each step is independent and verifiable.
 
-1. **HDMI path:** plug everything in. Main Monitor shows RS3 normally. *No software running yet — just the passive HDMI signal flowing through Elgato.*
+1. **HDMI path:** plug everything in. Main Monitor shows RS3 normally. *No software running yet, just the passive HDMI signal flowing through Elgato.*
 2. **Elgato visible on Bot PC:** Bot PC Device Manager / `cv2.VideoCapture(0, cv2.CAP_DSHOW).read()` returns a non-None frame matching Main PC's display.
 3. **KMBox visible on Main PC:** Main PC Device Manager lists "KMBox NET HID" (or generic "USB Composite Device") under Human Interface Devices.
 4. **KMBox reachable on LAN:** `ping kmbox.local` (or its assigned IP) from Bot PC succeeds.
 5. **Test mouse command end-to-end:** `python -c "import kmNet; kmNet.init('192.168.x.x', '<port>', '<uuid>'); kmNet.move(500, 500); kmNet.left(1)"` from Bot PC. Cursor on Main PC moves to (500, 500) and left-clicks. *Test against Notepad first, then RS3.*
-6. **DMA Fuser visible on Main PC:** Device Manager shows an unknown PCIe device (this is correct — generic vendor ID).
+6. **DMA Fuser visible on Main PC:** Device Manager shows an unknown PCIe device (this is correct, generic vendor ID).
 7. **DMA Reader visible on Bot PC:** LeechCore CLI `LeechCore.exe -device fpga` returns the device handle.
 8. **DMA memory read:** `pcileech.exe -device fpga -out console dump 0x1000 0x100` returns bytes (any bytes; we're just confirming the channel works).
 
-Steps 1–4 are hardware-only. Steps 5–8 are the first software touches. If any step fails, *do not proceed* — debug it in isolation before moving on. The whole stack only works because each layer is independent; troubleshooting an integration bug on layer 8 when layer 3 is silently broken is a nightmare.
+Steps 1–4 are hardware-only. Steps 5–8 are the first software touches. If any step fails, *do not proceed*, debug it in isolation before moving on. The whole stack only works because each layer is independent; troubleshooting an integration bug on layer 8 when layer 3 is silently broken is a nightmare.
 
 ---
 

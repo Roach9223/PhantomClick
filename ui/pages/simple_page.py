@@ -1,4 +1,4 @@
-"""Generic page wrapper — single card in a scrollable column.
+"""Generic page wrapper, single card in a scrollable column.
 
 Used by Record/Hover/Behavior/Hotkeys/Stats. Honors an optional
 ``max_card_w`` so small cards (Hotkeys) don't span a 1500 px window
@@ -32,7 +32,7 @@ class SimplePage(QWidget):
 
         inner = QWidget()
         if max_card_w is None:
-            # Card fills the page width AND height — the card itself owns
+            # Card fills the page width AND height, the card itself owns
             # the canvas. Previously a trailing addStretch ate vertical
             # space, leaving mode pages (Record especially) with a giant
             # dead area below their content; passing stretch=1 to the card

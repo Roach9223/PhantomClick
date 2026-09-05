@@ -1,4 +1,4 @@
-"""OCR blocks — read text from frames using compiled .rvf fonts.
+"""OCR blocks, read text from frames using compiled .rvf fonts.
 
 The font is specified by path as a block parameter. The runtime context
 caches the loaded Font object by (path, mtime) so repeated ticks of the

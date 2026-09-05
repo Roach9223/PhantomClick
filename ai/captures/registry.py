@@ -2,7 +2,7 @@
 ``ai/captures/global/``.
 
 The on-disk layout mirrors a bot bundle's ``assets/`` directory so the
-promote operation is a straight file copy — no schema rewrite::
+promote operation is a straight file copy, no schema rewrite::
 
     ai/captures/global/
     ├── colors/
@@ -19,7 +19,7 @@ promote operation is a straight file copy — no schema rewrite::
             └── meta.json
 
 Lookups raise :class:`KeyError` when the named asset isn't present in
-the global library — bots resolve names eagerly at module import so a
+the global library, bots resolve names eagerly at module import so a
 missing capture surfaces as a clean import-time failure, not a tick
 mid-run.
 """
@@ -38,7 +38,7 @@ from typing import Any, Dict, List, Optional
 # captures persist next to the .exe in a frozen build (a ``_MEIPASS``-
 # relative path would be wiped on exit). In dev this resolves to
 # <repo>/ai/captures/global. The dir is created on first access by
-# ``_ensure_root`` — no seed files need to ship.
+# ``_ensure_root``, no seed files need to ship.
 from utils.paths import writable_root
 
 _ROOT = writable_root() / "ai" / "captures" / "global"
@@ -110,7 +110,7 @@ def color(name: str) -> int:
 def colors(name: str) -> List[int]:
     """Return EVERY sample for a saved colour as a list of ``0xRRGGBB``.
 
-    Returns ``[primary, *extras]`` — guaranteed non-empty (at minimum
+    Returns ``[primary, *extras]``, guaranteed non-empty (at minimum
     just the primary). Pair with
     :func:`ai.bot.find_any_color` so a bot can match anti-aliased /
     gradient / glow targets robustly:
@@ -121,7 +121,7 @@ def colors(name: str) -> List[int]:
         SEREN_SAMPLES = colors("seren_spirit_halo")  # e.g. 5 samples
         m = find_any_color(SEREN_SAMPLES, tol=18, roi=POOL_ROI_WIDE)
 
-    Backward compatible — if a JSON file only has the legacy ``rgb``
+    Backward compatible, if a JSON file only has the legacy ``rgb``
     field with no ``extra_rgbs``, the returned list is ``[primary]``.
     """
     data = color_with_meta(name)
@@ -139,7 +139,7 @@ def colors(name: str) -> List[int]:
 
 
 def color_with_meta(name: str) -> Dict[str, Any]:
-    """Same as :func:`color` but returns the full JSON payload — handy
+    """Same as :func:`color` but returns the full JSON payload, handy
     when a bot wants ``screen_xy``, ``captured_at``, or ``extra_rgbs``."""
     path = colors_dir() / f"{_slug(name)}.json"
     if not path.exists():
@@ -176,7 +176,7 @@ def recording(name: str) -> Path:
 def dtm(name: str) -> Path:
     """Path to a saved global DTM template (the YAML).
 
-    Pair with :func:`ai.bot.find_dtm` — the bot framework's
+    Pair with :func:`ai.bot.find_dtm`, the bot framework's
     ``dtm.find`` block accepts an absolute YAML path::
 
         from ai.captures import dtm
@@ -336,7 +336,7 @@ def promote_recording(src_dir: Path, *, name: Optional[str] = None) -> Path:
 def promote_dtm(src_yaml: Path, *, name: Optional[str] = None) -> Path:
     """Copy a per-bundle DTM (YAML + paired PNG) into the global dtms dir.
 
-    The PNG thumbnail is optional — if ``<src_yaml>.with_suffix(.png)``
+    The PNG thumbnail is optional, if ``<src_yaml>.with_suffix(.png)``
     exists, it travels with the YAML so the global library card can
     render a preview.
     """
@@ -383,7 +383,7 @@ def _bump_index(kind: str, slug: str, meta: Dict[str, Any]) -> None:
     """Update ``<kind>/index.json`` with a single entry per slug.
 
     Format mirrors the per-bundle index in
-    ``ui/cards/ai_captures.AICapturesSection._append_index`` — a list
+    ``ui/cards/ai_captures.AICapturesSection._append_index``, a list
     of dicts, replacing any previous entry with the same slug so the
     index never grows duplicates.
     """

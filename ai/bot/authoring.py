@@ -1,4 +1,4 @@
-"""AIBotStep — user-authored bot step, the AI-mode analogue of
+"""AIBotStep, user-authored bot step, the AI-mode analogue of
 :class:`modules.recorder.RecorderStep`.
 
 Mirrors RecorderStep's "single dataclass with a kind discriminator"
@@ -116,7 +116,7 @@ class AIBotStep:
     enabled: bool = True
     label: str = ""                  # capped at 80 on load
     phase: str = ""                  # optional; tints rule chip + dashboard
-    # Random wait fired AFTER a successful action — applies to every
+    # Random wait fired AFTER a successful action, applies to every
     # "I just did something" kind (click, key). 0 = no extra wait.
     after_min_ms: int = 600
     after_max_ms: int = 1200
@@ -162,7 +162,7 @@ class AIBotStep:
     capture_match_threshold: float = 0.7
 
     # ── Zone click ─────────────────────────────────────────────
-    # Serialized Zone (rect / circle / polygon) — same shape
+    # Serialized Zone (rect / circle / polygon), same shape
     # RecorderStep uses, accepted by Zone.from_json.
     zone_json: Optional[dict] = None
 
@@ -186,7 +186,7 @@ class AIBotStep:
     # goto_procedure:<name> suspends the current procedure and runs the
     # named recovery procedure inline.
     on_fail: str = "retry"
-    # Per-step retry budget — used when on_fail == "retry". Counter
+    # Per-step retry budget, used when on_fail == "retry". Counter
     # lives in the runner state, not here. Stored on the step so the
     # editor can expose it.
     retry_budget: int = 3

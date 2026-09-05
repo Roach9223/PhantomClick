@@ -1,13 +1,13 @@
-"""Python-DSL bot authoring — the primary authoring surface.
+"""Python-DSL bot authoring, the primary authoring surface.
 
-A bot script is a plain ``.py`` file that constructs a :class:`Bot`,
-decorates ordinary functions with ``@bot.rule(...)``, and either calls
-``bot.run()`` in a ``if __name__ == "__main__":`` block (for standalone
-execution) or lets the Studio run it.
+A bot script is a plain ``.py`` file that constructs a :class:`Bot`
+and decorates ordinary functions with ``@bot.rule(...)``. The
+PhantomClick AI tab imports the script and runs it via
+:class:`BotRunner`.
 
 Example::
 
-    from rs3vision_studio.bot import Bot, find_color, click, wait
+    from ai.bot import Bot, find_color, click, wait
 
     bot = Bot(name="Draynor Willows", monitor=1)
 
@@ -20,27 +20,29 @@ Example::
         wait(6000)
         return True
 
-    @bot.rule(phase="scanning")
+    @bot.rule(phase="scanning", idle=True)
     def idle():
         wait(500)
         return True
 
-    if __name__ == "__main__":
-        bot.run()
-
 Rules are evaluated in definition order each tick. The first rule
-that returns a truthy value "wins" — subsequent rules are skipped
-this tick. Return ``False`` / ``None`` to signal "I didn't fire,
-try the next rule".
+that returns a truthy value "wins"; later rules are skipped this
+tick. Return ``False`` / ``None`` to signal "I didn't fire, try the
+next rule". Mark the fallthrough rule ``idle=True`` (or return
+:data:`IDLE`) so the AFK watchdog still counts the tick as dry.
 
-The primitives (:func:`find_color`, :func:`find_dtm`, :func:`click`,
-:func:`wait`, etc.) use a per-tick :class:`RuntimeContext` set by
-the :class:`BotRunner`. Running a bot outside the Studio (via
-``python my_bot.py``) uses a standalone context path.
+All coordinates a bot sees (ROIs in, ``Match.point`` out, ``click.at``
+targets) are physical screen pixels. The runner's frame source and
+mapper translate to and from frame pixels internally.
 """
 
 from __future__ import annotations
 
+# Load the ``world`` submodule BEFORE importing the ``world()`` function
+# from api. Importing a submodule binds it as an attribute of this
+# package, so if it loaded later it would silently replace the function
+# and ``from ai.bot import world`` would hand bots a module.
+from .world import WorldState
 from . import camera
 from .api import (
     click,
@@ -74,16 +76,18 @@ from .authoring import (
     deserialize_steps as deserialize_ai_steps,
     serialize_steps as serialize_ai_steps,
 )
-from .bot import Bot
+from .bot import IDLE, Bot
 from .compiler import compile_program, compile_user_bot, rule_name_for
 from .loader import load_bot_from_path
 from .runner import BotRunner
-from .world import WorldState
+
+assert callable(world), "ai.bot.world must be the api function, not the submodule"
 
 __all__ = [
     "AIBotStep",
     "Bot",
     "BotRunner",
+    "IDLE",
     "Match",
     "WorldState",
     "KIND_LABELS",

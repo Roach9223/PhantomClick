@@ -3,15 +3,15 @@ by PyInstaller.
 
 Two distinct roots matter once the app ships as an .exe:
 
-- **writable_root** — where user data lives (``config.json``,
+- **writable_root**, where user data lives (``config.json``,
   ``phantomclick.log``, ``templates/``, captured PNGs, the global
   capture library). When frozen this MUST be the directory next to the
   .exe, never PyInstaller's ``_MEIPASS`` temp extract (which is wiped
   on exit, so a ``--onefile`` build would lose every write). This
-  mirrors the logic already in :func:`ui.config_io._config_dir` —
+  mirrors the logic already in :func:`ui.config_io._config_dir` , 
   keep the two in sync.
 
-- **bundled_root** — where read-only resources shipped inside the
+- **bundled_root**, where read-only resources shipped inside the
   build live (``rs3vision`` data, the ``ai/tasks/library`` manifests).
   When frozen that's ``sys._MEIPASS``; in dev it's the repo root.
 """

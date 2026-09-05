@@ -42,7 +42,7 @@ from .procedures import (
 def lint_bundle(bundle: Any, program: BotProgram) -> List[str]:
     """Return a list of issue messages (empty list = bot is ready).
 
-    ``bundle`` may be None (legacy / library bot path) — in that case
+    ``bundle`` may be None (legacy / library bot path), in that case
     bundle-asset checks are skipped and only program-level issues
     surface.
     """
@@ -51,7 +51,7 @@ def lint_bundle(bundle: Any, program: BotProgram) -> List[str]:
         issues.append("Program has no procedures.")
         return issues
 
-    # Build a set of valid handler targets — procedure names + 'abort'.
+    # Build a set of valid handler targets, procedure names + 'abort'.
     valid_handlers = set(program.procedures.keys()) | {HANDLER_ABORT}
 
     # Index every step's kind across all procedures so we can decide
@@ -119,26 +119,26 @@ def lint_bundle(bundle: Any, program: BotProgram) -> List[str]:
             if not pat:
                 issues.append(f"{label}: chat-match pattern is empty.")
 
-    # Calibration checks — only if the corresponding feature is used.
+    # Calibration checks, only if the corresponding feature is used.
     if bundle is not None:
         cal = bundle.calibration or {}
         if uses_inventory and not cal.get("inventory_rect"):
             issues.append(
-                "Inventory ROI not calibrated — run 'Calibrate Inventory ROI' "
+                "Inventory ROI not calibrated, run 'Calibrate Inventory ROI' "
                 "in the AI tab. Required by inventory predicates."
             )
         if uses_bars and not (cal.get("bars_rect") or cal.get("orbs_rect")):
             issues.append(
-                "Bars ROI not calibrated — run 'Calibrate Bars ROI' at 100% "
+                "Bars ROI not calibrated, run 'Calibrate Bars ROI' at 100% "
                 "HP/Adren/Prayer/Sum. Required by HP-below interrupts."
             )
         if uses_minimap and not cal.get("minimap_rect"):
             issues.append(
-                "Minimap ROI not calibrated — run 'Calibrate Minimap ROI' at "
+                "Minimap ROI not calibrated, run 'Calibrate Minimap ROI' at "
                 "100% run-energy. Required by on_player_moved + run_energy_pct."
             )
 
-    # Item-library checks — gather distinct item names referenced.
+    # Item-library checks, gather distinct item names referenced.
     referenced_items: set[str] = set()
     for proc in program.procedures.values():
         if not isinstance(proc, Procedure):

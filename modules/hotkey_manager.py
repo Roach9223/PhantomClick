@@ -7,6 +7,11 @@ Four actions:
   - emergency_stop (Escape, hard-locked for safety)
 
 Also supports a one-shot "capture next key" mode for the GUI's rebind flow.
+
+Privacy rule: this listener sees every keypress on the machine, so it must
+never write raw key names to the log. The only key names that may be
+logged are ones that matched a currently bound hotkey. Capture mode logs
+that a key was captured, not which one.
 """
 
 from __future__ import annotations
@@ -28,11 +33,14 @@ def key_to_name(key) -> str:
 
 
 def name_to_display(name: str) -> str:
-    if not name:
-        return "?"
-    if len(name) == 1:
-        return name.upper()
-    return name.upper()
+    return name.upper() if name else "?"
+
+
+def _log():
+    # Imported lazily so this module stays importable in tests and tools
+    # that do not want the file logger side effect.
+    from utils.logger import get_logger
+    return get_logger()
 
 
 class HotkeyManager:
@@ -62,11 +70,24 @@ class HotkeyManager:
         self._lock = threading.Lock()
 
     def start(self) -> None:
+        """Start the pynput listener, or restart it if its thread died.
+
+        pynput's Listener is a Thread subclass; if the Win32 hook is torn
+        down (antivirus, hook collision, an exception inside pynput) the
+        thread exits and hotkeys silently stop working. Checking
+        ``is_alive()`` instead of ``is not None`` lets callers recover by
+        calling ``start()`` again.
+        """
         if self._listener is not None:
-            return
+            if self._listener.is_alive():
+                return
+            self.stop()
         self._listener = keyboard.Listener(on_press=self._on_press)
         self._listener.daemon = True
         self._listener.start()
+
+    def is_alive(self) -> bool:
+        return self._listener is not None and self._listener.is_alive()
 
     def stop(self) -> None:
         if self._listener is not None:
@@ -88,9 +109,26 @@ class HotkeyManager:
     def set_capture(self, name: str) -> None:
         self.capture_name = (name or "f9").lower()
 
+    def _bound_names(self) -> set[str]:
+        return {self.start_name, self.stop_name, self.pause_name,
+                self.capture_name, "esc"}
+
     def capture_next(self, cb: Callable[[str], None]) -> None:
-        """Next keypress is consumed and passed to `cb` instead of routing."""
+        """Next keypress is consumed and passed to `cb` instead of routing.
+
+        Only one capture can be pending. A second call while one is pending
+        replaces the earlier callback (the UI can only show one "press a
+        key" prompt at a time, so the newest request is the one the user is
+        looking at) and logs a warning so a stuck prompt is diagnosable.
+        The replaced callback is never invoked.
+        """
         with self._lock:
+            if self._capture_cb is not None:
+                try:
+                    _log().warning(
+                        "hotkey.capture_next replaced a pending capture")
+                except Exception:
+                    pass
             self._capture_cb = cb
 
     def cancel_capture(self) -> None:
@@ -103,39 +141,26 @@ class HotkeyManager:
     def _on_press(self, key) -> None:
         name = key_to_name(key)
 
-        # Diagnostic log every keypress so we can confirm at-the-OS-level
-        # delivery to pynput. If this line never appears in the log, the
-        # listener never fires (NXT / antivirus / hook collision); if it
-        # appears but no action runs, the rebind/dispatch logic is at
-        # fault. Logged at DEBUG-equivalent verbosity (INFO with a tight
-        # prefix) so it doesn't drown the file but is always there.
-        try:
-            from utils.logger import get_logger
-            get_logger().info("hotkey._on_press name=%r capture=%s", name,
-                              self._capture_cb is not None)
-        except Exception:
-            pass
-
-        # Capture mode steals the next key.
+        # Capture mode steals the next key. The captured name is handed to
+        # the callback but deliberately not logged: during a rebind the
+        # user may press anything, and the log must not become a keylog.
         with self._lock:
             cb = self._capture_cb
             if cb is not None:
                 self._capture_cb = None
                 try:
-                    from utils.logger import get_logger
-                    get_logger().info("hotkey.capture_next routing key=%r", name)
-                except Exception:
-                    pass
-                try:
                     cb(name)
                 except Exception as exc:
                     try:
-                        from utils.logger import get_logger
-                        get_logger().exception(
+                        _log().exception(
                             "hotkey.capture_next callback failed: %s", exc)
                     except Exception:
                         pass
                 return
+
+        # Unbound keys are dropped here without logging.
+        if name not in self._bound_names():
+            return
 
         # Escape is the hard-coded emergency stop (never rebindable).
         if name == "esc":
@@ -168,15 +193,13 @@ class HotkeyManager:
 
         if name == self.capture_name and self.on_capture is not None:
             try:
-                from utils.logger import get_logger
-                get_logger().info("hotkey.capture firing (key=%r)", name)
+                _log().info("hotkey.capture firing (key=%r)", name)
             except Exception:
                 pass
             try:
                 self.on_capture()
             except Exception as exc:
                 try:
-                    from utils.logger import get_logger
-                    get_logger().exception("hotkey.capture callback failed: %s", exc)
+                    _log().exception("hotkey.capture callback failed: %s", exc)
                 except Exception:
                     pass

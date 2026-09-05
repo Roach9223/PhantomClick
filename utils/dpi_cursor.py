@@ -1,6 +1,6 @@
 """DPI-aware cursor wrapper.
 
-The engine works in **DIPs** (virtual desktop logical pixels) — that's
+The engine works in **DIPs** (virtual desktop logical pixels), that's
 what Qt stores in zones, what the drawer captures, and what every UI
 overlay paints with. The Win32 cursor APIs (``SetCursorPos`` /
 ``GetCursorPos``) operate in **physical pixels** when the process is
@@ -93,6 +93,7 @@ def refresh_screens() -> None:
     (true on DPR=1 screens or when Qt and Win32 agree on monitor
     ordering).
     """
+    global _SCREENS
     try:
         from PySide6.QtWidgets import QApplication
     except Exception:
@@ -122,8 +123,10 @@ def refresh_screens() -> None:
             "dpr": dpr,
             "physical_origin": match,
         })
-    _SCREENS.clear()
-    _SCREENS.extend(out)
+    # Rebind rather than clear+extend: the engine thread reads _SCREENS
+    # without a lock, and a clear/extend window would let a conversion
+    # see an empty list and fall through to the identity fallback.
+    _SCREENS = out
 
 
 def _screen_for_dip(x: float, y: float) -> Optional[dict]:
@@ -132,12 +135,12 @@ def _screen_for_dip(x: float, y: float) -> Optional[dict]:
         l, t, r, b = s["dip_rect"]
         if l <= x < r and t <= y < b:
             return s
-    # Boundary fallback — points exactly on the right/bottom edge of a
+    # Boundary fallback, points exactly on the right/bottom edge of a
     # screen are still "of" that screen for conversion purposes. Without
     # this, edge points (e.g. the bottom-right corner of a rect drawn to
     # the screen edge) hit the identity-fallback in dip_to_physical and
     # produce a mangled physical-space rect. Bug surfaced when an mss
-    # capture clipped to 2560×1440 of a 3840×2160 monitor — the bottom-
+    # capture clipped to 2560×1440 of a 3840×2160 monitor, the bottom-
     # right geom corner fell outside any _SCREENS entry.
     for s in _SCREENS:
         l, t, r, b = s["dip_rect"]
@@ -183,7 +186,7 @@ def dip_rect_to_physical(
 ) -> tuple[int, int, int, int]:
     """Convert a DIP rect to a physical-pixel rect on the same screen.
 
-    Uses the rect's CENTER for screen lookup — that's guaranteed to be
+    Uses the rect's CENTER for screen lookup, that's guaranteed to be
     in the screen's interior even when the rect's bottom-right corner
     is exactly on the screen edge (where ``dip_to_physical`` would
     otherwise fall back to identity and produce a wrong-sized physical
@@ -245,7 +248,7 @@ def set_pos_physical(x: float, y: float) -> None:
     """Set the cursor to a *physical* (Win32) pixel coord.
 
     Bypasses DIP conversion. Use this when the caller has already
-    resolved coordinates to physical px — most importantly the
+    resolved coordinates to physical px, most importantly the
     humanizer's path walker, which generates Wind/Hooke / Bezier paths
     in physical-px space so that a path crossing two monitors with
     different DPRs stays smooth (DIP-space paths teleport at the

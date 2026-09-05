@@ -30,7 +30,12 @@ def get_logger(name: str = "phantomclick") -> logging.Logger:
     if logger.handlers:
         return logger
     logger.setLevel(logging.INFO)
-    handler = RotatingFileHandler(_log_path(), maxBytes=5_000_000, backupCount=2, encoding="utf-8")
+    try:
+        handler = RotatingFileHandler(_log_path(), maxBytes=5_000_000, backupCount=2, encoding="utf-8")
+    except OSError:
+        # A read-only portable-app folder must not prevent the GUI from
+        # opening and reporting the settings-save error to the user.
+        handler = logging.StreamHandler(sys.stderr) if sys.stderr is not None else logging.NullHandler()
     handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
     logger.addHandler(handler)
     logger.propagate = False
@@ -46,7 +51,7 @@ def clear_log(name: str = "phantomclick") -> bool:
     on the file. After truncation we re-acquire via ``get_logger()`` so
     the next emit doesn't crash on a missing handler. Returns True on
     success, False if the file couldn't be truncated (most often: the
-    file is held by another process — rare since we own the only open
+    file is held by another process, rare since we own the only open
     handle here)."""
     logger = logging.getLogger(name)
     p = _log_path()
@@ -66,7 +71,7 @@ def clear_log(name: str = "phantomclick") -> bool:
         get_logger(name)
         return False
     # Sweep rotated backups (.log.1, .log.2, ...). Any failure here is
-    # cosmetic — the live log file is what matters.
+    # cosmetic, the live log file is what matters.
     for sib in p.parent.glob(p.name + ".*"):
         try:
             sib.unlink()

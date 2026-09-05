@@ -1,8 +1,8 @@
-"""Resource-bar reader — HP / Adrenaline / Prayer / Summoning %.
+"""Resource-bar reader, HP / Adrenaline / Prayer / Summoning %.
 
 Reads RuneScape NXT's horizontal resource bars (the strip at the top
 or bottom of the action bar with four coloured fills). Each bar fills
-from left as the resource depletes — at 100% the whole bar is its
+from left as the resource depletes, at 100% the whole bar is its
 signature colour; at 0% it's gone entirely.
 
 Detection is colour-keyed per bar rather than position-based: we
@@ -12,13 +12,13 @@ tab's "Calibrate Orbs ROI" handler). This is robust to HUD scale
 changes and layout shifts because we never assume a specific bar
 lives at a specific x-offset.
 
-The legacy RS3 client's vertical orb stack is no longer supported —
+The legacy RS3 client's vertical orb stack is no longer supported , 
 PhantomClick targets RS3 NXT, the modern client. The file is still
 named ``orbs.py`` for back-compat with WorldState's import path; the
 public types are :class:`OrbReading` and :class:`OrbsState`.
 
 Calibration assumes the player is at 100% HP / 100% Prayer / 100%
-Run-energy (= 100% adrenaline) / 100% Summoning when calibrating —
+Run-energy (= 100% adrenaline) / 100% Summoning when calibrating , 
 the AI tab prompt explicitly says so. The captured pixel counts
 become the divisor for runtime percentages.
 """
@@ -32,8 +32,8 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 
 
-# ── Signature colours (BGR — matches mss / cv2 / rs3vision frames) ──
-# Sampled from a real NXT screenshot (assets/exampes/...). The
+# ── Signature colours (BGR, matches mss / cv2 / rs3vision frames) ──
+# Sampled from a real NXT screenshot (assets/examples/...). The
 # ``find_color`` tolerance below absorbs anti-aliasing and gradient
 # noise, so the exact centre value matters less than the colour being
 # unambiguous within the strip.
@@ -52,7 +52,7 @@ _DEFAULT_CTS: int = 2
 
 # Public ordering matches NXT layout (left-to-right): HP first, then
 # Adrenaline, Prayer, Summoning. Run-energy lives in the minimap orb
-# corner and is read by the minimap module instead — included here as
+# corner and is read by the minimap module instead, included here as
 # an alias resolved on the OrbsState for callers that expect it.
 ORB_NAMES: Tuple[str, ...] = ("hp", "adrenaline", "prayer", "summoning")
 
@@ -77,7 +77,7 @@ class OrbsState:
     roi: Tuple[int, int, int, int]
     elapsed_ms: float
 
-    # Run-energy aliasing — modern bots tend to ask for run_energy via
+    # Run-energy aliasing, modern bots tend to ask for run_energy via
     # the minimap orb, but plenty of bots only care about "is run
     # available" and treat adrenaline as the proxy. We don't auto-fill
     # this here; minimap.scan() populates a separate field. Provided
@@ -102,7 +102,7 @@ def scan(
     """Parse all four NXT bars into :class:`OrbReading`s.
 
     ``frame`` is a BGR uint8 array (mss output convention). ``roi`` is
-    the absolute screen rectangle of the bar strip — calibrated once
+    the absolute screen rectangle of the bar strip, calibrated once
     via the AI tab. ``max_fill`` is a dict keyed by ``"hp"``,
     ``"adrenaline"``, ``"prayer"``, ``"summoning"`` mapping to each
     bar's signature-pixel count at 100%. Missing keys → ``OrbReading``
@@ -152,7 +152,7 @@ def calibrate_at_full(
     """Capture the per-bar pixel count at 100%.
 
     Called by the AI tab's calibrate handler immediately after the
-    user draws the bar-strip box — assumes player is at 100% HP /
+    user draws the bar-strip box, assumes player is at 100% HP /
     Adrenaline / Prayer / Summoning. The returned dict is what
     callers should store as ``cfg["ai_orbs_max_fill"]``.
     """
@@ -190,7 +190,7 @@ def _count_signature(
         )
         return int(count)
     except Exception:
-        # Numpy fallback — slightly slower (~1 ms vs <0.1 ms on a
+        # Numpy fallback, slightly slower (~1 ms vs <0.1 ms on a
         # 1000×80 strip) but always available.
         target = np.array(bgr, dtype=np.int16)
         diff = np.abs(region.astype(np.int16) - target).max(axis=2)

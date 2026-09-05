@@ -1,4 +1,4 @@
-"""Block catalog — every executable node in the Studio.
+"""Block catalog, every executable node in the Studio.
 
 Each block is a subclass of `Block` (see ``base.py``). Blocks register
 themselves into the `REGISTRY` on import, and are categorised by their

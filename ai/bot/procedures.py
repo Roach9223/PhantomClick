@@ -1,4 +1,4 @@
-"""Procedures + Interrupts — the bot model that replaces the flat
+"""Procedures + Interrupts, the bot model that replaces the flat
 priority-rule list.
 
 Real bots aren't priority lists; they're sequences with reactive
@@ -8,14 +8,14 @@ fire any time and suspend whatever the bot was doing.
 
 This module models exactly that:
 
-- :class:`Procedure` — a named ordered list of steps. Steps run top to
+- :class:`Procedure`, a named ordered list of steps. Steps run top to
   bottom, advancing the program counter after each one succeeds.
-- :class:`Interrupt` — a trigger + a handler procedure name. Each
+- :class:`Interrupt`, a trigger + a handler procedure name. Each
   tick, the runtime evaluates interrupts in declaration order; the
   first one whose trigger fires suspends the active procedure (saves
   pc on a small stack), runs the handler, and resumes when the
   handler completes.
-- :class:`BotProgram` — the full bot definition: ``entry`` procedure
+- :class:`BotProgram`, the full bot definition: ``entry`` procedure
   name, dict of procedures keyed by name, list of interrupts.
 
 Loop semantics: when the active procedure ends, control pops the
@@ -25,7 +25,7 @@ forever, exactly like the old flat-list semantics.
 
 Back-compat: a bundle that ships a flat list of steps (the legacy
 shape) is upgraded by :func:`legacy_steps_to_program` into a single
-``main`` procedure with no interrupts — same runtime behaviour, no
+``main`` procedure with no interrupts, same runtime behaviour, no
 authoring change required.
 """
 
@@ -47,7 +47,7 @@ class Procedure:
     name: str
     steps: List[Dict[str, Any]] = field(default_factory=list)
     # ``loop`` controls what happens when the last step ends.
-    # - "stack" (default): pop the call stack — go back to whoever
+    # - "stack" (default): pop the call stack, go back to whoever
     #   invoked us. If the stack is empty (we're the entry procedure)
     #   the runtime restarts us at pc=0.
     # - "abort": stop the bot when this procedure finishes.
@@ -73,7 +73,7 @@ class Procedure:
         )
 
 
-# Interrupt trigger kinds — string discriminators in JSON.
+# Interrupt trigger kinds, string discriminators in JSON.
 TRIGGER_IF_INVENTORY_FULL = "if_inventory_full"
 TRIGGER_IF_HP_BELOW = "if_hp_below"
 TRIGGER_IF_ITEM_COUNT = "if_item_count"
@@ -163,12 +163,12 @@ class BotProgram:
         raw_procs = d.get("procedures") or {}
         procedures: Dict[str, Procedure] = {}
         if isinstance(raw_procs, dict):
-            # Storage shape A: ``{name: {steps: […]}}`` — preferred.
+            # Storage shape A: ``{name: {steps: […]}}``, preferred.
             for name, body in raw_procs.items():
                 if isinstance(body, dict):
                     proc = Procedure.from_json({"name": name, **body})
                 elif isinstance(body, list):
-                    # Storage shape B: ``{name: [steps]}`` — accepted
+                    # Storage shape B: ``{name: [steps]}``, accepted
                     # for back-compat with the legacy bundle layout.
                     proc = Procedure(name=str(name), steps=list(body))
                 else:
@@ -187,7 +187,7 @@ class BotProgram:
             if isinstance(item, dict)
         ]
         if entry not in procedures:
-            # The entry can't point at a non-existent procedure —
+            # The entry can't point at a non-existent procedure , 
             # fall back to the first procedure if any, else create
             # an empty ``main`` so the runtime fails fast at start.
             if procedures:

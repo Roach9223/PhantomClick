@@ -1,15 +1,15 @@
-"""Inventory grid scanner — parses the RuneScape 4×7 inventory panel.
+"""Inventory grid scanner, parses the RuneScape 4×7 inventory panel.
 
 Bots that need "is the inventory full?" or "are there ≥N items of color X?"
 call ``scan(frame, roi)`` once per tick and read the resulting
-:class:`InventoryState`. Scanning is pure numpy on the cropped ROI — no
-rs3vision call per slot — so a full 28-slot scan is < 5 ms even at 4K.
+:class:`InventoryState`. Scanning is pure numpy on the cropped ROI, no
+rs3vision call per slot, so a full 28-slot scan is < 5 ms even at 4K.
 
 The inventory panel must be visible (the player has the Inventory tab
 open). When a different side panel is active (skills, prayer book, etc.)
 the slots will all read as "filled" because the panel background isn't
 visible. Bots that depend on this should additionally gate on the
-inventory tab being active — that's a separate detection out of scope
+inventory tab being active, that's a separate detection out of scope
 for this module.
 
 Calibration is per-user: the AI tab's "Calibrate Inventory ROI" button
@@ -38,7 +38,7 @@ import numpy as np
 # Tuning constants
 # ─────────────────────────────────────────────────────────────────
 
-# RS3 NXT inventory background — dark warm brown-grey behind every
+# RS3 NXT inventory background, dark warm brown-grey behind every
 # empty slot. Sampled from real NXT screenshots: BGR centroid (32, 35,
 # 39), ranging (24..46, 28..43, 28..50) across pixels. The empty test
 # uses ``EMPTY_TOL`` per-channel slack to absorb that noise.
@@ -56,7 +56,7 @@ EMPTY_TOL: int = 22
 # and a partially-transparent overlay reads as empty.
 EMPTY_FILL_THRESHOLD: float = 0.75
 
-# Border in pixels to skip on each side of every slot when sampling —
+# Border in pixels to skip on each side of every slot when sampling , 
 # the 1-2 px border between slots is always darker regardless of slot
 # state, so including it would skew empty/filled ratios.
 SLOT_BORDER_PX: int = 3
@@ -87,7 +87,7 @@ class InventorySlot:
 
 @dataclass
 class InventoryState:
-    """Result of one ``scan()`` — a full 4×7 inventory snapshot."""
+    """Result of one ``scan()``, a full 4×7 inventory snapshot."""
 
     slots: Tuple[InventorySlot, ...]
     roi: Tuple[int, int, int, int]          # (x, y, w, h) used for the scan
@@ -116,7 +116,7 @@ class InventoryState:
         """True when the scan's confidence clears ``threshold``.
 
         Bots that depend on inventory readings should gate every rule
-        on this — when confidence is low the player likely has Skills,
+        on this, when confidence is low the player likely has Skills,
         Prayer book, or another side panel open instead, so reading
         slot states gives wrong answers. ``threshold=0.5`` is a sane
         default; raise it if your bot can tolerate occasional misses.
@@ -126,7 +126,7 @@ class InventoryState:
     def is_full(self, *, tolerance: int = 0) -> bool:
         """True when ≥ ``28 - tolerance`` slots are filled.
 
-        ``tolerance`` lets bots accept "essentially full" — useful for
+        ``tolerance`` lets bots accept "essentially full", useful for
         skills like fishing where stack-counting can wobble between
         stacks ticking up and a new slot opening.
         """
@@ -155,7 +155,7 @@ class InventoryState:
         return out
 
     def signature(self) -> int:
-        """Single int that changes when any slot changes — for cheap diff."""
+        """Single int that changes when any slot changes, for cheap diff."""
         sig = 0
         for s in self.slots:
             sig ^= s.pixel_signature
@@ -173,7 +173,7 @@ def scan(
 ) -> InventoryState:
     """Parse the inventory panel into 28 :class:`InventorySlot` records.
 
-    ``frame`` is a BGR uint8 array (H, W, 3) — the standard mss output.
+    ``frame`` is a BGR uint8 array (H, W, 3), the standard mss output.
     ``roi`` is the absolute screen-space rectangle of the inventory
     panel: ``(x, y, w, h)``. The caller is responsible for ROI
     calibration (the AI tab does this once via the ZoneDrawer).
@@ -188,7 +188,7 @@ def scan(
 
     x, y, w, h = (int(v) for v in roi)
     fh, fw = frame.shape[:2]
-    # Clamp to frame bounds — a recalibration-after-resolution-change
+    # Clamp to frame bounds, a recalibration-after-resolution-change
     # could leave the saved ROI hanging off the edge. Better to scan a
     # smaller area than to crash.
     x = max(0, min(x, fw - 1))
@@ -200,7 +200,7 @@ def scan(
 
     # Pure-uint8 empty test. Each channel must lie within [bg-tol, bg+tol].
     # uint8 saturating subtract via np.clip lets us avoid the int16
-    # conversion of the entire ROI — measurable speedup at 4K.
+    # conversion of the entire ROI, measurable speedup at 4K.
     low = np.clip(np.array(EMPTY_BG_BGR, dtype=np.int16) - EMPTY_TOL,
                   0, 255).astype(np.uint8)
     high = np.clip(np.array(EMPTY_BG_BGR, dtype=np.int16) + EMPTY_TOL,
@@ -220,7 +220,7 @@ def scan(
         sy0 = row * slot_h + pad
         sx1 = (col + 1) * slot_w - pad
         sy1 = (row + 1) * slot_h - pad
-        # Defensive — a tiny ROI could degenerate slot dims to <= 0.
+        # Defensive, a tiny ROI could degenerate slot dims to <= 0.
         if sx1 <= sx0 or sy1 <= sy0:
             slots.append(InventorySlot(
                 index=idx, is_empty=True,
@@ -233,7 +233,7 @@ def scan(
         is_empty = empty_ratio >= EMPTY_FILL_THRESHOLD
 
         # Dominant colour = mean of a small centred patch. Cheap and
-        # good enough to differentiate "log-brown" from "ore-grey" —
+        # good enough to differentiate "log-brown" from "ore-grey" , 
         # we don't need a full quantized histogram unless a future
         # caller wants exact item ID, which is out of scope here.
         cx = (sx0 + sx1) // 2
@@ -284,11 +284,11 @@ def _grid_confidence(
     """Heuristic 0..1 score for "this ROI looks like an inventory panel".
 
     Two signals combined:
-      1. Slot-border darkness — the dividers between slots are always
+      1. Slot-border darkness, the dividers between slots are always
          darker than slot interiors. We look at columns/rows at slot
          pitch and compare to slot interior brightness. A panel with
          no grid pattern (skills tab, prayer book) fails this badly.
-      2. Slot variance — empty/filled mix should produce a non-trivial
+      2. Slot variance, empty/filled mix should produce a non-trivial
          distribution of dominant colours. If every slot has identical
          colour we're probably looking at a uniform side panel.
     """

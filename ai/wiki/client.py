@@ -1,10 +1,10 @@
 """MediaWiki client for runescape.wiki.
 
-Three public methods. All are cache-first — if the cache has a fresh
+Three public methods. All are cache-first, if the cache has a fresh
 entry (≤TTL), it's returned without a network call. Live calls go
 through a 1 req/sec token bucket so we stay a good citizen.
 
-The User-Agent header matters — MediaWiki rejects bots with a generic
+The User-Agent header matters, MediaWiki rejects bots with a generic
 UA. Ours identifies the tool + its purpose.
 """
 
@@ -29,7 +29,7 @@ DEFAULT_TIMEOUT_S = 10.0
 
 
 # ─────────────────────────────────────────────────────────────────
-# Rate limiter — simple token bucket
+# Rate limiter, simple token bucket
 # ─────────────────────────────────────────────────────────────────
 
 
@@ -98,7 +98,7 @@ class WikiClient:
         """Fetch the rendered text of a wiki page.
 
         Returns ``{title, url, text, sections, stale}``. ``text`` is
-        plain text (wikitext markup + HTML stripped) — LLM-friendly.
+        plain text (wikitext markup + HTML stripped), LLM-friendly.
         """
         params: Dict[str, Any] = {
             "action": "parse",
@@ -175,7 +175,7 @@ class WikiClient:
         }
 
     # ────────────────────────────────────────────────────────────
-    # File / image fetching — for inventory icons, NPC sprites, etc.
+    # File / image fetching, for inventory icons, NPC sprites, etc.
     # ────────────────────────────────────────────────────────────
     def file_url(
         self, filename: str, *, thumb_width: Optional[int] = None,
@@ -184,7 +184,7 @@ class WikiClient:
 
         ``filename`` should NOT include the ``File:`` prefix. When
         ``thumb_width`` is set, returns the server-side thumbnail URL
-        at that pixel width — invaluable for inventory icons since
+        at that pixel width, invaluable for inventory icons since
         the canonical wiki ``_detail.png`` renders are 500-1000+ px
         and downsampling client-side would be wasteful.
         Returns ``None`` if the file doesn't exist.
@@ -288,7 +288,7 @@ class WikiClient:
                 cache.set(endpoint_tag, params, data)
             return data
         except Exception as e:
-            # Network failure — serve stale if possible, else re-raise.
+            # Network failure, serve stale if possible, else re-raise.
             if cache is not None:
                 cached, _stale = cache.get(endpoint_tag, params, allow_stale=True)
                 if cached is not None:
@@ -316,7 +316,7 @@ def _strip_html(text: str) -> str:
 def _wikitext_to_plain(text: str) -> str:
     """Cheap wikitext → plain text.
 
-    Not a full parser — just enough to turn a page body into something
+    Not a full parser, just enough to turn a page body into something
     an LLM can read without choking on syntax.
     """
     if not text:
@@ -325,7 +325,7 @@ def _wikitext_to_plain(text: str) -> str:
     def _link(m: "re.Match[str]") -> str:
         return m.group(2) if m.group(2) else m.group(3) or ""
     text = _WIKI_LINK.sub(_link, text)
-    # Drop template calls entirely — they're mostly noise for LLM consumption.
+    # Drop template calls entirely, they're mostly noise for LLM consumption.
     # (Infobox parsing uses the raw wikitext, so this stripping only affects
     # plain-text output.)
     prev = None

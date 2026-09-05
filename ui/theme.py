@@ -1,107 +1,106 @@
-"""Design tokens for the Qt UI.
+"""Design tokens for the Qt UI. "Command deck" theme.
 
 Single source of truth for color, type, spacing, motion, and radius. Imported
 by every widget and by :mod:`ui.qss` for the application stylesheet.
 
-The aesthetic: warm-neutral dark, single coral accent, generous whitespace,
-real motion on state changes. Built around an 8 px spacing rhythm so layouts
-align without bespoke padding numbers everywhere.
+The look: mission control. Near-black base, rounded 8 px panels with full
+1 px borders, monospace type everywhere except the wordmark, and one lime
+accent that only ever means live / armed / selected. Red is stop and fault,
+amber is caution. State changes are instant; nothing animates longer than
+120 ms. No glow, no gradients, no emoji.
+
+Every name from the previous teal theme is kept as an alias so existing
+cards keep importing without edits.
 """
 
 from __future__ import annotations
 
 
 # -- Surfaces ---------------------------------------------------------------
-# Layered grays so cards visibly elevate above the window. Deeper than CTk
-# defaults to give the accent more pop. The 2025 redesign nudged BG / SURFACE
-# / BORDER a hair to give cards more separation without changing the warmth.
-BG = "#0a0c10"            # window
-SURFACE = "#14171d"       # primary card
-SURFACE_HIGH = "#1c2029"  # entries, second-elevation cards
-SURFACE_PRESS = "#222831"
-SURFACE_PANEL = "#0e1116" # nested sub-panel inside a card (Realism stub)
-BORDER = "#1f242c"        # 1px card borders / dividers
-BORDER_STRONG = "#323844"
-BORDER_SUBTLE = "#1c2027" # subtler than BORDER, used by nested panels
-DIVIDER = "#1d2129"
-DIVIDER_PAGE = "#1a1d24"  # very subtle rule under page H1
+BG = "#0B0D0C"             # window
+SURFACE = "#111413"        # panels / cards
+SURFACE_HIGH = "#161A18"   # raised rows, hover fills, nav active
+SURFACE_PRESS = "#1C2220"  # pressed / selected cell
+SURFACE_PANEL = "#0E100F"  # recessed wells: inputs, nested sub-panels
+
+BORDER = "#1F2422"         # the 1 px frame on every panel
+BORDER_STRONG = "#2A2F2C"  # slider tracks, major ruler ticks, hover borders
+BORDER_SUBTLE = "#1A1E1C"  # disabled borders, hairlines inside wells
+DIVIDER = "#1F2422"
+DIVIDER_PAGE = "#1F2422"
 
 # -- Accent + semantic colors ----------------------------------------------
-# Teal-cyan accent (was coral #ff5470). The Start button stays green, so the
-# accent moved to a cooler hue that pairs better with warm-neutral surfaces
-# and reads more "tech / gaming" without competing with the green action.
-ACCENT = "#22d3ee"
-ACCENT_HOVER = "#38e6ff"
-ACCENT_PRESSED = "#06b6d4"
-# Soft accent wash for backgrounds — rgba string consumed by QSS only.
-ACCENT_DIM = "rgba(34, 211, 238, 0.12)"
-ACCENT_DIM_FALLBACK = "#0f1d22"  # solid dark teal hex for flat-color properties
-ACCENT_TEXT = "#67e8f9"   # lighter cyan text on dim backgrounds (state pills)
+# Lime is the only accent and it encodes STATE: live, armed, selected,
+# focused. Never use it for decoration or for a section heading.
+ACCENT = "#9BE15D"
+ACCENT_HOVER = "#B5EA84"
+ACCENT_PRESSED = "#7FC745"
+ACCENT_DIM = "rgba(155, 225, 93, 0.10)"   # QSS only
+ACCENT_DIM_FALLBACK = "#18251A"            # solid hex for QColor / paint
+ACCENT_TEXT = "#9BE15D"
 
-START = "#34d399"
-START_HOVER = "#4adea8"
-# Stop button uses a desaturated red so coral can be reserved for the
-# accent role (slider thumbs, focus, tab indicator). A bright Stop button
-# next to a bright Start button created visual noise without hierarchy.
-STOP_QUIET = "#9e3a4a"
-STOP_QUIET_HOVER = "#b54355"
-STOP = STOP_QUIET
-STOP_HOVER = STOP_QUIET_HOVER
+START = ACCENT
+START_HOVER = ACCENT_HOVER
+STOP = "#E5484D"
+STOP_HOVER = "#C93C41"
+STOP_QUIET = "#3A2422"          # danger button resting border
+DANGER = "#E5484D"
+DANGER_DEEP = "#A82A23"
 
-DANGER = "#ef4444"
-DANGER_DEEP = "#9a3346"
+WARN = "#E0A83A"                # caution: paused, searching, unsaved
+INFO = "#9A9C95"                # neutral informational, hover zones
 
-WARN = "#fbbf24"          # pause/searching
-INFO = "#5b8def"          # hover-zone accent / locked tracker
-
-STATUS_ACTIVE = START
-STATUS_IDLE = "#71717a"
+STATUS_ACTIVE = ACCENT
+STATUS_IDLE = "#3A3F3C"
 STATUS_PAUSED = WARN
 
 # -- Text -------------------------------------------------------------------
-TEXT_PRIMARY = "#ededed"
-TEXT_SECONDARY = "#9ca3af"
-TEXT_TERTIARY = "#6b7280"
-TEXT_DISABLED = "#52525b"
+TEXT_PRIMARY = "#E6E4DF"
+TEXT_SECONDARY = "#C9C8C2"
+TEXT_TERTIARY = "#8A8D87"
+TEXT_DISABLED = "#6B6E68"
+TEXT_MICRO = "#6B6E68"          # ruler tick values only
+TEXT_ON_ACCENT = BG             # near-black text on a lime fill
 
 # -- Typography -------------------------------------------------------------
-# Segoe UI Variable ships on Windows 11. Falls back to Segoe UI on Win10.
-FONT_FAMILY = "Segoe UI Variable Text, Segoe UI, sans-serif"
-FONT_DISPLAY = "Segoe UI Variable Display, Segoe UI, sans-serif"
-FONT_MONO = "Cascadia Mono, Consolas, monospace"
+# JetBrains Mono ships in ui/fonts/ and is registered at startup (main.py);
+# the fallbacks cover a missing font file. Barlow is the wordmark only.
+FONT_FAMILY = "JetBrains Mono, Cascadia Mono, Consolas, monospace"
+FONT_DISPLAY = "Barlow, Segoe UI Variable Display, Segoe UI, sans-serif"
+FONT_MONO = FONT_FAMILY
 
-# Type scale (px). 6 steps from caption (10) → page hero (28). Body sits at
-# 14 — comfortable to read in a dark window without filling the page. Use
-# the role attribute on QLabel (role="title|subtitle|body|hint|muted|...") so
-# QSS in :mod:`ui.qss` applies the right size + line height + color.
-SIZE_XS = 10              # captions, micro-labels
-SIZE_SM = 12              # secondary text, helper lines, mono values
-SIZE_BODY = 14            # primary reading size — most labels and values
-SIZE_LG = 16              # subheaders, section titles inside expanded panes
-SIZE_XL = 20              # card titles
-SIZE_TITLE = 28           # page hero / brand
+# Type scale (px, whole numbers only: Qt's stylesheet parser drops a
+# fractional ``font-size``). Mono body sits at 13; labels are uppercase 11
+# with LABEL_TRACKING letter-spacing. The app font is registered in
+# main.py with full hinting so stems snap to the pixel grid on a 100 %
+# monitor; sizes below 12 px still read soft there, so nothing goes
+# under SIZE_XS.
+SIZE_XS = 10               # ruler ticks, micro captions
+SIZE_SM = 11               # uppercase labels, hints
+SIZE_BODY = 13             # mono body
+SIZE_CONTROL = 12          # button and segment captions, row labels
+SIZE_LG = 14               # readouts, row titles that need weight
+SIZE_XL = 18               # large readouts
+SIZE_TITLE = 22            # wordmark (Barlow 700)
 
-# Legacy aliases (gradually migrating callers off these). New code should
-# use the SIZE_XS / SIZE_SM / SIZE_BODY / SIZE_LG / SIZE_XL / SIZE_TITLE
-# scale and prefer setting role= on QLabel over inline font sizes.
+LABEL_TRACKING = 1.2       # px letter-spacing on uppercase micro-labels
+CONTROL_TRACKING = 0.6     # px letter-spacing on button / segment captions
+PANEL_HEADER_TRACKING = 1.6
+SIZE_PANEL_HEADER = 11     # panel header label, uppercase 600
+FONT_WEIGHT_BODY = 500     # Medium: crisper than Regular at 13 px on 100 %
+
+# Legacy aliases. New code should use the scale above.
 SIZE_HEADER = SIZE_SM
 SIZE_VALUE = SIZE_BODY
 SIZE_SMALL = SIZE_XS
-SIZE_MONO = SIZE_SM
-# Section eyebrow (LABEL / TIMING / TARGET) — bumped from XS=10 to 11 so
-# the uppercase teal label has enough presence to read as a real
-# hierarchy anchor inside step bodies.
-SIZE_SECTION_LABEL = 11
-# Field labels: 13 px semibold so they sit between body (14) and hint (12)
-# without competing with section labels.
-SIZE_FIELD_LABEL = 13
+SIZE_MONO = SIZE_BODY
+SIZE_SECTION_LABEL = SIZE_SM
+SIZE_FIELD_LABEL = SIZE_SM
 SIZE_FIELD_VALUE = SIZE_BODY
 SIZE_HINT = SIZE_SM
-SIZE_STAT_VALUE = 28
+SIZE_STAT_VALUE = 22
 SIZE_KEY_CHIP = SIZE_BODY
 
-# Line heights (CSS-style multipliers; QSS doesn't natively understand
-# "line-height" so we derive padding/margin in :mod:`ui.qss`).
 LINE_TIGHT = 1.2
 LINE_NORMAL = 1.45
 LINE_RELAXED = 1.6
@@ -114,89 +113,74 @@ SP_LG = 16
 SP_XL = 24
 SP_XXL = 32
 
-# In-card vertical rhythm. Single 4-step ladder: card → section → field → row.
-# Card padding tightened from 16 → 14 in the redesign; cards now hug content
-# instead of leaving dead space, so the smaller padding reads cleaner.
-CARD_PAD = 14             # outer padding inside every Card body
-# SECTION_GAP decoupled from SP_LG: the step-body redesign needs a real
-# breathing room between named sections so the uppercase eyebrows read as
-# anchors, not noise. 24 px tracks the 8-grid (3 units).
-SECTION_GAP = 24          # between Section groups inside a card
-FIELD_GAP = 12            # between fields within a section (8-grid: 1.5 units)
-ROW_GAP = SP_SM           # 8 — between micro-rows inside a single field
+CARD_PAD = 12
+SECTION_GAP = 20
+FIELD_GAP = 12
+ROW_GAP = SP_SM
 
-# Standard control heights — applied across cards for consistency.
-INPUT_H = 32             # text inputs, segmented controls
-BUTTON_H = 32            # in-card secondary
-BUTTON_H_PRIMARY = 36    # in-card primary (Draw, + Add)
-BUTTON_H_HERO = 40       # topbar Start / Stop
+# Standard control heights.
+INPUT_H = 30
+BUTTON_H = 30
+BUTTON_H_PRIMARY = 30
+BUTTON_H_HERO = 32
+ICON_BUTTON = 30           # square icon buttons
 
 # -- Radius -----------------------------------------------------------------
-# One-notch softer than the previous pass (was 12 / 8 / 6). Reads visibly
-# more rounded without crossing into "consumer-app" territory.
-RADIUS_CARD = 14
-RADIUS_BUTTON = 10
-RADIUS_PILL = 9999     # full-round
-RADIUS_INPUT = 8
+# No full-round pills anywhere. Chips share the button radius.
+RADIUS_CARD = 8
+RADIUS_BUTTON = 6
+RADIUS_INPUT = 6
+RADIUS_PILL = 6
 
 # -- Borders ----------------------------------------------------------------
 BORDER_W = 1
 
-# -- Settings-style page tokens (Apple System Settings rhythm) -------------
-# A second visual lane introduced for the form-row pages (Hover, Behavior
-# follow-up, Hotkeys, Settings, Timers). The Click page keeps its Card-based
-# layout; these tokens apply to pages built from GroupHeader + SettingsGroup
-# + SettingsRow primitives. Content is left-aligned with a max-width cap so
-# wide windows don't sprawl.
-PAGE_PAD_X = 36
-PAGE_PAD_Y_TOP = 32
-PAGE_PAD_Y_BOTTOM = 40
+# -- Form-row page tokens ---------------------------------------------------
+PAGE_PAD_X = 32
+PAGE_PAD_Y_TOP = 24
+PAGE_PAD_Y_BOTTOM = 32
 PAGE_CONTENT_MAX_WIDTH = 640
 
-GROUP_BG = SURFACE                # form-row container; same color as Card
-GROUP_BORDER = BORDER             # subtle 1px frame
-GROUP_RADIUS = 10
-GROUP_HAIRLINE = "#1c2027"        # 1px row separator inside a group
+GROUP_BG = SURFACE
+GROUP_BORDER = BORDER
+GROUP_RADIUS = RADIUS_CARD
+GROUP_HAIRLINE = BORDER
 
-GROUP_HEADER_COLOR = "#6b7280"
-GROUP_HEADER_PAD_LEFT = 14        # aligns header text with first row's content
+GROUP_HEADER_COLOR = TEXT_TERTIARY
+GROUP_HEADER_PAD_LEFT = 12
 
-ROW_HEIGHT_MIN = 44
-ROW_PAD_X = 16
-ROW_PAD_Y = 13
+ROW_HEIGHT_MIN = 40
+ROW_PAD_X = 12
+ROW_PAD_Y = 10
 
-# Tinted accent button — quieter than solid teal. The new "primary" action
-# style for form pages.
-ACCENT_TINT_BG = "rgba(34, 211, 238, 0.12)"
-ACCENT_TINT_BG_HOVER = "rgba(34, 211, 238, 0.18)"
-ACCENT_TINT_TEXT = "#67e8f9"
-ACCENT_TINT_TEXT_HOVER = "#a5f3fc"
+# Tinted accent button (form pages). Lime wash, lime text.
+ACCENT_TINT_BG = ACCENT_DIM
+ACCENT_TINT_BG_HOVER = "rgba(155, 225, 93, 0.16)"
+ACCENT_TINT_TEXT = ACCENT
+ACCENT_TINT_TEXT_HOVER = ACCENT_HOVER
 
-FOOTER_HINT_COLOR = "#6b7280"
-FOOTER_HINT_LINK = "#67e8f9"
+FOOTER_HINT_COLOR = TEXT_TERTIARY
+FOOTER_HINT_LINK = TEXT_SECONDARY
 
 # -- Motion (durations in ms) ----------------------------------------------
-DUR_FAST = 140         # hover, micro-interactions
-DUR_NORMAL = 220       # state changes, expanders
-DUR_SLOW = 360         # sheet transitions, large reveals
-DUR_TOAST = 3000       # toast lifetime before fade
+# The deck changes state instantly. 120 ms is the ceiling for anything that
+# has to move (expander height). Linear easing, no bounce, no overshoot.
+DUR_FAST = 0
+DUR_NORMAL = 120
+DUR_SLOW = 120
+DUR_TOAST = 3000
 
-# Easing names map to QEasingCurve types in code.
-EASE_OUT = "OutCubic"      # default for entrances + state changes
-EASE_IN_OUT = "InOutCubic" # for symmetric transitions
+EASE_OUT = "Linear"
+EASE_IN_OUT = "Linear"
 
 # -- Window -----------------------------------------------------------------
-# Landscape default for the new shell (NavRail + main + topbar). 1280×800 is
-# a comfortable laptop default; min keeps the rail + cards usable.
 WINDOW_W_MIN = 960
 WINDOW_H_MIN = 600
 WINDOW_W_DEFAULT = 1280
 WINDOW_H_DEFAULT = 800
 
-# Shell layout constants.
 NAV_RAIL_W = 200
 TOPBAR_H = 52
-# Threshold at which the Click page collapses its two-card row into a stack.
 CLICK_PAGE_TWO_COL_MIN = 1200
 
 # -- Zone overlay defaults --------------------------------------------------

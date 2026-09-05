@@ -2,7 +2,7 @@
 
 Why this exists: ``modules.key_timer.fire()`` used to call SendInput
 directly (via the scancode helpers in ``key_timer``). For most apps that
-works perfectly, but some games — most notably RuneScape NXT — use
+works perfectly, but some games, most notably RuneScape NXT, use
 kernel-level filters that drop **every** event the kernel marks as
 ``LLMHF_INJECTED``. SendInput-injected events always carry that flag, so
 the macro fires (and the log says ``ok=True``), but the game ignores
@@ -15,9 +15,9 @@ path arrive at the input stack without the injected flag.
 This module presents a tiny ``KeyBackend`` interface plus two concrete
 backends:
 
-* ``SendInputBackend`` — the default. Uses the existing ctypes SendInput
+* ``SendInputBackend``, the default. Uses the existing ctypes SendInput
   scancode path in ``key_timer``. Fast, zero deps, works in 95% of apps.
-* ``InterceptionBackend`` — opt-in. Wraps the ``interception`` Python
+* ``InterceptionBackend``, opt-in. Wraps the ``interception`` Python
   binding for the Interception driver. Requires a one-time admin install
   of the driver itself; the Python wrapper is an optional dep so missing
   it doesn't break startup.
@@ -30,6 +30,8 @@ otherwise.
 
 from __future__ import annotations
 
+import threading
+import time
 from typing import Optional, Protocol
 
 from utils.logger import get_logger
@@ -50,7 +52,7 @@ class KeyBackend(Protocol):
 
 
 # ---------------------------------------------------------------------- #
-# SendInput backend (default — wraps the existing scancode path)
+# SendInput backend (default, wraps the existing scancode path)
 # ---------------------------------------------------------------------- #
 
 class SendInputBackend:
@@ -71,7 +73,7 @@ class SendInputBackend:
 
 
 # ---------------------------------------------------------------------- #
-# Interception backend (opt-in — bypasses NXT's injected-event filter)
+# Interception backend (opt-in, bypasses NXT's injected-event filter)
 # ---------------------------------------------------------------------- #
 
 # VK → string name accepted by the ``interception`` library's high-level
@@ -135,7 +137,7 @@ def _vk_to_interception_name(vk: int) -> Optional[str]:
 class InterceptionBackend:
     """Routes keyboard events through the Interception driver via the
     ``interception`` Python wrapper. Construction succeeds even when the
-    driver / wrapper isn't available — ``available`` reports the truth
+    driver / wrapper isn't available, ``available`` reports the truth
     so callers can decide between erroring or falling back."""
 
     name = "interception"
@@ -156,12 +158,12 @@ class InterceptionBackend:
         # Different forks of the wrapper have slightly different init
         # entry points. ``auto_capture_devices`` is the most common name
         # in the maintained kennyhml fork. Best-effort: if it's missing
-        # we still try to send — some forks auto-bind on first call.
+        # we still try to send, some forks auto-bind on first call.
         try:
             if hasattr(_ictrl, "auto_capture_devices"):
                 _ictrl.auto_capture_devices()
         except Exception as e:
-            # Could mean the driver isn't installed — most common cause
+            # Could mean the driver isn't installed, most common cause
             # is the user pip-installed the wrapper but skipped the
             # admin driver install. Surface that distinct case in the
             # init message so the UI can show the right tooltip.
@@ -195,7 +197,7 @@ class InterceptionBackend:
 
 
 # ---------------------------------------------------------------------- #
-# Serial HID backend (opt-in — real USB HID via Arduino bridge)
+# Serial HID backend (opt-in, real USB HID via Arduino bridge)
 # ---------------------------------------------------------------------- #
 
 class SerialHidBackend:
@@ -205,7 +207,7 @@ class SerialHidBackend:
     Interception, AND PostMessage by correlating each event against a
     Raw Input WM_INPUT from a registered real-HID device handle. No
     software-only path satisfies that check. A second physical USB
-    keyboard does, trivially. The Arduino IS that second keyboard —
+    keyboard does, trivially. The Arduino IS that second keyboard , 
     it enumerates as a real USB HID device, so its keystrokes carry
     a real RAWINPUTHEADER.hDevice and pass every filter.
 
@@ -213,12 +215,23 @@ class SerialHidBackend:
         ``D <vk>\\n``  press down a Win32 VK
         ``U <vk>\\n``  release a Win32 VK
         ``P\\n``       ping (replies ``OK PHANTOMHID v1\\n``)
+        ``X\\n``       release every held key (replies ``OK RELEASED\\n``)
+
+    Instances own the COM port. Get one through ``get_backend`` (cached
+    per port) rather than constructing directly, and ``close()`` it when
+    it is replaced; a second open of the same port fails on Windows.
     """
 
     name = "serial_hid"
 
+    # How long to wait for the firmware to answer the startup ping. The
+    # 32u4 CDC stack answers within a few ms once enumerated; the budget
+    # is generous so a busy USB hub doesn't produce a false warning.
+    _PING_TIMEOUT_S = 0.6
+
     def __init__(self, port: str = "", baud: int = 115200) -> None:
         self.available = False
+        self.firmware_ok = False
         self._port = port
         self._baud = int(baud) if baud else 115200
         self._serial = None
@@ -226,7 +239,7 @@ class SerialHidBackend:
 
         if not port:
             self._init_error = (
-                "no COM port configured for Serial HID — pick one in "
+                "no COM port configured for Serial HID, pick one in "
                 "Behavior → Key input method, or run "
                 "`python -c \"import serial.tools.list_ports as p; "
                 "[print(x.device, x.description) for x in p.comports()]\"` "
@@ -257,13 +270,77 @@ class SerialHidBackend:
             )
             return
         self.available = True
+        self._ping()
+
+    def _ping(self) -> None:
+        """Send ``P`` once and check the reply names PhantomHID. A wrong
+        board (or a board running some other sketch) opens fine and
+        swallows every ``D``/``U`` line, so this is the only early
+        signal that the user picked the right COM port."""
+        reply = b""
+        try:
+            self._serial.reset_input_buffer()
+            self._serial.write(b"P\n")
+            deadline = time.monotonic() + self._PING_TIMEOUT_S
+            while time.monotonic() < deadline:
+                line = self._serial.readline()
+                if line:
+                    reply = line.strip()
+                    break
+        except Exception as e:
+            _log.warning("serial_hid %s: ping failed: %s: %s",
+                         self._port, type(e).__name__, e)
+            return
+        if b"PHANTOMHID" in reply.upper():
+            self.firmware_ok = True
+            _log.info("serial_hid %s: firmware answered %r",
+                      self._port, reply.decode("ascii", "replace"))
+        else:
+            _log.warning(
+                "serial_hid %s: ping reply %r does not look like PhantomHID "
+                "(expected 'OK PHANTOMHID v1'); keystrokes may be ignored. "
+                "Check the COM port and that the board runs "
+                "firmware/phantomhid/phantomhid.ino.",
+                self._port, reply.decode("ascii", "replace"),
+            )
+
+    def is_open(self) -> bool:
+        s = self._serial
+        return bool(self.available and s is not None
+                    and getattr(s, "is_open", True))
+
+    def release_all(self) -> bool:
+        """Send the firmware's release-all. Used at engine stop so a
+        modifier from an interrupted combo can't stay held on the board
+        (the OS would otherwise see Ctrl down until the next press)."""
+        s = self._serial
+        if s is None:
+            return False
+        try:
+            s.write(b"X\n")
+            return True
+        except Exception as e:
+            _log.warning("serial_hid %s: release-all failed: %s: %s",
+                         self._port, type(e).__name__, e)
+            return False
+
+    def close(self) -> None:
+        """Release the COM port. Idempotent."""
+        s = self._serial
+        self._serial = None
+        self.available = False
+        if s is not None:
+            try:
+                s.close()
+            except Exception:
+                pass
 
     def send(self, vk: int, key_up: bool) -> bool:
         """Write one ``D``/``U`` line. Returns True on a clean write.
 
         On any serial error we mark the backend unavailable so the
         caller knows to fall back / surface the error. Reconnect logic
-        is handled by re-running ``get_backend()`` at engine restart —
+        is handled by re-running ``get_backend()`` at engine restart , 
         we don't try to recover mid-session because the symptom is
         usually "Arduino unplugged" and a silent reconnect would mask
         the user's actual problem."""
@@ -287,7 +364,7 @@ class SerialHidBackend:
 # Factory
 # ---------------------------------------------------------------------- #
 
-# Cache the Interception backend across get_backend() calls — its
+# Cache the Interception backend across get_backend() calls, its
 # constructor probes the driver, which is non-trivial work; rebuilding
 # per cycle would slow engine startup needlessly.
 _interception_singleton: Optional[InterceptionBackend] = None
@@ -300,23 +377,80 @@ def _get_interception() -> InterceptionBackend:
     return _interception_singleton
 
 
+# Serial HID backends cached by COM port. Constructing one opens the
+# port, and Windows refuses a second open of the same port, so every
+# caller (engine start, per-step Test, the UI's pre-start status check)
+# must share the one instance. Failed opens are not cached so a board
+# plugged in later gets a fresh attempt.
+_serial_backends: dict[str, SerialHidBackend] = {}
+_serial_lock = threading.Lock()
+
+
+def _acquire_serial(port: str) -> SerialHidBackend:
+    key = (port or "").strip().upper()
+    with _serial_lock:
+        existing = _serial_backends.get(key)
+        if existing is not None and existing.is_open():
+            return existing
+        # Anything still cached is either dead or for a port the user
+        # has moved away from; free it before opening.
+        for k, b in list(_serial_backends.items()):
+            b.close()
+            _serial_backends.pop(k, None)
+        fresh = SerialHidBackend(port=port)
+        if fresh.available:
+            _serial_backends[key] = fresh
+        return fresh
+
+
+def release_all(backend) -> bool:
+    """Ask ``backend`` to release every held key, if it can. Only the
+    Serial HID path has device-side state to clear; other backends
+    return False and that is fine."""
+    fn = getattr(backend, "release_all", None)
+    if not callable(fn):
+        return False
+    try:
+        return bool(fn())
+    except Exception:
+        return False
+
+
+def status(backend) -> tuple[bool, str]:
+    """``(available, human message)`` for a backend, so the UI can show
+    the state (and refuse start) before the engine runs."""
+    name = getattr(backend, "name", "?")
+    if not getattr(backend, "available", True):
+        err = getattr(backend, "_init_error", "") or f"{name} backend unavailable"
+        return (False, err)
+    if name == "serial_hid":
+        port = getattr(backend, "_port", "") or "?"
+        if getattr(backend, "firmware_ok", False):
+            return (True, f"Serial HID ready on {port} (PhantomHID answered)")
+        return (True, f"Serial HID open on {port}, but the board did not "
+                      f"answer the PhantomHID ping. Keystrokes may be ignored.")
+    if name == "interception":
+        return (True, "Interception driver ready")
+    return (True, "SendInput ready")
+
+
 def get_backend(preferred: str, *, serial_port: str = "") -> KeyBackend:
     """Return the backend to use this session.
 
     ``preferred``:
-      * ``"auto"`` (default) — Interception when actually usable, else
+      * ``"auto"`` (default), Interception when actually usable, else
         SendInput. Logs which one was chosen at info level. ``auto``
         does NOT pick ``serial_hid`` because that backend depends on
         physical hardware that may not be connected; users who want it
         have to pick it explicitly.
-      * ``"sendinput"`` — force SendInput. Useful for non-RS targets
+      * ``"sendinput"``, force SendInput. Useful for non-RS targets
         where the extra driver path is overkill.
-      * ``"interception"`` — force Interception. If the driver isn't
+      * ``"interception"``, force Interception. If the driver isn't
         available, this still returns the Interception backend (with
         ``available=False``); the caller is responsible for surfacing
-        the error to the user — we don't silently fall back when the
+        the error to the user, we don't silently fall back when the
         user explicitly picked it.
-      * ``"serial_hid"`` — force Serial HID via the Arduino bridge
+      * ``"serial_hid"``, force Serial HID via the Arduino bridge
         (``firmware/phantomhid``). Requires ``serial_port`` keyword
         argument naming the COM port the board enumerated as. Same
         no-fallback policy as Interception when explicitly chosen.
@@ -329,12 +463,12 @@ def get_backend(preferred: str, *, serial_port: str = "") -> KeyBackend:
     if pref == "interception":
         return _get_interception()
     if pref == "serial_hid":
-        return SerialHidBackend(port=serial_port)
+        return _acquire_serial(serial_port)
     # auto: prefer Interception if we can, else SendInput.
     ictr = _get_interception()
     if ictr.available:
         return ictr
     if ictr._init_error:
-        _log.info("key_input_method=auto: %s — falling back to SendInput",
+        _log.info("key_input_method=auto: %s, falling back to SendInput",
                   ictr._init_error)
     return SendInputBackend()

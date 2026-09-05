@@ -1,4 +1,4 @@
-"""Task layer — the primary object model in the Studio.
+"""Task layer, the primary object model in the Studio.
 
 A Task bundles *intent* (name, goal, location, signals) with
 *implementation* (one ``.rvscript`` graph, either inline or referenced)

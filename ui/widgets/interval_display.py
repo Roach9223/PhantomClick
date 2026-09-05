@@ -1,4 +1,4 @@
-"""``IntervalDisplay`` — large mono readout of an interval range.
+"""``IntervalDisplay``, large mono readout of an interval range.
 
 Pairs with a ``RangeSlider`` below it: connect the slider's
 ``valueChanged(lo, hi)`` to ``set_values(lo, hi)`` and the readout updates
@@ -15,6 +15,7 @@ from typing import Optional, Tuple
 
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
 
+from .. import icons, theme as t
 from ..format import fmt_delay
 
 
@@ -40,8 +41,10 @@ class IntervalDisplay(QWidget):
         self._lo_unit = QLabel("ms")
         self._lo_unit.setProperty("role", "mono-readout-unit")
 
-        self._arrow = QLabel("→")
+        self._arrow = QLabel()
         self._arrow.setProperty("role", "mono-readout-arrow")
+        self._arrow.setPixmap(icons.pixmap("arrow-right", 12, t.TEXT_TERTIARY))
+        self._arrow.setFixedSize(12, 12)
 
         self._hi_num = QLabel("0")
         self._hi_num.setProperty("role", "mono-readout")

@@ -1,4 +1,4 @@
-"""Color blocks — thin wrappers around rs3vision's CTS primitives."""
+"""Color blocks, thin wrappers around rs3vision's CTS primitives."""
 
 from __future__ import annotations
 

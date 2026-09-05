@@ -1,6 +1,6 @@
-"""``HoverPageBody`` — settings-style body for the Hover page.
+"""``HoverPageBody``, settings-style body for the Hover page.
 
-Composed entirely from the design-system primitives — :class:`GroupHeader`,
+Composed entirely from the design-system primitives, :class:`GroupHeader`,
 :class:`SettingsGroup`, :class:`SettingsRow`, :class:`IOSSwitch`,
 :class:`EmptyState`, :class:`ZoneThumbnail`, :class:`QuietAccentButton`,
 :class:`BorderlessButton`. No :class:`Card` chrome, no inline
@@ -8,10 +8,10 @@ Composed entirely from the design-system primitives — :class:`GroupHeader`,
 
 Two groups:
 
-* **Zones** — list of hover zones with per-row thumbnails. Header carries
+* **Zones**, list of hover zones with per-row thumbnails. Header carries
   a shape menu trigger and a quiet-accent ``+ Add zone`` button. Empty
   state shows a centered placeholder + CTA.
-* **Visits** — Enable / Frequency / Dwell time / Selection rows. The
+* **Visits**, Enable / Frequency / Dwell time / Selection rows. The
   bottom three disable when Enable is off.
 
 The dwell ``RangeSlider`` is still cross-coupled to the global Realism
@@ -31,9 +31,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ui.config_io import save_config
+from ui.config_io import DEFAULTS, save_config
 
-from .. import theme as t
+from .. import icons, theme as t
 from ..widgets.empty_state import EmptyState
 from ..widgets.group_header import GroupHeader
 from ..widgets.interval_display import IntervalDisplay
@@ -45,17 +45,10 @@ from ..widgets.segmented import SegmentedControl
 from ..widgets.settings_group import SettingsGroup
 from ..widgets.settings_row import SettingsRow
 from ..widgets.zone_thumbnail import ZoneThumbnail
+from ..screen_utils import zone_screen_info
 
 
 _SHAPE_LABELS = {"rect": "Rect", "circle": "Circle", "polygon": "Custom"}
-
-
-def _primary_monitor_size() -> Tuple[int, int]:
-    screen = QGuiApplication.primaryScreen()
-    if screen is None:
-        return (0, 0)
-    geom = screen.geometry()
-    return (int(geom.width()), int(geom.height()))
 
 
 def _zone_kind_label(zone) -> str:
@@ -115,8 +108,9 @@ class HoverPageBody(QWidget):
         zones_header = GroupHeader("Zones")
 
         self._shape_btn = BorderlessButton(
-            f"{_SHAPE_LABELS.get(app._hover_shape, 'Rect')}  ▾"
+            f"{_SHAPE_LABELS.get(app._hover_shape, 'Rect')}"
         )
+        self._shape_btn.setIcon(icons.icon("chevron-down", 12))
         self._shape_btn.setMenu(self._build_shape_menu())
         zones_header.add_action(self._shape_btn)
 
@@ -150,7 +144,7 @@ class HoverPageBody(QWidget):
         self._enable_row.set_control(self._enable_switch)
         self._visits_group.add_row(self._enable_row)
 
-        # Frequency — reuses LabeledSlider so the Realism dial registry
+        # Frequency, reuses LabeledSlider so the Realism dial registry
         # picks it up; stripped of its own label since SettingsRow owns
         # the title.
         self._freq_slider = LabeledSlider(
@@ -167,16 +161,16 @@ class HoverPageBody(QWidget):
         self._freq_row.set_control(self._freq_slider)
         self._visits_group.add_row(self._freq_row)
 
-        # Dwell — IntervalDisplay readout + RangeSlider stacked
+        # Dwell, IntervalDisplay readout + RangeSlider stacked
         self._dwell_display = IntervalDisplay()
         self._dwell_display.set_values(
-            float(app.cfg.get("hover_dwell_min", 1.0)),
-            float(app.cfg.get("hover_dwell_max", 4.0)),
+            float(app.cfg.get("hover_dwell_min", DEFAULTS["hover_dwell_min"])),
+            float(app.cfg.get("hover_dwell_max", DEFAULTS["hover_dwell_max"])),
         )
         self._dwell = RangeSlider(
             from_=0.2, to=30.0, steps=298,
-            init_min=app.cfg.get("hover_dwell_min", 1.0),
-            init_max=app.cfg.get("hover_dwell_max", 4.0),
+            init_min=app.cfg.get("hover_dwell_min", DEFAULTS["hover_dwell_min"]),
+            init_max=app.cfg.get("hover_dwell_max", DEFAULTS["hover_dwell_max"]),
         )
         self._dwell.valueChanged.connect(self._on_dwell_change)
         self._dwell.setMinimumWidth(220)
@@ -256,7 +250,7 @@ class HoverPageBody(QWidget):
         self.app._hover_shape = value
         self.app.cfg["hover_zone_shape"] = value
         save_config(self.app.cfg)
-        self._shape_btn.setText(f"{_SHAPE_LABELS.get(value, 'Rect')}  ▾")
+        self._shape_btn.setText(f"{_SHAPE_LABELS.get(value, 'Rect')}")
 
     # -- Zones list rendering ---------------------------------------------
 
@@ -274,15 +268,17 @@ class HoverPageBody(QWidget):
             ))
             return
         click_zone = self.app._zone
-        mw, mh = _primary_monitor_size()
         for idx, zone in enumerate(zones):
-            self._zones_group.add_row(self._build_zone_row(idx, zone, click_zone, mw, mh))
+            self._zones_group.add_row(self._build_zone_row(idx, zone, click_zone))
         # Re-apply locker state in case we built buttons under an active engine.
         self.app.locker.apply(self.app._state_str)
 
-    def _build_zone_row(self, idx: int, zone, click_zone, mw: int, mh: int) -> SettingsRow:
+    def _build_zone_row(self, idx: int, zone, click_zone) -> SettingsRow:
         thumb = ZoneThumbnail()
-        thumb.set_monitor(mw, mh)
+        # Each thumbnail maps the monitor its own zone lives on, so a
+        # hover zone on a secondary screen isn't drawn off the edge.
+        _label, (mw, mh), origin = zone_screen_info(zone)
+        thumb.set_monitor(mw, mh, origin)
         thumb.set_zone(zone)
         if click_zone is not None:
             thumb.set_click_reference(click_zone)
@@ -293,10 +289,11 @@ class HoverPageBody(QWidget):
             leading=thumb,
         )
 
-        rm = self.app.locker.register(QPushButton("✕"))
+        rm = self.app.locker.register(QPushButton())
+        rm.setIcon(icons.icon("x"))
         rm.setProperty("variant", "icon-danger")
-        rm.setMaximumSize(28, 24)
-        rm.setMinimumSize(28, 24)
+        rm.setMaximumSize(t.ICON_BUTTON, t.ICON_BUTTON)
+        rm.setMinimumSize(t.ICON_BUTTON, t.ICON_BUTTON)
         rm.setCursor(Qt.PointingHandCursor)
         rm.clicked.connect(lambda _, i=idx: self._on_remove(i))
         row.set_control(rm)
@@ -323,8 +320,8 @@ class HoverPageBody(QWidget):
         cfg["hover_dwell_min"] = float(lo)
         cfg["hover_dwell_max"] = float(hi)
         self._dwell_display.set_values(float(lo), float(hi))
-        save_config(cfg)
-        self.app._push_config_to_clicker()
+        # Per-pixel slider signal; persist once the drag settles.
+        self.app.save_config_later()
 
     def _on_selection(self, value: str) -> None:
         self.app.cfg["hover_selection"] = value
@@ -348,7 +345,9 @@ class HoverPageBody(QWidget):
             self.app.overlay_manager.refresh_hover_overlays()
             self.app.overlay_manager.refresh_step_overlays()
 
-        self.app.open_zone_drawer(self.app._hover_shape, _done)
+        # attach_lock so zone_lock_default applies to hover zones too; the
+        # overlay and engine already resolve locks on every zone kind.
+        self.app.open_zone_drawer(self.app._hover_shape, _done, attach_lock=True)
 
     def _on_remove(self, idx: int) -> None:
         if not (0 <= idx < len(self.app._hover_zones)):
@@ -377,8 +376,8 @@ class HoverPageBody(QWidget):
     # Behavior card calls this after Realism pushes new values.
     def refresh_advanced(self) -> None:
         cfg = self.app.cfg
-        lo = float(cfg.get("hover_dwell_min", 1.0))
-        hi = float(cfg.get("hover_dwell_max", 4.0))
+        lo = float(cfg.get("hover_dwell_min", DEFAULTS["hover_dwell_min"]))
+        hi = float(cfg.get("hover_dwell_max", DEFAULTS["hover_dwell_max"]))
         self._dwell.set_values(lo, hi)
         self._dwell_display.set_values(lo, hi)
 

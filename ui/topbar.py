@@ -1,14 +1,15 @@
-"""``TopBar`` — pinned top toolbar for the landscape shell.
+"""``TopBar``, pinned top toolbar for the landscape shell.
 
 Single 52 px row spanning the full window width:
-``BRAND  ◉ STATE · zone summary · Next: 4.2s   [▶ START][■ STOP]  ⌘K  👁``
+``BRAND  STATUS pill   [START] [STOP]  Esc to abort  [palette] [overlay]``
+Icons come from :mod:`ui.icons`; there are no glyph literals here.
 
 Owns the Start/Stop buttons (the App exposes them as ``app.start_btn`` /
 ``app.stop_btn`` aliases for engine_bridge / hotkeys to find), the
 :class:`StatusPill` (whose ``tick()`` runs each frame), and a small set of
 icon buttons on the right (command palette + overlay toggle).
 
-The hotkey hint that used to live in the old ActionBar is gone — shortcuts
+The hotkey hint that used to live in the old ActionBar is gone, shortcuts
 are now surfaced via tooltips on the Start/Stop buttons themselves.
 """
 
@@ -20,10 +21,9 @@ from PySide6.QtWidgets import (
 )
 
 from modules.hotkey_manager import name_to_display
-from ui.config_io import save_config
 from ui.tooltip_fmt import tooltip
 
-from . import theme as t
+from . import icons, theme as t
 from .widgets.status_pill import StatusPill
 
 
@@ -47,7 +47,7 @@ class TopBar(QFrame):
         row.addWidget(self.brand)
 
         # Spare horizontal space goes here so the pill + action buttons
-        # stay grouped on the right edge — the prior Expanding pill ate
+        # stay grouped on the right edge, the prior Expanding pill ate
         # all the space and floated the status text in the middle of the
         # bar, disconnected from the controls it described.
         row.addStretch(1)
@@ -58,8 +58,9 @@ class TopBar(QFrame):
         row.addWidget(self.pill)
 
         # -- Start / Stop -------------------------------------------------
-        self.start_btn = QPushButton("▶  START")
-        self.start_btn.setProperty("variant", "success")
+        self.start_btn = QPushButton("START")
+        self.start_btn.setIcon(icons.icon("play", 14, t.TEXT_ON_ACCENT))
+        self.start_btn.setProperty("variant", "primary")
         self.start_btn.setMinimumHeight(36)
         self.start_btn.setMinimumWidth(110)
         self.start_btn.setCursor(Qt.PointingHandCursor)
@@ -71,7 +72,8 @@ class TopBar(QFrame):
         ))
         row.addWidget(self.start_btn)
 
-        self.stop_btn = QPushButton("■  STOP")
+        self.stop_btn = QPushButton("STOP")
+        self.stop_btn.setIcon(icons.icon("stop", 14, t.TEXT_PRIMARY))
         self.stop_btn.setProperty("variant", "danger")
         self.stop_btn.setMinimumHeight(36)
         self.stop_btn.setMinimumWidth(110)
@@ -97,13 +99,13 @@ class TopBar(QFrame):
         )
         self.esc_hint.setToolTip(
             "Esc always emergency-stops, regardless of state. "
-            "Hard-locked — cannot be rebound."
+            "Hard-locked, cannot be rebound."
         )
         row.addWidget(self.esc_hint)
 
         # -- Icon buttons -------------------------------------------------
         self.palette_btn = QToolButton()
-        self.palette_btn.setText("⌘K")
+        self.palette_btn.setIcon(icons.icon("command", 16, t.TEXT_SECONDARY))
         self.palette_btn.setCursor(Qt.PointingHandCursor)
         self.palette_btn.setMinimumHeight(32)
         self.palette_btn.setMinimumWidth(48)
@@ -114,14 +116,14 @@ class TopBar(QFrame):
             f"padding: 0 8px;"
         )
         self.palette_btn.setToolTip(tooltip(
-            "Command palette — fuzzy-search every action.",
+            "Command palette, fuzzy-search every action.",
             shortcut="Ctrl+K",
         ))
         self.palette_btn.clicked.connect(app._open_palette)
         row.addWidget(self.palette_btn)
 
         self.overlay_btn = QToolButton()
-        self.overlay_btn.setText(self._overlay_text())
+        self._sync_overlay_icon()
         self.overlay_btn.setCursor(Qt.PointingHandCursor)
         self.overlay_btn.setMinimumHeight(32)
         self.overlay_btn.setStyleSheet(
@@ -139,28 +141,15 @@ class TopBar(QFrame):
 
     # -- Overlay toggle (migrated from old ActionBar) --------------------
 
-    def _overlay_text(self) -> str:
+    def _sync_overlay_icon(self) -> None:
         on = bool(self.app.cfg.get("show_zone_overlay", True))
-        return f"👁 {'ON' if on else 'OFF'}"
+        self.overlay_btn.setIcon(icons.icon("eye" if on else "eye-off", 16,
+                                            t.ACCENT if on else t.TEXT_TERTIARY))
 
     def on_toggle_overlay(self) -> None:
-        cfg = self.app.cfg
-        new_val = not bool(cfg.get("show_zone_overlay", True))
-        cfg["show_zone_overlay"] = new_val
-        save_config(cfg)
-        self.overlay_btn.setText(self._overlay_text())
-        self.app.overlay_manager.apply_visibility()
-        # AI BotOverlay piggybacks on the same toggle. The AI card's
-        # tick() will re-show it next pass when re-enabled; here we
-        # just hide it instantly when toggled off so the user sees the
-        # change immediately.
-        ov = getattr(self.app, "bot_overlay", None)
-        if ov is not None and not new_val:
-            try:
-                ov.clear()
-                ov.hide()
-            except Exception:
-                pass
+        # App.set_overlay_visible saves, applies and calls back into
+        # _sync_overlay_icon so every toggle surface agrees.
+        self.app.toggle_overlay_visible()
 
     # -- Hotkey rebind hook ----------------------------------------------
 

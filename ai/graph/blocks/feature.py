@@ -27,7 +27,7 @@ class DiffBlock(Block):
     outputs = [
         Port("changed", kind="data"),   # list of (x, y, w, h)
         Port("hash", kind="data"),      # int
-        Port("any_change", kind="data"),  # bool — shortcut for if_else
+        Port("any_change", kind="data"),  # bool, shortcut for if_else
         Port("done", kind="trigger"),
     ]
     params = [

@@ -74,14 +74,14 @@ class TaskLocation:
 
 @dataclass
 class Task:
-    """A Task definition — the user-editable, persisted form.
+    """A Task definition, the user-editable, persisted form.
 
     Runtime state (``state``, ``phase``, ``health``) is *not* persisted;
     it lives on the in-memory Task and is reset on load.
     """
 
     # ── persisted intent ──────────────────────────────────────────
-    slug: str                              # stable id — matches filename
+    slug: str                              # stable id, matches filename
     name: str                              # human label
     goal: str = ""                         # one-line goal text
     location: TaskLocation = field(default_factory=TaskLocation)
@@ -132,7 +132,7 @@ class Task:
         """One of ``"bot"`` / ``"script"`` / ``"none"``.
 
         A freshly-minted blank Task has no implementation yet. A Task
-        with both slots populated counts as ``"bot"`` — the Python
+        with both slots populated counts as ``"bot"``, the Python
         path is the newer system and takes precedence.
         """
         if self.bot_script_ref:
@@ -147,7 +147,7 @@ class Task:
         return has_script and has_bot
 
     def reset_runtime_state(self) -> None:
-        """Called before (re-)loading or on task switch — wipe counters."""
+        """Called before (re-)loading or on task switch, wipe counters."""
         self.state = TaskState.IDLE
         self.phase = TaskPhase()
         self.health = TaskHealth()

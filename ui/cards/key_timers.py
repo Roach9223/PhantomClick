@@ -1,15 +1,15 @@
-"""``KeyTimersPageBody`` — passive concurrent keypress timers.
+"""``KeyTimersPageBody``, passive concurrent keypress timers.
 
 Each timer fires a key (or combo) on its own clock while the engine is
-otherwise running — the canonical use case is "press Z every 6 minutes"
+otherwise running, the canonical use case is "press Z every 6 minutes"
 for potion macros that don't fit into the click sequence.
 
 Two :class:`SettingsGroup`s composed from the design-system primitives:
 
-* **Settings** — single row toggling ±10 % jitter on every timer's wait
+* **Settings**, single row toggling ±10 % jitter on every timer's wait
   (so a fixed 15 min interval doesn't fire at *exactly* 15 min every
   cycle, which anti-bot systems flag as a pattern).
-* **Timers** — one :class:`TimerRow` per stored timer. Each row carries
+* **Timers**, one :class:`TimerRow` per stored timer. Each row carries
   the key combo input, an :class:`IOSSwitch` for enable, a remove
   button, and a value-+-unit row beneath. The group header carries a
   ``+ Add timer`` :class:`QuietAccentButton`.
@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 from modules.key_timer import KeyTimer, parse_combo, serialize_timers
 from ui.config_io import save_config
 
-from .. import theme as t
+from .. import icons, theme as t
 from ..widgets.empty_state import EmptyState
 from ..widgets.group_header import GroupHeader
 from ..widgets.ios_switch import IOSSwitch
@@ -74,7 +74,7 @@ def _seconds_to_unit(seconds: float, unit: str) -> float:
 
 class TimerRow(QFrame):
     """One timer in the list. Two-line layout under the standard
-    settings-row chrome — top row carries the key combo + enable + remove,
+    settings-row chrome, top row carries the key combo + enable + remove,
     bottom row carries the interval value + unit picker."""
 
     def __init__(self, idx: int, body: "KeyTimersPageBody",
@@ -116,10 +116,11 @@ class TimerRow(QFrame):
         self.enable_switch.toggled.connect(self._on_enabled_toggled)
         top.addWidget(self.enable_switch)
 
-        self.remove_btn = self.app.locker.register(QPushButton("✕"))
+        self.remove_btn = self.app.locker.register(QPushButton())
+        self.remove_btn.setIcon(icons.icon("x"))
         self.remove_btn.setProperty("variant", "icon-danger")
-        self.remove_btn.setMaximumSize(28, 24)
-        self.remove_btn.setMinimumSize(28, 24)
+        self.remove_btn.setMaximumSize(t.ICON_BUTTON, t.ICON_BUTTON)
+        self.remove_btn.setMinimumSize(t.ICON_BUTTON, t.ICON_BUTTON)
         self.remove_btn.setCursor(Qt.PointingHandCursor)
         self.remove_btn.setToolTip("Remove this timer.")
         self.remove_btn.clicked.connect(self._on_remove)
@@ -292,7 +293,7 @@ class KeyTimersPageBody(QWidget):
         ))
         self._jitter_switch.setToolTip(
             "When on, the wait between fires is multiplied by a random "
-            "factor between 0.9 and 1.1 — a 15 min interval fires at "
+            "factor between 0.9 and 1.1, a 15 min interval fires at "
             "13.5–16.5 min instead of exactly 15 min every cycle."
         )
         self._jitter_switch.toggled.connect(self._on_jitter_toggled)
@@ -300,7 +301,7 @@ class KeyTimersPageBody(QWidget):
             "Randomize intervals",
             desc=(
                 "Add ±10 % jitter so a fixed interval isn't perfectly "
-                "periodic — eliminates the bot-tell pattern."
+                "periodic, eliminates the bot-tell pattern."
             ),
         )
         jitter_row.set_control(self._jitter_switch)
@@ -344,7 +345,7 @@ class KeyTimersPageBody(QWidget):
             self._timers_group.add_widget(EmptyState(
                 title="No timers yet",
                 description=(
-                    "Add a passive keypress that fires on its own clock — "
+                    "Add a passive keypress that fires on its own clock, "
                     "useful for potion / buff macros that run alongside "
                     "your click sequence."
                 ),
@@ -362,7 +363,7 @@ class KeyTimersPageBody(QWidget):
         from modules.clicker import ClickerState
         if self.app.clicker.state != ClickerState.IDLE:
             return
-        # Default to "every 15 min" — the canonical use case.
+        # Default to "every 15 min", the canonical use case.
         self.app._key_timers.append(KeyTimer(
             key="z", interval_min=900.0, interval_max=900.0, enabled=True,
             interval_unit="min",
@@ -375,7 +376,7 @@ class KeyTimersPageBody(QWidget):
         save_config(self.app.cfg)
         self.app._push_config_to_clicker()
         if hasattr(self.app, "toasts"):
-            msg = ("✓ Timer intervals will be randomized ±10 %"
+            msg = ("Timer intervals will be randomized ±10 %"
                    if checked else
                    "Timer intervals locked to exact values")
             self.app.toasts.post(msg, kind="info")

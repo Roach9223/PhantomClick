@@ -1,4 +1,4 @@
-"""Timers page — :class:`PageHeader` + :class:`KeyTimersPageBody`.
+"""Timers page, :class:`PageHeader` + :class:`KeyTimersPageBody`.
 
 Mirrors :mod:`ui.pages.hover_page`: single left-aligned column, content
 max-width capped at :data:`ui.theme.PAGE_CONTENT_MAX_WIDTH`. The body

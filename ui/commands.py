@@ -1,4 +1,4 @@
-"""Central command registry — every action surfaceable via the Ctrl+K palette.
+"""Central command registry, every action surfaceable via the Ctrl+K palette.
 
 Each :class:`Command` is pure data plus a closure over ``app``. We import
 heavy modules lazily inside actions so the registry build stays cheap and
@@ -8,7 +8,7 @@ Categories control the empty-search grouping:
     Engine · Mode · Zone · Timing · Record · View · Settings
 
 The ``shortcut`` field is the *display* string ("Ctrl+D"). The ``qt_shortcut``
-field is the same string handed to ``QKeySequence`` — set only for commands
+field is the same string handed to ``QKeySequence``, set only for commands
 the App should bind globally. Many commands have no shortcut (``shortcut=None``)
 and are reachable only through the palette; that's fine.
 """
@@ -41,7 +41,7 @@ def _set_timing(app, lo: float, hi: float) -> None:
     save_config(cfg)
     app._push_config_to_clicker()
     # Make sure the user actually sees the change.
-    app.nav_rail.set_current("click")
+    app.show_page("click")
 
 
 def _toggle_mica(app) -> None:
@@ -54,6 +54,22 @@ def _toggle_mica(app) -> None:
     )
 
 
+# Palette commands whose displayed shortcut is a rebindable global hotkey.
+# ``App.refresh_hotkey_labels`` walks this after a rebind so the palette
+# never shows a stale key.
+HOTKEY_COMMANDS = {
+    "engine.start": "hotkey_start",
+    "engine.stop": "hotkey_stop",
+    "engine.pause": "hotkey_pause",
+}
+
+
+def _hotkey_display(app, cfg_key: str) -> str:
+    from modules.hotkey_manager import name_to_display
+    from ui.config_io import DEFAULTS
+    return name_to_display(str(app.cfg.get(cfg_key, DEFAULTS.get(cfg_key, ""))))
+
+
 def register_all(app) -> list[Command]:
     """Build the command list for ``app``. Called once during App construction."""
     return [
@@ -62,7 +78,7 @@ def register_all(app) -> list[Command]:
             id="engine.start",
             label="Start clicking",
             category="Engine",
-            shortcut="F6",
+            shortcut=_hotkey_display(app, "hotkey_start"),
             action=lambda a: a._on_start(),
             keywords=("run", "go", "begin"),
         ),
@@ -70,9 +86,17 @@ def register_all(app) -> list[Command]:
             id="engine.stop",
             label="Stop clicking",
             category="Engine",
-            shortcut="F7",
+            shortcut=_hotkey_display(app, "hotkey_stop"),
             action=lambda a: a._on_stop(),
-            keywords=("halt", "pause", "end"),
+            keywords=("halt", "end"),
+        ),
+        Command(
+            id="engine.pause",
+            label="Hold / resume engine",
+            category="Engine",
+            shortcut=_hotkey_display(app, "hotkey_pause"),
+            action=lambda a: a._toggle_pause(),
+            keywords=("pause", "resume", "hold", "bot", "ai"),
         ),
         Command(
             id="engine.emergency",
@@ -83,14 +107,14 @@ def register_all(app) -> list[Command]:
             keywords=("kill", "abort", "panic"),
         ),
 
-        # -- Navigation (and Mode, since Click/Record nav also flips engine mode) -
+        # ── Navigation (and Mode, since Click/Record/AI nav also flips engine mode)
         Command(
             id="nav.click",
             label="Go to Click",
             category="Navigation",
             shortcut="Ctrl+1",
             qt_shortcut="Ctrl+1",
-            action=lambda a: a.nav_rail.set_current("click"),
+            action=lambda a: a.show_page("click"),
             keywords=("zone", "single", "mode"),
         ),
         Command(
@@ -99,42 +123,69 @@ def register_all(app) -> list[Command]:
             category="Navigation",
             shortcut="Ctrl+2",
             qt_shortcut="Ctrl+2",
-            action=lambda a: a.nav_rail.set_current("record"),
+            action=lambda a: a.show_page("record"),
             keywords=("sequence", "steps", "mode"),
+        ),
+        Command(
+            id="nav.ai",
+            label="Go to AI",
+            category="Navigation",
+            shortcut="Ctrl+3",
+            qt_shortcut="Ctrl+3",
+            action=lambda a: a.show_page("ai"),
+            keywords=("bot", "rules", "mode", "runescape"),
+        ),
+        Command(
+            id="nav.monitor",
+            label="Go to Monitor",
+            category="Navigation",
+            shortcut="Ctrl+4",
+            qt_shortcut="Ctrl+4",
+            action=lambda a: a.show_page("monitor"),
+            keywords=("phone", "stream", "remote", "lan"),
+        ),
+        Command(
+            id="nav.settings",
+            label="Go to Settings",
+            category="Navigation",
+            shortcut="Ctrl+5",
+            qt_shortcut="Ctrl+5",
+            action=lambda a: a.show_page("settings"),
+            keywords=("monitor", "input", "serial", "wiki", "trace"),
         ),
         Command(
             id="nav.hover",
             label="Go to Hover Zones",
             category="Navigation",
-            action=lambda a: a.nav_rail.set_current("hover"),
+            action=lambda a: a.show_page("hover"),
             keywords=("drift", "wander"),
         ),
         Command(
             id="nav.behavior",
             label="Go to Behavior",
             category="Navigation",
-            action=lambda a: a.nav_rail.set_current("behavior"),
+            action=lambda a: a.show_page("behavior"),
             keywords=("realism", "advanced", "fatigue"),
         ),
         Command(
             id="nav.hotkeys",
             label="Go to Hotkeys",
             category="Navigation",
-            action=lambda a: a.nav_rail.set_current("hotkeys"),
+            action=lambda a: a.show_page("hotkeys"),
             keywords=("shortcut", "rebind"),
         ),
         Command(
             id="nav.timers",
             label="Go to Key Timers",
             category="Navigation",
-            action=lambda a: a.nav_rail.set_current("timers"),
+            action=lambda a: a.show_page("timers"),
             keywords=("keypress", "macro", "potion", "passive"),
         ),
         Command(
             id="nav.stats",
             label="Go to Stats",
             category="Navigation",
-            action=lambda a: a.nav_rail.set_current("stats"),
+            action=lambda a: a.show_page("stats"),
             keywords=("clicks", "cpm", "elapsed"),
         ),
         Command(
@@ -143,7 +194,7 @@ def register_all(app) -> list[Command]:
             category="Navigation",
             shortcut="F1",
             qt_shortcut="F1",
-            action=lambda a: a.nav_rail.set_current("help"),
+            action=lambda a: a.show_page("help"),
             keywords=("documentation", "guide", "how"),
         ),
 
@@ -177,21 +228,21 @@ def register_all(app) -> list[Command]:
         # -- Timing ----------------------------------------------------------
         Command(
             id="timing.fast",
-            label="Set timing — Fast (0.5–2 s)",
+            label="Set timing, Fast (0.5–2 s)",
             category="Timing",
             action=lambda a: _set_timing(a, 0.5, 2.0),
             keywords=("preset", "speed"),
         ),
         Command(
             id="timing.medium",
-            label="Set timing — Medium (3–10 s)",
+            label="Set timing, Medium (3–10 s)",
             category="Timing",
             action=lambda a: _set_timing(a, 3.0, 10.0),
             keywords=("preset", "speed"),
         ),
         Command(
             id="timing.slow",
-            label="Set timing — Slow (10–30 s)",
+            label="Set timing, Slow (10–30 s)",
             category="Timing",
             action=lambda a: _set_timing(a, 10.0, 30.0),
             keywords=("preset", "speed"),
@@ -239,7 +290,7 @@ def register_all(app) -> list[Command]:
             label="Add key timer",
             category="Timers",
             action=lambda a: (
-                a.nav_rail.set_current("timers")
+                a.show_page("timers")
                 or a.key_timers_card._on_add()
             ),
             keywords=("keypress", "macro", "potion", "passive"),
@@ -256,11 +307,21 @@ def register_all(app) -> list[Command]:
             keywords=("hide", "show", "outline"),
         ),
         Command(
+            id="view.toggle_pane",
+            label="Toggle the setup / steps / bot pane",
+            category="View",
+            shortcut="Ctrl+E",
+            qt_shortcut="Ctrl+E",
+            action=lambda a: getattr(a, "deck", None) is not None and a.deck.toggle_editor(),
+            keywords=("editor", "pane", "setup", "steps", "bot", "side"),
+            available=lambda a: getattr(a, "ui_shell", "deck") == "deck",
+        ),
+        Command(
             id="view.open_advanced",
             label="Open Behavior · Advanced",
             category="View",
             action=lambda a: (
-                a.nav_rail.set_current("behavior")
+                a.show_page("behavior")
                 or a.behavior_card.advanced.set_open(True)
             ),
             keywords=("realism", "fatigue", "wander"),
@@ -279,7 +340,7 @@ def register_all(app) -> list[Command]:
             label="Rebind Start hotkey",
             category="Settings",
             action=lambda a: (
-                a.nav_rail.set_current("hotkeys")
+                a.show_page("hotkeys")
                 or a.hotkeys_card.on_rebind("start")
             ),
         ),
@@ -288,8 +349,17 @@ def register_all(app) -> list[Command]:
             label="Rebind Stop hotkey",
             category="Settings",
             action=lambda a: (
-                a.nav_rail.set_current("hotkeys")
+                a.show_page("hotkeys")
                 or a.hotkeys_card.on_rebind("stop")
+            ),
+        ),
+        Command(
+            id="settings.rebind_pause",
+            label="Rebind Pause hotkey",
+            category="Settings",
+            action=lambda a: (
+                a.show_page("hotkeys")
+                or a.hotkeys_card.on_rebind("pause")
             ),
         ),
         Command(

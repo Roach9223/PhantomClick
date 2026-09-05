@@ -1,4 +1,4 @@
-"""Captures section — snapshot / record / colour-label, all into the
+"""Captures section, snapshot / record / colour-label, all into the
 active bot bundle's ``assets/`` folder.
 
 Player captures are the *primary* source of vision data for bots.
@@ -7,12 +7,12 @@ yet. This card is where players build their per-bot asset library.
 
 Three buttons:
 
-- **Snapshot** — opens the ZoneDrawer, captures ONE frame of the
+- **Snapshot**, opens the ZoneDrawer, captures ONE frame of the
   selected ROI via ``mss``, saves to ``assets/snapshots/<slug>.png``.
-- **Record (3-10s)** — same drawer, but captures N frames at the
+- **Record (3-10s)**, same drawer, but captures N frames at the
   bundle's tick rate. Lands at ``assets/recordings/<slug>/`` with a
   ``meta.json`` describing fps/frame count.
-- **Colour label** — reuses the existing ``ColorPicker`` overlay,
+- **Colour label**, reuses the existing ``ColorPicker`` overlay,
   saves the eyedropped RGB + monitor index to
   ``assets/colors/<slug>.json``.
 
@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QGridLayout,
     QCheckBox, QDialog, QDialogButtonBox, QFrame, QHBoxLayout, QInputDialog,
     QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
@@ -37,12 +38,32 @@ from PySide6.QtWidgets import (
 from ai import captures as global_captures
 from ai.bot.bundle import BotBundle, slugify
 
-from .. import theme as t
+from .. import icons, theme as t
 from ..widgets.card import Card
 
 
 _DEFAULT_RECORDING_S: float = 5.0       # how long to record by default
 _RECORDING_FPS_FALLBACK: float = 5.0    # used when bundle has no tick rate
+
+
+class _WrapRow(QGridLayout):
+    """Grid that places widgets left to right, ``columns`` per row, with
+    every column stretching equally. ``addWidget(w)`` is all callers need."""
+
+    def __init__(self, parent: QWidget, columns: int = 3):
+        super().__init__(parent)
+        self._columns = max(1, int(columns))
+        self._count = 0
+        for c in range(self._columns):
+            self.setColumnStretch(c, 1)
+
+    def addWidget(self, widget: QWidget, *args) -> None:  # noqa: N802 (Qt name)
+        if args:
+            super().addWidget(widget, *args)
+            return
+        row, col = divmod(self._count, self._columns)
+        self._count += 1
+        super().addWidget(widget, row, col)
 
 
 class AICapturesSection(Card):
@@ -57,7 +78,7 @@ class AICapturesSection(Card):
         super().__init__("Captures")
         self.app = app
         self._active_bundle: Optional[BotBundle] = None
-        # Recording state — driven by a QTimer when a recording is in flight.
+        # Recording state, driven by a QTimer when a recording is in flight.
         self._recording_timer: Optional[QTimer] = None
         self._recording_frames: List[np.ndarray] = []
         self._recording_rect: Optional[tuple] = None
@@ -72,43 +93,49 @@ class AICapturesSection(Card):
         )
         self.add(self._status)
 
-        # Three capture buttons.
+        # Capture buttons, three to a row so the card fits the deck's
+        # editor pane instead of forcing it wider than the viewport.
         row = QWidget()
-        h = QHBoxLayout(row)
+        h = _WrapRow(row, columns=3)
         h.setContentsMargins(0, t.SP_SM, 0, 0)
         h.setSpacing(t.SP_SM)
 
-        self._snap_btn = QPushButton("📸  Snapshot")
+        self._snap_btn = QPushButton("Snapshot")
+        self._snap_btn.setIcon(icons.icon("camera"))
         self._snap_btn.setMinimumHeight(t.BUTTON_H)
         self._snap_btn.setCursor(Qt.PointingHandCursor)
         self._snap_btn.clicked.connect(self._on_snapshot)
         h.addWidget(self._snap_btn)
 
-        self._rec_btn = QPushButton("🎥  Record (5s)")
+        self._rec_btn = QPushButton("Record (5s)")
+        self._rec_btn.setIcon(icons.icon("video"))
         self._rec_btn.setMinimumHeight(t.BUTTON_H)
         self._rec_btn.setCursor(Qt.PointingHandCursor)
         self._rec_btn.clicked.connect(self._on_record)
         h.addWidget(self._rec_btn)
 
-        self._color_btn = QPushButton("🎯  Colour label")
+        self._color_btn = QPushButton("Colour label")
+        self._color_btn.setIcon(icons.icon("target"))
         self._color_btn.setMinimumHeight(t.BUTTON_H)
         self._color_btn.setCursor(Qt.PointingHandCursor)
         self._color_btn.clicked.connect(self._on_color)
         h.addWidget(self._color_btn)
 
-        self._dtm_btn = QPushButton("📐  DTM")
+        self._dtm_btn = QPushButton("DTM")
+        self._dtm_btn.setIcon(icons.icon("grid"))
         self._dtm_btn.setMinimumHeight(t.BUTTON_H)
         self._dtm_btn.setCursor(Qt.PointingHandCursor)
         self._dtm_btn.setToolTip(
             "Drag a rectangle around a UI element / object. The app "
             "samples N coloured points in a rigid layout and saves a "
-            "DTM template — robust against single-pixel false positives. "
+            "DTM template, robust against single-pixel false positives. "
             "Best for chests, NPCs, icons, anvils."
         )
         self._dtm_btn.clicked.connect(self._on_dtm)
         h.addWidget(self._dtm_btn)
 
-        self._roi_btn = QPushButton("📍  Search ROI")
+        self._roi_btn = QPushButton("Search ROI")
+        self._roi_btn.setIcon(icons.icon("pin"))
         self._roi_btn.setMinimumHeight(t.BUTTON_H)
         self._roi_btn.setCursor(Qt.PointingHandCursor)
         self._roi_btn.setToolTip(
@@ -120,7 +147,8 @@ class AICapturesSection(Card):
         self._roi_btn.clicked.connect(self._on_roi)
         h.addWidget(self._roi_btn)
 
-        self._promote_btn = QPushButton("★  Promote to global…")
+        self._promote_btn = QPushButton("Promote to global…")
+        self._promote_btn.setIcon(icons.icon("star"))
         self._promote_btn.setMinimumHeight(t.BUTTON_H)
         self._promote_btn.setCursor(Qt.PointingHandCursor)
         self._promote_btn.setToolTip(
@@ -130,18 +158,17 @@ class AICapturesSection(Card):
         self._promote_btn.clicked.connect(self._on_promote)
         h.addWidget(self._promote_btn)
 
-        self._debug_btn = QPushButton("🐛  Debug frame")
+        self._debug_btn = QPushButton("Debug frame")
+        self._debug_btn.setIcon(icons.icon("bug"))
         self._debug_btn.setMinimumHeight(t.BUTTON_H)
         self._debug_btn.setCursor(Qt.PointingHandCursor)
         self._debug_btn.setToolTip(
             "Save the current target-screen capture to bots/<slug>/debug/ "
-            "with a timestamp. Useful when a bot rule isn't matching — "
+            "with a timestamp. Useful when a bot rule isn't matching, "
             "open the saved frame and compare it to your captures."
         )
         self._debug_btn.clicked.connect(self._on_debug_frame)
         h.addWidget(self._debug_btn)
-
-        h.addStretch(1)
         self.add(row)
 
         # Summary line + inline asset rows. The summary is a one-line
@@ -261,7 +288,7 @@ class AICapturesSection(Card):
     def delete_asset(self, kind: str, path: Path) -> None:
         """Confirm + remove a per-bundle capture file from disk and drop
         its slug from the kind's index.json. Called by an _AssetRow
-        when the user clicks 🗑.
+        when the user clicks .
         """
         from PySide6.QtWidgets import QMessageBox
 
@@ -280,7 +307,7 @@ class AICapturesSection(Card):
                 import shutil as _sh
                 _sh.rmtree(path)
             elif kind == "dtm":
-                # DTM is a YAML + paired PNG thumbnail — remove both.
+                # DTM is a YAML + paired PNG thumbnail, remove both.
                 path.unlink()
                 paired_png = path.with_suffix(".png")
                 if paired_png.exists():
@@ -290,18 +317,18 @@ class AICapturesSection(Card):
             self._drop_from_index(kind, slug)
         except Exception as e:
             self.app.toasts.post(
-                f"⚠ Delete failed: {type(e).__name__}: {e}",
+                f"Delete failed: {type(e).__name__}: {e}",
                 kind="error",
             )
             return
         self.app.toasts.post(
-            f"🗑 Deleted {kind}: {slug}", kind="warn",
+            f"Deleted {kind}: {slug}", kind="warn",
         )
         self._refresh_inventory()
 
     def _drop_from_index(self, kind: str, slug: str) -> None:
         """Strip a slug entry from the kind's index.json. Silent on
-        missing index — many older bundles don't have one."""
+        missing index, many older bundles don't have one."""
         b = self._active_bundle
         if b is None:
             return
@@ -359,7 +386,7 @@ class AICapturesSection(Card):
             return
         names = ", ".join(promoted)
         self.app.toasts.post(
-            f"★ Promoted {len(promoted)} capture(s) to global: {names}",
+            f"Promoted {len(promoted)} capture(s) to global: {names}",
             kind="success",
         )
         # Notify the library browser (mounted by AIPageBody) so it
@@ -388,7 +415,7 @@ class AICapturesSection(Card):
             crop = self._crop_to_rect(frame, rect)
         except Exception as e:
             self.app.toasts.post(
-                f"⚠ Snapshot capture failed: {type(e).__name__}: {e}",
+                f"Snapshot capture failed: {type(e).__name__}: {e}",
                 kind="error",
             )
             return
@@ -402,12 +429,12 @@ class AICapturesSection(Card):
             })
         except Exception as e:
             self.app.toasts.post(
-                f"⚠ Snapshot save failed: {type(e).__name__}: {e}",
+                f"Snapshot save failed: {type(e).__name__}: {e}",
                 kind="error",
             )
             return
         self.app.toasts.post(
-            f"✓ Snapshot saved: {slug}.png ({rect[2]}×{rect[3]})",
+            f"Snapshot saved: {slug}.png ({rect[2]}×{rect[3]})",
             kind="success",
         )
         self._refresh_inventory()
@@ -454,7 +481,7 @@ class AICapturesSection(Card):
         timer.timeout.connect(self._on_record_tick)
         self._recording_timer = timer
         self.app.toasts.post(
-            f"🎥 Recording {total_frames} frames @ {fps:.0f} fps "
+            f"Recording {total_frames} frames @ {fps:.0f} fps "
             f"({_DEFAULT_RECORDING_S:.0f}s)…",
             kind="info",
         )
@@ -509,14 +536,14 @@ class AICapturesSection(Card):
             )
         except Exception as e:
             self.app.toasts.post(
-                f"⚠ Recording save failed: {type(e).__name__}: {e}",
+                f"Recording save failed: {type(e).__name__}: {e}",
                 kind="error",
             )
             self._recording_frames = []
             self._recording_rect = None
             return
         self.app.toasts.post(
-            f"✓ Recording saved: {slug} ({len(self._recording_frames)} frames)",
+            f"Recording saved: {slug} ({len(self._recording_frames)} frames)",
             kind="success",
         )
         self._recording_frames = []
@@ -530,7 +557,7 @@ class AICapturesSection(Card):
         Reuses ``_grab_full_frame()`` for the capture, then displays a
         ``FrozenFrameDrawer`` overlay so the user can crop the captured
         pixels (not a live feed). After the user releases the rect,
-        the same save machinery the regular Snapshot button uses runs —
+        the same save machinery the regular Snapshot button uses runs , 
         prompt for asset name, crop via ``_crop_to_rect``, write PNG +
         index entry. The cursor's position when the hotkey fired is
         passed in as ``cursor_xy`` (Qt DIP coords) so the overlay can
@@ -538,14 +565,14 @@ class AICapturesSection(Card):
         """
         if self._active_bundle is None:
             self.app.toasts.post(
-                "⚠ Pick a bundle before capturing.", kind="warn",
+                "Pick a bundle before capturing.", kind="warn",
             )
             return
         try:
             frame = self._grab_full_frame()
         except Exception as e:
             self.app.toasts.post(
-                f"⚠ Capture failed: {type(e).__name__}: {e}", kind="error",
+                f"Capture failed: {type(e).__name__}: {e}", kind="error",
             )
             return
         # Convert Qt DIP cursor coords → physical px (the unit the
@@ -603,7 +630,7 @@ class AICapturesSection(Card):
             crop = self._crop_to_rect(frame, rect)
         except Exception as e:
             self.app.toasts.post(
-                f"⚠ Crop failed: {type(e).__name__}: {e}", kind="error",
+                f"Crop failed: {type(e).__name__}: {e}", kind="error",
             )
             return
         try:
@@ -617,12 +644,12 @@ class AICapturesSection(Card):
             })
         except Exception as e:
             self.app.toasts.post(
-                f"⚠ Snapshot save failed: {type(e).__name__}: {e}",
+                f"Snapshot save failed: {type(e).__name__}: {e}",
                 kind="error",
             )
             return
         self.app.toasts.post(
-            f"✓ Hover snapshot saved: {slug}.png ({rect[2]}×{rect[3]})",
+            f"Hover snapshot saved: {slug}.png ({rect[2]}×{rect[3]})",
             kind="success",
         )
         self._refresh_inventory()
@@ -632,7 +659,7 @@ class AICapturesSection(Card):
         """Save the current target-screen capture to the bundle's debug
         folder with a timestamped filename. When a promoted Colour
         capture exists in the global library, also emits a side-by-side
-        match-overlay PNG showing where each sample lit up — fast way
+        match-overlay PNG showing where each sample lit up, fast way
         to diagnose ``find_interactable`` / ``find_any_color`` misses
         without re-running the whole bot."""
         b = self._active_bundle
@@ -642,17 +669,17 @@ class AICapturesSection(Card):
             frame = self._grab_full_frame()
         except Exception as e:
             self.app.toasts.post(
-                f"⚠ Debug capture failed: {type(e).__name__}: {e}",
+                f"Debug capture failed: {type(e).__name__}: {e}",
                 kind="error",
             )
             return
-        # bots/<slug>/debug/ — created on demand.
+        # bots/<slug>/debug/, created on demand.
         debug_dir = b.debug_dir
         try:
             debug_dir.mkdir(parents=True, exist_ok=True)
         except Exception as e:
             self.app.toasts.post(
-                f"⚠ Couldn't create debug dir: {e}", kind="error",
+                f"Couldn't create debug dir: {e}", kind="error",
             )
             return
         ts = time.strftime("%Y%m%d_%H%M%S")
@@ -661,7 +688,7 @@ class AICapturesSection(Card):
             self._save_png(frame, path)
         except Exception as e:
             self.app.toasts.post(
-                f"⚠ Debug save failed: {type(e).__name__}: {e}",
+                f"Debug save failed: {type(e).__name__}: {e}",
                 kind="error",
             )
             return
@@ -690,7 +717,7 @@ class AICapturesSection(Card):
         except Exception:
             pass  # overlay is best-effort; raw frame already saved.
 
-        msg = f"🐛 Debug frame saved → {path.name}"
+        msg = f"Debug frame saved → {path.name}"
         if overlay_saved:
             msg += f"  ·  +overlay × {len(overlay_saved)}"
         self.app.toasts.post(msg, kind="info")
@@ -744,7 +771,7 @@ class AICapturesSection(Card):
                 except Exception:
                     hits = []
                 pts = [(int(x), int(y)) for x, y, *_ in hits]
-                # Paint matched pixels — bright lime green.
+                # Paint matched pixels, bright lime green.
                 for x, y in pts:
                     if 0 <= x < w and 0 <= y < h:
                         overlay[y, x] = (0, 255, 0)
@@ -832,12 +859,12 @@ class AICapturesSection(Card):
             self._append_index(b.rois_dir / "index.json", payload)
         except Exception as e:
             self.app.toasts.post(
-                f"⚠ ROI save failed: {type(e).__name__}: {e}",
+                f"ROI save failed: {type(e).__name__}: {e}",
                 kind="error",
             )
             return
         self.app.toasts.post(
-            f"✓ ROI saved: {slug} → {w}×{h} @ ({x}, {y})",
+            f"ROI saved: {slug} → {w}×{h} @ ({x}, {y})",
             kind="success",
         )
         self._refresh_inventory()
@@ -867,7 +894,7 @@ class AICapturesSection(Card):
             crop = self._crop_to_rect(full, rect)
         except Exception as e:
             self.app.toasts.post(
-                f"⚠ DTM capture failed: {type(e).__name__}: {e}",
+                f"DTM capture failed: {type(e).__name__}: {e}",
                 kind="error",
             )
             return
@@ -877,7 +904,7 @@ class AICapturesSection(Card):
             from ai.algorithms.dtm import build_from_roi, save as _dtm_save
         except Exception as e:
             self.app.toasts.post(
-                f"⚠ DTM module unavailable: {e}", kind="error",
+                f"DTM module unavailable: {e}", kind="error",
             )
             return
         try:
@@ -889,7 +916,7 @@ class AICapturesSection(Card):
             tpl = build_from_roi(full, local_rect, name=slug, points=5)
         except Exception as e:
             self.app.toasts.post(
-                f"⚠ DTM build failed: {type(e).__name__}: {e}",
+                f"DTM build failed: {type(e).__name__}: {e}",
                 kind="error",
             )
             return
@@ -906,12 +933,12 @@ class AICapturesSection(Card):
             })
         except Exception as e:
             self.app.toasts.post(
-                f"⚠ DTM save failed: {type(e).__name__}: {e}",
+                f"DTM save failed: {type(e).__name__}: {e}",
                 kind="error",
             )
             return
         self.app.toasts.post(
-            f"✓ DTM saved: {slug} ({rect[2]}×{rect[3]}, "
+            f"DTM saved: {slug} ({rect[2]}×{rect[3]}, "
             f"{len(tpl.points) + 1} points)",
             kind="success",
         )
@@ -932,7 +959,7 @@ class AICapturesSection(Card):
             primary = getattr(result, "primary", None)
             last_xy = getattr(result, "last_xy", None)
             if primary is None or last_xy is None:
-                # Older single-sample tuple shape — adapt.
+                # Older single-sample tuple shape, adapt.
                 try:
                     primary, x, y = result
                     samples = [tuple(primary)]
@@ -969,7 +996,7 @@ class AICapturesSection(Card):
                 )
             except Exception as e:
                 self.app.toasts.post(
-                    f"⚠ Colour save failed: {type(e).__name__}: {e}",
+                    f"Colour save failed: {type(e).__name__}: {e}",
                     kind="error",
                 )
                 return
@@ -978,7 +1005,7 @@ class AICapturesSection(Card):
                 else "1 sample"
             )
             self.app.toasts.post(
-                f"✓ Colour saved: {slug} ({count_str}) → "
+                f"Colour saved: {slug} ({count_str}) → "
                 f"#{primary_rgb[0]:02X}{primary_rgb[1]:02X}{primary_rgb[2]:02X}",
                 kind="success",
             )
@@ -996,14 +1023,14 @@ class AICapturesSection(Card):
         downstream consumer (mss capture cropping, meta.json rects,
         bot runtime ROIs that slice physical-px mss frames) needs the
         rect in PHYSICAL pixels. Converting at this boundary keeps the
-        rest of the capture pipeline consistent with the bot side —
+        rest of the capture pipeline consistent with the bot side , 
         a recording's stored rect can be passed straight to
         ``is_animating(rect)`` without any per-call DPI maths.
 
         Uses :func:`dip_rect_to_physical` (rect-aware, center-point
         lookup) instead of two corner-point ``dip_to_physical`` calls,
         which would fail when a rect corner sits exactly on the screen
-        edge — that hit the identity-fallback path and produced a
+        edge, that hit the identity-fallback path and produced a
         half-scaled rect on DPR>1 monitors.
         """
         from utils.dpi_cursor import dip_rect_to_physical
@@ -1016,7 +1043,7 @@ class AICapturesSection(Card):
             w, h = int(abs(x2 - x1)), int(abs(y2 - y1))
             if w < 4 or h < 4:
                 self.app.toasts.post(
-                    "⚠ Capture rect too small — try again", kind="warn",
+                    "Capture rect too small, try again", kind="warn",
                 )
                 return
             px, py, pw, ph = dip_rect_to_physical(x, y, w, h)
@@ -1028,7 +1055,7 @@ class AICapturesSection(Card):
         """Capture the configured target monitor as a BGR uint8 array.
 
         Uses ``app.target_screen()`` so the ZoneDrawer and this capture
-        always agree on WHICH monitor — without this alignment, the
+        always agree on WHICH monitor, without this alignment, the
         drawer might bind to one screen while mss grabs another, and
         crops land outside the player's actual screen.
 
@@ -1047,7 +1074,7 @@ class AICapturesSection(Card):
                 # DIP rect (Qt geometry) → physical rect via the rect-aware
                 # helper. Using corner-point lookups via ``dip_to_physical``
                 # previously failed when the bottom-right corner fell
-                # exactly on the screen edge — the lookup returned None
+                # exactly on the screen edge, the lookup returned None
                 # and the identity-fallback produced a half-size physical
                 # rect, so mss only grabbed the top-left of the monitor.
                 geom = target.geometry()
@@ -1062,7 +1089,7 @@ class AICapturesSection(Card):
                 self._monitor_origin = (px, py)
             else:
                 mons = sct.monitors
-                idx = int(self.app.cfg.get("ai_monitor", 1))
+                idx = self.app.resolved_ai_monitor(sct.monitors)
                 if not (0 <= idx < len(mons)):
                     idx = 1 if len(mons) > 1 else 0
                 mon = mons[idx]
@@ -1111,7 +1138,7 @@ class AICapturesSection(Card):
                     existing = []
             except Exception:
                 existing = []
-        # Replace any existing entry with the same slug — captures
+        # Replace any existing entry with the same slug, captures
         # overwrite the asset on disk, the index should match.
         existing = [e for e in existing if e.get("slug") != entry.get("slug")]
         existing.append(entry)
@@ -1122,7 +1149,7 @@ class AICapturesSection(Card):
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Promote dialog — checkbox list per kind, copies to global library
+# Promote dialog, checkbox list per kind, copies to global library
 # ─────────────────────────────────────────────────────────────────────
 
 
@@ -1133,7 +1160,7 @@ class _PromoteDialog(QDialog):
 
     Items already present in the global library are pre-checked-out
     (label suffix " · already in global") so the user can intentionally
-    re-promote to overwrite — that's a feature, not a footgun, since
+    re-promote to overwrite, that's a feature, not a footgun, since
     captures evolve as the user retunes them.
     """
 
@@ -1151,7 +1178,7 @@ class _PromoteDialog(QDialog):
 
         intro = QLabel(
             "Tick each capture to copy into the project-wide library. "
-            "Promoted captures stay in this bundle too — promotion is "
+            "Promoted captures stay in this bundle too, promotion is "
             "a copy, not a move."
         )
         intro.setWordWrap(True)
@@ -1268,7 +1295,7 @@ class _PromoteDialog(QDialog):
         btns = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self,
         )
-        btns.button(QDialogButtonBox.Ok).setText("★ Promote checked")
+        btns.button(QDialogButtonBox.Ok).setText("Promote checked")
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         outer.addWidget(btns)
@@ -1307,7 +1334,7 @@ class _PromoteDialog(QDialog):
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Inline asset rows — replace the comma-separated inventory text with
+# Inline asset rows, replace the comma-separated inventory text with
 # clickable rows so the user can see + delete captures without
 # leaving the Captures card.
 # ─────────────────────────────────────────────────────────────────────
@@ -1329,7 +1356,7 @@ class _KindHeader(QLabel):
 
 
 class _AssetRow(QFrame):
-    """One bundle-asset row: thumbnail + slug + 🗑 delete.
+    """One bundle-asset row: thumbnail + slug +  delete.
 
     Thumbnails:
       - color:     filled swatch in the saved RGB
@@ -1366,7 +1393,7 @@ class _AssetRow(QFrame):
         thumb = QLabel()
         thumb.setFixedSize(self._THUMB_W, self._THUMB_H)
         thumb.setStyleSheet(
-            "background: #0a0a0a; border-radius: 4px;"
+            f"background: {t.BG}; border-radius: 4px;"
         )
         self._populate_thumb(thumb)
         h.addWidget(thumb)
@@ -1396,7 +1423,8 @@ class _AssetRow(QFrame):
 
         # Delete button
         from PySide6.QtWidgets import QPushButton as _QPB
-        del_btn = _QPB("🗑")
+        del_btn = _QPB()
+        del_btn.setIcon(icons.icon("trash"))
         del_btn.setCursor(Qt.PointingHandCursor)
         del_btn.setMinimumHeight(t.BUTTON_H - 4)
         del_btn.setMinimumWidth(t.BUTTON_H)
@@ -1428,7 +1456,7 @@ class _AssetRow(QFrame):
             try:
                 from .. import theme as _t
                 pix = QPixmap(self._THUMB_W, self._THUMB_H)
-                pix.fill(QColor("#0a0a0a"))
+                pix.fill(QColor(t.BG))
                 p = QPainter(pix)
                 p.setRenderHint(QPainter.Antialiasing, False)
                 p.setPen(QPen(QColor(_t.ACCENT), 2))
@@ -1445,7 +1473,7 @@ class _AssetRow(QFrame):
         if self._kind in ("snapshot", "item"):
             img_path = self._path
         elif self._kind == "dtm":
-            # DTM YAML lives next to its paired PNG — show that.
+            # DTM YAML lives next to its paired PNG, show that.
             img_path = self._path.with_suffix(".png")
             if not img_path.exists():
                 return

@@ -1,5 +1,5 @@
-"""Input blocks — click, move, type, keypress, auto-click. Uses the backend
-declared in the script header (post_message | real)."""
+"""Input blocks: click, move, type, keypress, auto-click. All dispatch
+through ``ctx.input_backend`` (the app's ClickerActuatorBackend)."""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ class ClickBlock(Block):
             default="",
             kind="text",
             description=(
-                "Optional phase label for the Dashboard chip — e.g. 'clicking', "
+                "Optional phase label for the Dashboard chip, e.g. 'clicking', "
                 "'excavating'. Leave blank to not change phase."
             ),
         ),
@@ -53,7 +53,7 @@ class ClickBlock(Block):
         self, ctx, point: Any = None, button: str = "left", phase: str = "", **_: Any
     ) -> Dict[str, Any]:
         if point is None:
-            ctx.log("input.click: no point provided — skipped.")
+            ctx.log("input.click: no point provided, skipped.")
             return {}
         x, y = int(point[0]), int(point[1])
         if getattr(ctx, "dry_run", False):
@@ -65,7 +65,7 @@ class ClickBlock(Block):
         try:
             ctx.input_backend.click(x, y, button=button)
         except NotImplementedError as e:
-            ctx.log(f"input.click: backend not ready — {e}")
+            ctx.log(f"input.click: backend not ready, {e}")
             ctx.request_stop("input backend not implemented")
             return {}
         ctx.log(f"click {button} at ({x}, {y})")
@@ -91,7 +91,7 @@ class MoveToBlock(Block):
 
     def execute(self, ctx, point: Any = None, **_: Any) -> Dict[str, Any]:
         if point is None:
-            ctx.log("input.move_to: no point provided — skipped.")
+            ctx.log("input.move_to: no point provided, skipped.")
             return {}
         x, y = int(point[0]), int(point[1])
         if getattr(ctx, "dry_run", False):
@@ -100,7 +100,7 @@ class MoveToBlock(Block):
         try:
             ctx.input_backend.move(x, y)
         except NotImplementedError as e:
-            ctx.log(f"input.move_to: backend not ready — {e}")
+            ctx.log(f"input.move_to: backend not ready, {e}")
             ctx.request_stop("input backend not implemented")
             return {}
         return {"done": True}
@@ -120,7 +120,7 @@ class PressKeyBlock(Block):
             "key",
             default="space",
             kind="text",
-            description="Key name per the backend (pyautogui conventions — 'space', 'enter', 'a'…).",
+            description="Key name per the backend (pyautogui conventions, 'space', 'enter', 'a'…).",
         ),
     ]
 
@@ -131,7 +131,7 @@ class PressKeyBlock(Block):
         try:
             ctx.input_backend.press_key(key)
         except NotImplementedError as e:
-            ctx.log(f"input.press_key: backend not ready — {e}")
+            ctx.log(f"input.press_key: backend not ready, {e}")
             ctx.request_stop("input backend not implemented")
             return {}
         ctx.log(f"key press: {key!r}")
@@ -139,7 +139,7 @@ class PressKeyBlock(Block):
 
 
 # ─────────────────────────────────────────────────────────────────
-# Auto-click — PhantomClick-style end-to-end one-node autoclicker
+# Auto-click, PhantomClick-style end-to-end one-node autoclicker
 # ─────────────────────────────────────────────────────────────────
 
 
@@ -147,7 +147,7 @@ def _pick_zone_point(zone: Tuple[int, int, int, int], gaussian: bool) -> Tuple[i
     """Pick a point inside a zone rect ``(x, y, w, h)``.
 
     ``gaussian=True`` biases toward the zone centre (µ = centre,
-    σ = w/6 or h/6 — keeps ~99.7% of draws inside the zone). Clamps
+    σ = w/6 or h/6, keeps ~99.7% of draws inside the zone). Clamps
     to the zone boundary on the rare tail.
     """
     x, y, w, h = zone
@@ -170,7 +170,7 @@ class AutoClickBlock(Block):
     category = "Input"
     description = (
         "Click repeatedly at a point (or random inside a zone) until a limit "
-        "is hit. Uses the humanizer — Wind/Hooke paths, fatigue drift, "
+        "is hit. Uses the humanizer, Wind/Hooke paths, fatigue drift, "
         "anti-clustering, optional idle-wander drifts between clicks."
     )
     example = (
@@ -186,7 +186,7 @@ class AutoClickBlock(Block):
         Port("trigger", kind="trigger"),
     ]
     outputs = [
-        Port("clicks", kind="data"),   # int — clicks fired this execution
+        Port("clicks", kind="data"),   # int, clicks fired this execution
         Port("done", kind="trigger"),
     ]
     params = [
@@ -281,7 +281,7 @@ class AutoClickBlock(Block):
         phase: str = "autoclicking",
         **_: Any,
     ) -> Dict[str, Any]:
-        # Input validation up front — fail loud so a misconfigured block
+        # Input validation up front, fail loud so a misconfigured block
         # doesn't quietly spin forever.
         interval_min_ms = max(1, int(interval_min_ms))
         interval_max_ms = max(interval_min_ms, int(interval_max_ms))
@@ -339,7 +339,7 @@ class AutoClickBlock(Block):
                 try:
                     backend.click(tx, ty, button=button)
                 except NotImplementedError as e:
-                    ctx.log(f"auto_click: backend not ready — {e}")
+                    ctx.log(f"auto_click: backend not ready, {e}")
                     ctx.request_stop("input backend not implemented")
                     return {"clicks": clicks}
             clicks += 1
@@ -361,7 +361,7 @@ class AutoClickBlock(Block):
                     if interrupted:
                         break
                 except Exception as e:
-                    ctx.log(f"auto_click: idle-wander failed — {type(e).__name__}: {e}")
+                    ctx.log(f"auto_click: idle-wander failed, {type(e).__name__}: {e}")
             # Regular sleep, sliced so Stop / Esc break through fast.
             deadline = time.monotonic() + wait_s
             while time.monotonic() < deadline:

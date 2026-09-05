@@ -13,20 +13,18 @@ location:
     ``menaphos_acadia.py`` — edit it directly in any Python editor,
     or ask Claude via MCP to modify rules for you.
 
-    Tuning checklist:
-      1. Stand near the Acadia patch, graphics detail low-to-medium.
-      2. Equip Brooch of the Gods + Grace of the Elves (and confirm
-         charges — procs don't spawn without them).
-      3. F8 over each target to get a clean centroid colour. Paste
-         the four ``target=0x...`` values into the corresponding
-         ``find_color`` calls in menaphos_acadia.py.
-      4. Drag the inventory panel ROI and paste the rect into
-         ``INVENTORY_ROI`` near the top of the .py file.
-      5. Create a DTM of the Imperial District bank chest; save as
-         ``templates/dtm/menaphos_imperial_bank_chest.yaml``.
-      6. Start with dry_run=True in the bot constructor (already set).
-         Watch the Dashboard phase chip cycle through phases. When
-         happy, flip dry_run=False.
+    Setup checklist:
+      1. Stand near the Acadia patch and keep the camera stable.
+      2. Use the AI capture tools to sample target colors. Tune the
+         color constants and TREE_ROI/BANK_SCAN_ROI in the Python file
+         for your screen; the included coordinates are examples.
+      3. Use Calibrate Inventory ROI in the AI tools.
+      4. Capture the open bank as a snapshot named bank_open_acadia
+         and promote it to the global library.
+      5. Save bank preset 1 with an empty woodcutting inventory.
+         Verify manually that pressing 1 loads it and closes the bank.
+      6. Start in dry run. Both the script and app can require dry run;
+         changing only the app toggle does not override the script.
 
     The bot watchdogs:
       - Auto-stops after 60 consecutive ticks (~30 s at 2 Hz) with

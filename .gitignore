@@ -1,6 +1,8 @@
 # Secrets / runtime state — NEVER commit
 # (config.json holds monitor_token + serial port + screen calibration)
 /config.json
+/config.json.*
+/.audit-tests*/
 *.log
 
 # Python
@@ -25,10 +27,16 @@ env/
 rs3vision/_rs3vision.pdb
 
 # Runtime / user data (app recreates next to the .exe on demand).
-# Root-anchored so rs3vision/templates/ and tools/vm/templates/ stay tracked.
+# Root-anchored so rs3vision/templates/ stays tracked.
 /templates/
 /bots/
 /debug/
+
+# Capture-library registries are rebuilt from the files on disk at runtime.
+ai/captures/global/*/index.json
+
+# Editor / tool backup files
+*.bak
 
 # Local capture / trace cruft
 mouse_trace_*.jsonl
@@ -47,3 +55,9 @@ Thumbs.db
 ehthumbs.db
 Desktop.ini
 .DS_Store
+/sequences/
+
+# Audit / tooling scratch output
+.audit-tests*/
+config.json.bak*
+pytest-tmp/

@@ -1,4 +1,4 @@
-"""Behavior page — :class:`PageHeader` + :class:`BehaviorPageBody`.
+"""Behavior page, :class:`PageHeader` + :class:`BehaviorPageBody`.
 
 Single left-aligned column, content max-width capped at
 :data:`ui.theme.PAGE_CONTENT_MAX_WIDTH`. The body builds Pre-start +
@@ -51,7 +51,7 @@ class BehaviorPage(QWidget):
 
         col.addWidget(PageHeader(
             "Behavior",
-            "How human the cursor feels — one dial drives every humanization knob.",
+            "How human the cursor feels, one dial drives every humanization knob.",
         ))
 
         self.body = BehaviorPageBody(app)

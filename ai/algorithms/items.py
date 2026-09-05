@@ -1,6 +1,6 @@
 """Item library + per-slot inventory matching.
 
-The framework keeps a per-user library of "known items" — each one is
+The framework keeps a per-user library of "known items", each one is
 an inventory icon (downloaded once from the RuneScape wiki, cached
 locally) plus a name. At every tick, bot rules can ask
 ``world().count_item("Raw trout") >= 10`` and the framework matches
@@ -8,23 +8,23 @@ each non-empty inventory slot against every known item template,
 returning the slot indices that contain it.
 
 Matching strategy:
-    1. Load each item's wiki icon as RGBA — transparent pixels are
+    1. Load each item's wiki icon as RGBA, transparent pixels are
        background and ignored during comparison.
     2. For each non-empty inventory slot, crop the slot's interior.
     3. Resize the slot crop to the icon's dimensions (or vice-versa,
-       whichever's smaller — keeps things cheap).
+       whichever's smaller, keeps things cheap).
     4. Compute mean per-channel BGR distance over the icon's
        non-transparent mask. Lower = better match.
     5. The item with the smallest distance below a threshold wins.
 
 This is robust to small icon-position offsets within a slot and to
 the slot's variable interior padding. It's sensitive to DPI scaling
-of the inventory panel — if the user's HUD scale changes, item
+of the inventory panel, if the user's HUD scale changes, item
 templates may need re-downloading at the new size (handled by
 ``ItemLibrary.refresh``).
 
 Performance: O(N_slots × N_items × icon_pixels). For 28 slots and
-20 items at ~32×32 icons that's ~570K pixel ops per call — sub-ms in
+20 items at ~32×32 icons that's ~570K pixel ops per call, sub-ms in
 numpy. Scales linearly with library size; fine up to a few hundred
 items per bot.
 """
@@ -38,7 +38,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 
-# Match threshold — mean per-channel distance below this counts as a
+# Match threshold, mean per-channel distance below this counts as a
 # confident match. 0..255 scale; 30 is generous (catches faded icons,
 # rejects clearly-different items).
 DEFAULT_MATCH_THRESHOLD: float = 30.0
@@ -51,12 +51,12 @@ DEFAULT_MATCH_THRESHOLD: float = 30.0
 
 @dataclass
 class ItemTemplate:
-    """One entry in the item library — name + cached BGR/alpha arrays."""
+    """One entry in the item library, name + cached BGR/alpha arrays."""
 
     name: str                   # canonical wiki name, e.g. "Raw trout"
     slug: str                   # filesystem slug, e.g. "raw_trout"
     bgr: np.ndarray             # (H, W, 3) uint8
-    alpha: np.ndarray           # (H, W) uint8 — 0..255 transparency
+    alpha: np.ndarray           # (H, W) uint8, 0..255 transparency
     source_path: Path           # where the icon lives on disk
 
     @property
@@ -132,7 +132,7 @@ class ItemLibrary:
 
         Returns ``(name, distance)`` for the winner only if:
           1. Best distance ≤ ``threshold``, AND
-          2. Best beats second-best by at least ``margin`` —
+          2. Best beats second-best by at least ``margin`` , 
              otherwise the slot has visually-similar candidates
              (common with multi-piece equipment sets) and we'd
              rather return ``None`` than guess wrong.

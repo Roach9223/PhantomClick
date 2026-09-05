@@ -1,4 +1,4 @@
-"""Stats page — :class:`PageHeader` + :class:`StatsPageBody`.
+"""Stats page, :class:`PageHeader` + :class:`StatsPageBody`.
 
 Single left-aligned column, content max-width capped at
 :data:`ui.theme.PAGE_CONTENT_MAX_WIDTH`. The body builds one

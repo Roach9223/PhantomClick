@@ -1,13 +1,13 @@
-"""``SettingsPageBody`` — form-row body for the Settings page.
+"""``SettingsPageBody``, form-row body for the Settings page.
 
 Two :class:`SettingsGroup`s built from the design-system primitives:
 
-* **Display** — target-monitor selector. Lifts the v1 single-primary-
+* **Display**, target-monitor selector. Lifts the v1 single-primary-
   monitor limitation: a user with a dual-monitor setup can keep the GUI
   on one screen while the engine targets the other for ambient features
   (post-click drift clamp, idle wander roam area, watchdog corner
   failsafe, tracker locate).
-* **Diagnostics** — start/stop a mouse trace recording to a JSONL file.
+* **Diagnostics**, start/stop a mouse trace recording to a JSONL file.
   The button doubles as a status indicator; a sibling label shows the
   live event count while a trace is running.
 
@@ -33,10 +33,11 @@ from PySide6.QtWidgets import (
 from ui.config_io import _config_dir, save_config
 from utils import mouse_trace
 
-from .. import theme as t
+from .. import icons, theme as t
 from ..format import fmt_count
 from ..screen_utils import screen_label
 from ..widgets.group_header import GroupHeader
+from ..widgets.ios_switch import IOSSwitch
 from ..widgets.quiet_button import QuietAccentButton
 from ..widgets.segmented import SegmentedControl
 from ..widgets.settings_group import SettingsGroup
@@ -73,6 +74,16 @@ class SettingsPageBody(QWidget):
 
         outer.addSpacing(t.SP_XL)
 
+        # ── Network ─────────────────────────────────────────────────
+        # The only outbound HTTP the app can make (besides serving the
+        # LAN Monitor page) lives behind this switch.
+        outer.addWidget(GroupHeader("Network"))
+        net_group = SettingsGroup()
+        net_group.add_row(self._build_wiki_fetch_row())
+        outer.addWidget(net_group)
+
+        outer.addSpacing(t.SP_XL)
+
         # ── Diagnostics ─────────────────────────────────────────────
         outer.addWidget(GroupHeader("Diagnostics"))
         diag_group = SettingsGroup()
@@ -84,7 +95,7 @@ class SettingsPageBody(QWidget):
         # ── Footer hint ─────────────────────────────────────────────
         footer = QLabel(
             "Auto-detect follows your active zone; manual selection pins "
-            "the engine to a screen — useful when the GUI and the game "
+            "the engine to a screen, useful when the GUI and the game "
             "live on different monitors. Mouse traces save to the install "
             "directory and open in Explorer when you stop recording."
         )
@@ -130,14 +141,15 @@ class SettingsPageBody(QWidget):
         # whether it'd target the right monitor without switching.
         auto_label = "Auto-detect (zone's monitor)"
         if primary is not None:
-            auto_label = f"Auto-detect — currently {screen_label(primary)}"
+            auto_label = f"Auto-detect, currently {screen_label(primary)}"
         self.combo.addItem(auto_label, userData="auto")
 
         for i, s in enumerate(screens):
             label = screen_label(s, index=i, is_primary=(s is primary))
             self.combo.addItem(label, userData=str(i))
 
-        cur = str(self.app.cfg.get("target_monitor", "auto"))
+        idx = self.app._explicit_target_screen_index()
+        cur = "auto" if idx is None else str(idx)
         for i in range(self.combo.count()):
             if self.combo.itemData(i) == cur:
                 self.combo.setCurrentIndex(i)
@@ -145,21 +157,7 @@ class SettingsPageBody(QWidget):
         self.combo.blockSignals(False)
 
     def _on_change(self, _idx: int) -> None:
-        cfg = self.app.cfg
-        new_val = str(self.combo.currentData() or "auto")
-        if cfg.get("target_monitor") == new_val:
-            return
-        cfg["target_monitor"] = new_val
-        save_config(cfg)
-        self.app._push_config_to_clicker()
-        # Confirmation toast — silent change here would be bad because
-        # the effect is invisible until the engine runs.
-        if hasattr(self.app, "toasts"):
-            label = self.combo.currentText()
-            self.app.toasts.post(
-                f"✓ Target monitor: {label}",
-                kind="success",
-            )
+        self.app.set_target_monitor(self.combo.currentData() or "auto")
 
     def refresh_monitors(self) -> None:
         """Re-enumerate screens. Called from App on screenAdded/Removed."""
@@ -172,7 +170,7 @@ class SettingsPageBody(QWidget):
         timers. Auto suits 95% of users: SendInput everywhere unless
         the Interception driver is installed, then events go through
         the driver as hardware-flagged input. RuneScape NXT specifically
-        rejects everything software-only including Interception — for
+        rejects everything software-only including Interception, for
         that case ``Serial HID`` routes through an Arduino flashed as a
         USB keyboard (firmware in ``firmware/phantomhid``)."""
         valid = ("auto", "sendinput", "interception", "serial_hid")
@@ -191,12 +189,12 @@ class SettingsPageBody(QWidget):
         )
         seg.setToolTip(
             "How keyboard events are delivered to the OS.\n\n"
-            "• Auto — Interception when its driver is installed, else SendInput.\n"
-            "• SendInput — standard Win32 path. Works in Notepad / browsers / "
+            "• Auto, Interception when its driver is installed, else SendInput.\n"
+            "• SendInput, standard Win32 path. Works in Notepad / browsers / "
             "most apps; filtered by RuneScape NXT.\n"
-            "• Interception — hardware-flagged via the Interception driver. "
+            "• Interception, hardware-flagged via the Interception driver. "
             "Bypasses LLMHF_INJECTED filters but NXT still rejects it.\n"
-            "• Serial HID — routes through an Arduino flashed as a USB "
+            "• Serial HID, routes through an Arduino flashed as a USB "
             "keyboard. The only path that NXT accepts. See "
             "firmware/phantomhid/README.md for setup."
         )
@@ -239,7 +237,7 @@ class SettingsPageBody(QWidget):
     def _populate_serial_hid_ports(self) -> None:
         """Fill the COM-port dropdown from pyserial's port list. If
         pyserial isn't installed, leave only the saved value as a hint
-        so the UI still works — the actual error surfaces at engine
+        so the UI still works, the actual error surfaces at engine
         start through SerialHidBackend._init_error."""
         combo = getattr(self, "_serial_hid_port_combo", None)
         if combo is None:
@@ -255,7 +253,7 @@ class SettingsPageBody(QWidget):
         if not ports and saved:
             combo.addItem(saved)
         for p in ports:
-            label = f"{p.device} — {p.description}" if p.description else p.device
+            label = f"{p.device}, {p.description}" if p.description else p.device
             combo.addItem(label, userData=p.device)
         if saved:
             for i in range(combo.count()):
@@ -278,10 +276,39 @@ class SettingsPageBody(QWidget):
         # Prefer userData (the bare device name); fall back to the visible
         # label if the dropdown was hand-populated (e.g. saved value with
         # no pyserial enumeration available).
-        device = combo.currentData() or combo.currentText().split(" — ")[0].strip()
+        device = combo.currentData() or combo.currentText().split(", ")[0].strip()
         self.app.cfg["serial_hid_port"] = str(device or "")
         save_config(self.app.cfg)
         self.app._push_config_to_clicker()
+
+    # ── Network row ──────────────────────────────────────────────────────
+
+    def _build_wiki_fetch_row(self) -> SettingsRow:
+        row = SettingsRow(
+            "Fetch item icons from runescape.wiki",
+            desc=(
+                "Lets the AI item library download inventory icons. This "
+                "makes outbound HTTP requests to runescape.wiki when you "
+                "add an item and at bot start if an icon is missing from "
+                "the local cache. Off means no request ever leaves this PC."
+            ),
+        )
+        switch = IOSSwitch()
+        switch.setChecked(bool(self.app.cfg.get("ai_wiki_fetch_enabled", False)))
+        switch.toggled.connect(self._on_wiki_fetch_toggled)
+        row.set_control(switch)
+        return row
+
+    def _on_wiki_fetch_toggled(self, checked: bool) -> None:
+        self.app.cfg["ai_wiki_fetch_enabled"] = bool(checked)
+        save_config(self.app.cfg)
+        if hasattr(self.app, "toasts"):
+            self.app.toasts.post(
+                "Wiki fetch on: item icons will be downloaded when needed."
+                if checked else
+                "Wiki fetch off: only cached icons are used.",
+                kind="info",
+            )
 
     # -- Mouse trace row ---------------------------------------------------
 
@@ -306,7 +333,8 @@ class SettingsPageBody(QWidget):
         self.trace_status.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         h.addWidget(self.trace_status)
 
-        self.trace_btn = QuietAccentButton("●  Record")
+        self.trace_btn = QuietAccentButton("Record")
+        self.trace_btn.setIcon(icons.icon("record-dot", color=t.DANGER))
         self.trace_btn.setToolTip(
             "Start logging cursor + click events to "
             "mouse_trace_<ts>.jsonl in the install directory. "
@@ -328,25 +356,27 @@ class SettingsPageBody(QWidget):
         ts = time.strftime("%Y%m%d_%H%M%S")
         path = Path(_config_dir()) / f"mouse_trace_{ts}.jsonl"
         if mouse_trace.enable(str(path)):
-            self.trace_btn.setText("■  Stop")
+            self.trace_btn.setText("Stop")
+            self.trace_btn.setIcon(icons.icon("stop"))
             self._trace_tick.start()
             self._refresh_trace_status()
             if hasattr(self.app, "toasts"):
                 self.app.toasts.post(
-                    f"● Recording mouse trace → {path.name}",
+                    f"Recording mouse trace → {path.name}",
                     kind="info",
                 )
 
     def _stop_trace(self) -> None:
         path = mouse_trace.disable()
         self._trace_tick.stop()
-        self.trace_btn.setText("●  Record")
+        self.trace_btn.setText("Record")
+        self.trace_btn.setIcon(icons.icon("record-dot", color=t.DANGER))
         self._refresh_trace_status()
         if path is None:
             return
         if hasattr(self.app, "toasts"):
             self.app.toasts.post(
-                f"✓ Trace saved → {Path(path).name}",
+                f"Trace saved → {Path(path).name}",
                 kind="success",
             )
         # Open the containing folder in Explorer so the user can grab the

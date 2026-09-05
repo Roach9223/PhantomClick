@@ -1,16 +1,16 @@
-"""``HotkeysPageBody`` — form-row body for the Hotkeys page.
+"""``HotkeysPageBody``, form-row body for the Hotkeys page.
 
 Two :class:`SettingsGroup`s:
 
-* **Global hotkeys** — Start / Stop rebindable rows + a locked Esc row.
+* **Global hotkeys**, Start / Stop rebindable rows + a locked Esc row.
   Each rebindable row carries a :class:`KeyChip` showing the current
   binding and a :class:`QuietAccentButton` ``Change``. Esc shows only
   the chip.
-* **In-app shortcuts** — read-only reference rows pulled from the
+* **In-app shortcuts**, read-only reference rows pulled from the
   shared ``app.commands`` registry, so any new command with a
   ``shortcut`` field shows up automatically.
 
-Rebind flow runs across two threads — pynput's listener captures the
+Rebind flow runs across two threads, pynput's listener captures the
 next keypress and we marshal back to the Qt thread via
 ``QTimer.singleShot``. The flow itself is unchanged from the prior
 ``HotkeysCard`` implementation; only the chrome around it was
@@ -47,6 +47,8 @@ _REBINDABLE = (
      "Begin clicking after the pre-start delay."),
     ("stop", "Halt clicking",
      "Stop the engine immediately."),
+    ("pause", "Pause / resume bot",
+     "Toggle pause on a running AI bot. Click and Record ignore it."),
     ("capture", "Capture frame",
      "Freeze the current screen and drag a rectangle to save it as a "
      "snapshot in the active bundle's library."),
@@ -57,7 +59,7 @@ class HotkeysPageBody(QWidget):
     # Cross-thread marshal: the pynput listener fires capture callbacks
     # from a non-Qt thread. ``QTimer.singleShot(0, ...)`` is silently
     # dropped from threads with no event loop, so we use a queued-
-    # connection signal instead — Qt routes the emit through the event
+    # connection signal instead, Qt routes the emit through the event
     # loop of whatever thread owns this widget (the main thread).
     _captureReceived = Signal(str, str)  # (action, name)
 
@@ -84,7 +86,7 @@ class HotkeysPageBody(QWidget):
 
         global_group.add_row(self._build_locked_row(
             "Emergency stop",
-            "Hard-locked for safety — cannot be rebound.",
+            "Hard-locked for safety, cannot be rebound.",
             "Esc",
         ))
         outer.addWidget(global_group)
@@ -133,10 +135,13 @@ class HotkeysPageBody(QWidget):
 
     def _build_rebind_row(self, action: str, title: str, desc: str) -> SettingsRow:
         row = SettingsRow(title, desc=desc)
-        chip = KeyChip(name_to_display(self.app.cfg[f"hotkey_{action}"]))
+        from ui.config_io import DEFAULTS
+        chip = KeyChip(name_to_display(
+            self.app.cfg.get(f"hotkey_{action}", DEFAULTS.get(f"hotkey_{action}", ""))
+        ))
         self._chips[action] = chip
 
-        # Not locker-registered: rebinding a hotkey mid-run is safe — the
+        # Not locker-registered: rebinding a hotkey mid-run is safe, the
         # listener updates start_name/stop_name/capture_name atomically and
         # _on_press reads them on every keypress. Locking these buttons
         # during a run only matters if the user can't stop the bot via the
@@ -234,7 +239,7 @@ class HotkeysPageBody(QWidget):
             btn.setEnabled(True)
         if hasattr(self.app, "toasts"):
             self.app.toasts.post(
-                f"Rebind cancelled — {action.capitalize()} hotkey unchanged.",
+                f"Rebind cancelled, {action.capitalize()} hotkey unchanged.",
                 kind="info",
             )
 
@@ -242,13 +247,13 @@ class HotkeysPageBody(QWidget):
         try:
             from utils.logger import get_logger
             get_logger().info(
-                "rebind.on_key_captured action=%r name=%r — emitting signal",
+                "rebind.on_key_captured action=%r name=%r, emitting signal",
                 action, name,
             )
         except Exception:
             pass
         # Queued signal hops to the Qt main thread regardless of which
-        # thread emits it. Replaces QTimer.singleShot — that path was
+        # thread emits it. Replaces QTimer.singleShot, that path was
         # silently dropped because the pynput listener thread has no
         # Qt event loop, which Qt6 treats as undefined-behaviour and
         # discards.
@@ -264,7 +269,7 @@ class HotkeysPageBody(QWidget):
             log.info("rebind._apply_capture entering action=%r name=%r",
                      action, name)
         cfg = self.app.cfg
-        # Cancel the timeout immediately — we got a key, the wait is over.
+        # Cancel the timeout immediately, we got a key, the wait is over.
         self.cancel_rebind_timeout(action)
         if not name:
             if log is not None:
@@ -307,11 +312,13 @@ class HotkeysPageBody(QWidget):
             self.app.hotkeys.set_start(name)
         elif action == "stop":
             self.app.hotkeys.set_stop(name)
+        elif action == "pause":
+            self.app.hotkeys.set_pause(name)
         elif action == "capture":
             self.app.hotkeys.set_capture(name)
         if log is not None:
             log.info(
-                "rebind._apply_capture committed action=%r name=%r — chip updating",
+                "rebind._apply_capture committed action=%r name=%r, chip updating",
                 action, name,
             )
         self.update_label(action)
@@ -337,6 +344,10 @@ class HotkeysPageBody(QWidget):
             btn.setEnabled(True)
         if hasattr(self.app, "action_bar"):
             self.app.action_bar.refresh_hint()
+        # Help page and palette read the bindings at build time.
+        refresh = getattr(self.app, "refresh_hotkey_labels", None)
+        if callable(refresh):
+            refresh()
 
     def cancel_all(self) -> None:
         for action in list(self._timeouts):

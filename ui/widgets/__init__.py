@@ -1,1 +1,1 @@
-"""Custom Qt widgets — Card, RangeSlider, Toast, Expander."""
+"""Custom Qt widgets, Card, RangeSlider, Toast, Expander."""

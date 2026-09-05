@@ -1,7 +1,7 @@
 """KeyTimer: a passive scheduled keypress that runs concurrently with the
 main click engine.
 
-A KeyTimer is *not* a step — it doesn't advance recorder state, doesn't
+A KeyTimer is *not* a step, it doesn't advance recorder state, doesn't
 move the cursor, and isn't gated by the active step. It just fires a key
 on its own clock so users can do things like "press Z every 6 minutes
 for the potion macro" without breaking up their main click sequence.
@@ -20,8 +20,8 @@ from __future__ import annotations
 import random
 import threading
 import time
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Callable, Optional
 
 from pynput import keyboard
 
@@ -44,13 +44,25 @@ _backend = None
 
 def set_backend(backend) -> None:
     """Engine pushes the chosen backend at session start. ``None`` resets
-    to the default SendInput path on next ``fire()``."""
+    to the default SendInput path on next ``fire()``.
+
+    A displaced backend that owns a handle (Serial HID's COM port) is
+    closed here; otherwise switching methods or ports leaves the old
+    port open and the next open of the same port fails."""
     global _backend
+    old = _backend
     _backend = backend
+    if old is not None and old is not backend:
+        close = getattr(old, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
 
 
 def _active_backend():
-    """Lazy default — return the SendInput backend when nothing has been
+    """Lazy default, return the SendInput backend when nothing has been
     pushed (ad-hoc callers, tests, KeyTimer threads spawned before the
     engine wired one up)."""
     global _backend
@@ -67,7 +79,7 @@ def _active_backend():
 # AWT/Swing clients (RuneScape, RuneLite), most DirectInput / RawInput
 # games, and some anti-bot filters only react to scancode events. The
 # fix is to call SendInput ourselves with KEYEVENTF_SCANCODE flag set,
-# wVk=0, and the scancode in wScan — which is what real hardware looks
+# wVk=0, and the scancode in wScan, which is what real hardware looks
 # like to the input layer. This matches AutoHotkey's default behaviour
 # for the same reason.
 #
@@ -167,7 +179,7 @@ def _vk_to_scan(vk: int) -> int:
     return scan
 
 
-# VKs that Windows considers "extended" — duplicate-position keys (the
+# VKs that Windows considers "extended", duplicate-position keys (the
 # arrow cluster and editing pad as opposed to numpad). Without the
 # EXTENDEDKEY flag, sending these scancodes reaches the WRONG physical
 # key (e.g. arrow Up vs. numpad 8 share the same scan).
@@ -219,7 +231,7 @@ def _foreground_window_title() -> str:
     by ``fire()`` to log which window will actually receive each keypress.
 
     The single most useful diagnostic when a key step "fires" but the game
-    doesn't respond — usually focus is somewhere unexpected (PhantomClick,
+    doesn't respond, usually focus is somewhere unexpected (PhantomClick,
     Discord, the desktop) at the moment the key event lands."""
     try:
         import ctypes
@@ -286,7 +298,7 @@ def _resolve_vk(part) -> Optional[int]:
     Accepts: a single-char string (uses ``VkKeyScanW``) or a pynput
     ``keyboard.Key`` enum value (uses ``_KEY_ENUM_TO_VK`` lookup, with
     ``part.value.vk`` as a final fallback). Returns ``None`` when the
-    part can't be mapped — ``fire()`` rejects the whole combo in that
+    part can't be mapped, ``fire()`` rejects the whole combo in that
     case rather than silently sending a partial sequence."""
     if isinstance(part, str):
         if len(part) != 1:
@@ -351,12 +363,16 @@ class KeyTimer:
     interval_min: float = 360.0     # seconds between fires (low end)
     interval_max: float = 360.0     # seconds between fires (high end)
     enabled: bool = True
-    # Display unit for the GUI — one of ``"ms" | "s" | "min" | "hr"``.
+    # Display unit for the GUI, one of ``"ms" | "s" | "min" | "hr"``.
     # Storage remains in seconds (interval_min/_max). The new single-
     # value UI sets min==max from a value-and-unit pair; jitter-on-top
     # provides the randomness so RS-style detection doesn't see exact
     # cadences.
     interval_unit: str = "min"
+    # Runtime only: monotonic time of the next scheduled fire while a
+    # ``run_timer_loop`` thread drives this timer, None otherwise. Feeds
+    # the deck's countdown readout. Excluded from equality and JSON.
+    next_fire_at: Optional[float] = field(default=None, compare=False, repr=False)
 
     def to_json(self) -> dict:
         return {
@@ -422,6 +438,9 @@ def parse_combo(combo: str) -> Optional[tuple[list, object]]:
     for m in mod_parts:
         if m not in _MOD_MAP:
             return None
+        # "ctrl+ctrl+z" is a typo, not a request to press ctrl twice.
+        if _MOD_MAP[m] in mods:
+            return None
         mods.append(_MOD_MAP[m])
     base = _KEY_ALIASES.get(base, base)
     if base in _NAMED_KEYS:
@@ -481,7 +500,7 @@ _MIN_KEY_HOLD_S = 0.045
 # Frame-gap between modifier press and base press (and base release and
 # modifier release) for combos like ctrl+x. Without it, SendInput can
 # burst both events into the same poll cycle and the game sees the base
-# key arrive before it has registered the modifier — combo lost.
+# key arrive before it has registered the modifier, combo lost.
 _MOD_GAP_MIN_S = 0.008
 _MOD_GAP_MAX_S = 0.018
 
@@ -498,7 +517,7 @@ def _hold_sleep(stop: Optional[threading.Event], seconds: float) -> None:
 
 
 def fire(
-    controller: keyboard.Controller,
+    controller: Optional[keyboard.Controller],
     combo: str,
     hold_s: float = 0.0,
     stop: Optional[threading.Event] = None,
@@ -506,7 +525,7 @@ def fire(
     """Press a parsed combo once.
 
     When ``hold_s == 0`` (default tap), the hold duration is randomized in
-    ``[50, 110] ms`` — humanlike and well above any modern game's input
+    ``[50, 110] ms``, humanlike and well above any modern game's input
     poll window. When ``hold_s > 0`` (charge/release inputs) the explicit
     duration is used, floored at ``_MIN_KEY_HOLD_S``. For combos with
     modifiers, a small randomized frame-gap separates modifier-press from
@@ -525,7 +544,7 @@ def fire(
     mods, base = parsed
 
     # Resolve everything to Win32 VK codes upfront. If any element fails
-    # to resolve, bail entirely — we never want to send half a combo.
+    # to resolve, bail entirely, we never want to send half a combo.
     base_vk = _resolve_vk(base)
     if base_vk is None:
         _log.warning(
@@ -556,11 +575,11 @@ def fire(
     base_name = str(base) if not isinstance(base, str) else f"'{base}'"
     t_press = 0.0
     t_release = 0.0
-    # NOTE: ``controller`` is accepted for back-compat with the old
-    # pynput-based signature but is not used — we now go through
-    # ``_send_scancode`` directly so the keystrokes look like hardware
-    # events (KEYEVENTF_SCANCODE), which is what Java AWT / DirectInput
-    # / RawInput games actually listen for.
+    # NOTE: ``controller`` is accepted (and may be None) for back-compat
+    # with the old pynput-based signature but is not used. Keystrokes go
+    # through the active backend so they look like hardware events
+    # (KEYEVENTF_SCANCODE or a real HID device), which is what Java AWT
+    # / DirectInput / RawInput games actually listen for.
     # Pick the active backend once per fire so a config change between
     # sends doesn't split a press from its release across two backends.
     backend = _active_backend()
@@ -623,10 +642,12 @@ def fire(
             combo, base_name, mod_names, target_window,
             type(e).__name__, e,
         )
-        # Best-effort modifier release on any failure path.
+        # Best-effort modifier release on any failure path, through the
+        # same backend that pressed them: a modifier held on the Arduino
+        # can't be released by a SendInput key-up.
         for mvk in reversed(mod_vks):
             try:
-                _send_scancode(mvk, key_up=True)
+                backend.send(mvk, key_up=True)
             except Exception:
                 pass
         return False
@@ -638,8 +659,15 @@ def run_timer_loop(
     controller: Optional[keyboard.Controller] = None,
     jitter_enabled: bool = True,
     jitter_pct: float = 0.10,
+    on_fire: Optional[Callable[[str], None]] = None,
 ) -> None:
     """Drive a single timer until ``stop`` is set.
+
+    ``timer.next_fire_at`` is stamped before every wait and cleared when
+    the loop exits, whatever the exit path, so a countdown reader never
+    sees a stale deadline from a dead thread. ``on_fire(combo)`` runs on
+    this thread after each fire; exceptions in it are swallowed so a UI
+    hook can never kill the timer.
 
     Uses ``stop.wait(secs)`` for the inter-fire delay so Stop is instant.
     Each interval is sampled fresh from ``[interval_min, interval_max]``,
@@ -649,23 +677,32 @@ def run_timer_loop(
     flags exact-periodic cadences; the default ±10% jitter breaks that
     pattern without changing the user's intended timing range.
     """
-    if controller is None:
-        controller = keyboard.Controller()
     if not timer.enabled or not timer.key:
         return
     if parse_combo(timer.key) is None:
         return
     p = max(0.0, min(0.5, float(jitter_pct))) if jitter_enabled else 0.0
-    while not stop.is_set():
-        lo = max(0.5, float(timer.interval_min))
-        hi = max(lo, float(timer.interval_max))
-        wait_s = random.uniform(lo, hi)
-        if p > 0.0:
-            wait_s *= random.uniform(1.0 - p, 1.0 + p)
-            wait_s = max(0.5, wait_s)
-        if stop.wait(wait_s):
-            return
-        fire(controller, timer.key)
+    try:
+        while not stop.is_set():
+            lo = max(0.5, float(timer.interval_min))
+            hi = max(lo, float(timer.interval_max))
+            wait_s = random.uniform(lo, hi)
+            if p > 0.0:
+                wait_s *= random.uniform(1.0 - p, 1.0 + p)
+                wait_s = max(0.5, wait_s)
+            timer.next_fire_at = time.monotonic() + wait_s
+            if stop.wait(wait_s):
+                return
+            # Pass stop through so a hold sleep is interruptible instead of
+            # falling back to time.sleep and outliving the engine.
+            fire(controller, timer.key, stop=stop)
+            if on_fire is not None:
+                try:
+                    on_fire(timer.key)
+                except Exception:
+                    pass
+    finally:
+        timer.next_fire_at = None
 
 
 def serialize_timers(timers: list[KeyTimer]) -> list[dict]:

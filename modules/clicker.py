@@ -22,7 +22,6 @@ import time
 from collections import deque
 from typing import Callable, Optional
 
-from pynput import keyboard
 from pynput.mouse import Controller
 
 from utils import dpi_cursor, humanizer, idle_wanderer, mouse_trace
@@ -30,12 +29,14 @@ from utils.fatigue import Fatigue
 from utils.logger import get_logger
 from .key_timer import KeyTimer, fire as fire_combo, parse_combo, run_timer_loop
 from .recorder import (
+    COLOR_SEARCH_SPACE_PHYSICAL,
     KIND_CLICK, KIND_KEY, KIND_PAUSE, KIND_TRACK, KIND_LOOP, KIND_COLOR,
     RecorderStep,
 )
 from .stats import Stats
 from .tracker import TemplateTracker
 from .zone_selector import Zone
+from . import zone_lock
 
 _mouse = Controller()
 
@@ -44,6 +45,11 @@ class ClickerState:
     IDLE = "idle"
     STARTING = "starting"
     ACTIVE = "active"
+    # Engine thread is alive but holding between actions (HOLD button /
+    # pause hotkey). Reported through on_state_change like the others;
+    # ``Clicker.is_paused()`` is the flag form for callers that only
+    # care about running-vs-not.
+    PAUSED = "paused"
 
 
 _TRANSIENT_ERRORS: tuple = (OSError,)
@@ -56,7 +62,7 @@ try:
     import cv2 as _cv2_for_err
     # cv2.error inherits from Exception, not OSError, so we add it
     # explicitly. Transient cv2 errors typically come from a bad screen
-    # grab feeding matchTemplate — recoverable on the next cycle.
+    # grab feeding matchTemplate, recoverable on the next cycle.
     _TRANSIENT_ERRORS = _TRANSIENT_ERRORS + (_cv2_for_err.error,)
 except Exception:
     pass
@@ -66,7 +72,7 @@ class ClickerPhase:
     """Fine-grained activity tracking surfaced live to the UI.
 
     ClickerState says "is the engine running"; ClickerPhase says "what is
-    it doing right now" — moving, clicking, hovering, on a break, waiting
+    it doing right now", moving, clicking, hovering, on a break, waiting
     for a tracked target to reappear, etc. Without this the user can't
     tell whether a 30-second pause is a scheduled break, a long pause
     step, or a stalled track step. Strings (not Enum) so JSON traces and
@@ -94,7 +100,7 @@ class Clicker:
     def __init__(self, stats: Stats, on_state_change: Optional[Callable[[str], None]] = None):
         self.stats = stats
         self.on_state_change = on_state_change
-        # Live activity indicator — see ClickerPhase. The UI polls
+        # Live activity indicator, see ClickerPhase. The UI polls
         # current_phase / phase_label / phase_remaining each tick. We use
         # plain string fields (no callback fan-out) because the Status
         # card already polls every 100 ms; pushing on-change adds thread
@@ -120,6 +126,12 @@ class Clicker:
         self.on_track_error: Optional[Callable[[str, str], None]] = None
         self.on_session_complete: Optional[Callable[[str], None]] = None
         self.on_engine_halt: Optional[Callable[[str, str], None]] = None
+        # `on_event(kind, text)` is the deck's event log feed: START, STOP,
+        # HOLD, RESUME, TARGET LOST / MINIMIZED / REACQUIRED, BREAK,
+        # WANDER, DISTRACTION, STEP, KEY, WATCHDOG. Text is short and
+        # upper-case so it sits in a mono column ("BREAK 8.2 S"). Called
+        # from whichever thread produced the event; the UI marshals.
+        self.on_event: Optional[Callable[[str, str], None]] = None
         self.log = get_logger()
 
         # Live config (mutable from GUI thread).
@@ -154,13 +166,11 @@ class Clicker:
         # screen" for ambient features. Pushed by the bridge from
         # App.target_screen_bounds(), which resolves cfg["target_monitor"].
         # Defaults to a sentinel that means "use primary monitor via
-        # GetSystemMetrics" — so legacy / pre-bridge callers behave as
+        # GetSystemMetrics", so legacy / pre-bridge callers behave as
         # they did before the multi-monitor selector existed.
         self.target_screen_bounds: tuple[int, int, int, int] = (0, 0, 0, 0)
 
         # Hover zones: periodically moves cursor into one and dwells, no click.
-        # Backward-compat single zone retained but multi-zone list takes priority.
-        self.hover_zone = None
         self.hover_zones: list[Zone] = []
         self.hover_selection: str = "random"   # "random" | "order"
         self.hover_enabled: bool = True
@@ -201,12 +211,21 @@ class Clicker:
         self._step_target_present: dict[str, bool] = {}
         # Last successful click position per KIND_COLOR step. Used by
         # _find_color_target to prefer the matching pixel closest to
-        # the prior click — stabilizes click position on buttons with
+        # the prior click, stabilizes click position on buttons with
         # antialiased edges / hover glows where many pixels match the
         # picked color. Without this anchor, the engine would pick a
         # random match per cycle and clicks would scatter across the
         # match cluster instead of settling on a consistent center.
         self._color_last_click_pos: dict[str, tuple[int, int]] = {}
+
+        # Window-lock state. ``target_lost`` is True while the engine is
+        # holding because a locked zone's window is gone or minimized;
+        # ``_target_status`` is what ``target_status()`` hands the UI.
+        # The hwnd cache belongs to the engine thread alone.
+        self.target_lost: bool = False
+        self._target_status: tuple[str, Optional[str]] = (zone_lock.STATUS_SCREEN, None)
+        self._lock_cache: dict = {}
+        self._hold_announced: Optional[str] = None
 
         # Single dial that all four "human realism" features read from. The
         # GUI's Realism slider pushes this directly so the engine doesn't have
@@ -226,13 +245,26 @@ class Clicker:
         # one is allowed. Sampled fresh each fire so the cadence is
         # irregular (real human idle isn't periodic). Initial 0 means
         # the first jitter can fire as soon as its probability gate
-        # passes — no startup suppression.
+        # passes, no startup suppression.
         self._last_micro_jitter_at: float = 0.0
         self._next_micro_jitter_min_gap: float = 0.0
         self._thread: Optional[threading.Thread] = None
         self._stop: threading.Event = threading.Event()
         self._watchdog_stop: threading.Event = threading.Event()
         self._watchdog_thread: Optional[threading.Thread] = None
+        # Corner emergency stop. Off means the watchdog thread is never
+        # started, so a user whose zone sits in a screen corner can opt
+        # out instead of fighting false triggers. Pushed from
+        # cfg["corner_abort_enabled"] by the bridge.
+        self.corner_abort_enabled: bool = True
+        # Pause ("HOLD"). ``_paused`` is read by ``_wait`` on the engine
+        # thread; pause()/resume() flip it from the UI or hotkey thread
+        # under ``_pause_lock``. ``_paused_at`` freezes the countdown the
+        # UI shows and ``_pre_pause_state`` is what resume() restores.
+        self._paused: threading.Event = threading.Event()
+        self._pause_lock = threading.Lock()
+        self._paused_at: float = 0.0
+        self._pre_pause_state: str = ClickerState.ACTIVE
         self._next_click_at: float = 0.0
         self._prestart_ends_at: float = 0.0
         self._recent: deque[tuple[int, int]] = deque(maxlen=10)
@@ -250,7 +282,7 @@ class Clicker:
         # user can see "running 6h, recovered from 2 transient errors"
         # without digging through logs.
         self._recovery_count: int = 0
-        # Click diagnostics — the gap between attempted and fired
+        # Click diagnostics, the gap between attempted and fired
         # ("how many cycles set up to click but didn't") tells a user
         # reporting "missing 2nd click" whether the click was rejected
         # by a recheck (track moved, color vanished, weak match) or
@@ -260,7 +292,7 @@ class Clicker:
         # cleanly. The delta = aborted-by-recheck cycles.
         self._clicks_attempted: int = 0
         self._cycles_aborted: int = 0
-        # Per-click drift accounting — distance between the intended
+        # Per-click drift accounting, distance between the intended
         # target and where the cursor actually was when the press
         # fired. When this is > a few px, something is moving the
         # cursor between humanizer.move() and humanizer.click()
@@ -270,13 +302,22 @@ class Clicker:
         self._click_drift_total_px: float = 0.0
         self._click_drift_max_px: float = 0.0
         # Persistent mss handle for color-step scans. Created lazily on the
-        # engine thread (mss instances aren't thread-safe), torn down in
-        # stop(). Reusing one across cycles avoids per-call DC handshake.
+        # engine thread and closed only by that thread's teardown, because
+        # mss instances aren't thread-safe. Reusing one across cycles
+        # avoids the per-call DC handshake.
         self._mss_engine = None
-        # Lazy keyboard controller for KIND_KEY steps. Created on first use
-        # (engine thread) and reused for the rest of the session — pynput
-        # Controllers are cheap but no point re-allocating per fire.
-        self._key_controller: Optional[keyboard.Controller] = None
+        # Session generation counter. Every start() bumps it; the engine
+        # thread's teardown checks it so a slow exit from a previous run
+        # can never tear down the session that replaced it.
+        self._session_id: int = 0
+        self._teardown_done_for: int = 0
+        # Built once per start() so the transient-error recovery loop in
+        # _run() can re-enter _run_inner without resetting the break
+        # schedule or the fatigue clock mid-session.
+        self._fatigue: Optional[Fatigue] = None
+        # Cooldown for non-transient color-scan failures so a persistent
+        # bug logs once every 30 s instead of once per cycle.
+        self._color_error_last_log_at: float = 0.0
 
         # Passive concurrent keypresses ("press Z every 6 min for the
         # potion macro"). Each enabled timer gets its own daemon thread
@@ -285,13 +326,13 @@ class Clicker:
         # (KeyTimer, Thread) pairs so the health watchdog can identify
         # dead timers and respawn them with the original config.
         self._key_timer_threads: list[tuple[KeyTimer, threading.Thread]] = []
-        # Throttle for the timer health check — runs at most every 30 s so
+        # Throttle for the timer health check, runs at most every 30 s so
         # it doesn't add noticeable overhead per cycle.
         self._last_timer_health_check: float = 0.0
         # Global jitter toggle for key timers. When enabled (default), each
         # timer's wait is multiplied by a small random factor so equal
         # min/max values don't produce exact-periodic fires (which RS-style
-        # bot detection flags). The percentage is hardcoded at 10% — a
+        # bot detection flags). The percentage is hardcoded at 10%, a
         # sensible default that doesn't drift the user's intended timing
         # noticeably while breaking the periodic signature.
         self.key_timer_jitter_enabled: bool = True
@@ -314,15 +355,183 @@ class Clicker:
         return self._state
 
     def seconds_until_next(self) -> float:
-        if self._state == ClickerState.STARTING:
-            return max(0.0, self._prestart_ends_at - time.monotonic())
-        if self._state == ClickerState.ACTIVE:
-            return max(0.0, self._next_click_at - time.monotonic())
+        # While paused the clock reads as of the moment the hold began, so
+        # the NEXT dial freezes instead of counting down to zero and
+        # sitting there. resume() pushes the deadlines forward by the
+        # held time, which is why this does not drift.
+        state = self._state
+        paused = self._paused.is_set()
+        if paused and state == ClickerState.PAUSED:
+            state = self._pre_pause_state
+        now = self._paused_at if paused else time.monotonic()
+        if state == ClickerState.STARTING:
+            return max(0.0, self._prestart_ends_at - now)
+        if state == ClickerState.ACTIVE:
+            return max(0.0, self._next_click_at - now)
         return 0.0
+
+    # -- pause / resume -----------------------------------------------------
+
+    def is_paused(self) -> bool:
+        return self._paused.is_set()
+
+    def pause(self) -> None:
+        """Hold the engine at its next wait. Nothing moves and nothing is
+        clicked until resume(); key timers and the corner watchdog keep
+        running. No-op when idle or already paused."""
+        with self._pause_lock:
+            if self._state == ClickerState.IDLE or self._paused.is_set():
+                return
+            self._paused_at = time.monotonic()
+            self._paused.set()
+            # _set_state maps STARTING / ACTIVE to PAUSED while the flag is
+            # up and remembers the underlying state for resume().
+            self._set_state(self._state)
+        self.log.info("engine_pause clicks=%d", self._session_clicks)
+        self._emit_event("HOLD", "HOLD")
+
+    def resume(self) -> None:
+        """Release a pause. The held time is added to every UI deadline so
+        the countdown picks up where it stopped."""
+        with self._pause_lock:
+            if not self._paused.is_set():
+                return
+            held = max(0.0, time.monotonic() - self._paused_at)
+            self._next_click_at += held
+            self._prestart_ends_at += held
+            if self._phase_until > 0:
+                self._phase_until += held
+            self._paused.clear()
+            if self._state == ClickerState.PAUSED:
+                self._set_state(self._pre_pause_state)
+        self.log.info("engine_resume held=%.1fs", held)
+        self._emit_event("RESUME", f"RESUME {held:.1f} S")
+
+    def toggle_pause(self) -> bool:
+        """Flip pause state. Returns the new ``is_paused()`` value."""
+        if self._paused.is_set():
+            self.resume()
+        else:
+            self.pause()
+        return self._paused.is_set()
+
+    def _wait(self, seconds: float) -> bool:
+        """The engine's one sleep primitive. Returns True when Stop was set.
+
+        Sleeps in 100 ms slices of ``self._stop.wait`` so Stop still
+        breaks out instantly, and checks the pause flag between slices.
+        A pause does not consume the schedule: the deadline moves forward
+        by exactly the held time, so a 6 s wait paused for a minute still
+        has the same seconds left when it resumes. ``_wait(0)`` is a pure
+        pause gate, used right before a move so a hold requested during
+        the previous wait cannot slip a click through.
+        """
+        deadline = time.monotonic() + max(0.0, float(seconds))
+        while True:
+            if self._stop.is_set():
+                return True
+            if self._paused.is_set():
+                held_from = time.monotonic()
+                while self._paused.is_set():
+                    if self._stop.wait(0.05):
+                        return True
+                deadline += time.monotonic() - held_from
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            if self._stop.wait(min(remaining, 0.1)):
+                return True
+
+    # -- deck telemetry -----------------------------------------------------
+
+    def _emit_event(self, kind: str, text: str) -> None:
+        cb = self.on_event
+        if cb is None:
+            return
+        try:
+            cb(kind, text)
+        except Exception:
+            pass
+
+    def _delay_is_uniform(self) -> bool:
+        """The single branch both ``_human_delay`` and ``delay_curve`` read,
+        so the readout can never disagree with the sampler."""
+        return max(0.0, min(1.0, self.realism)) < 0.05
+
+    def delay_curve(self) -> str:
+        """``"uniform"`` or ``"log-normal"``: which distribution the next
+        inter-click delay will be drawn from at the current realism."""
+        return "uniform" if self._delay_is_uniform() else "log-normal"
+
+    def corner_abort_armed(self) -> bool:
+        """True only while the corner watchdog thread is alive and the
+        feature is switched on, i.e. a corner would actually stop us."""
+        th = self._watchdog_thread
+        return bool(self.corner_abort_enabled and th is not None and th.is_alive())
+
+    def key_timer_countdowns(self) -> list[tuple[str, float]]:
+        """``(combo, seconds_remaining)`` for every key timer thread that is
+        alive and has scheduled its next fire. Plain attribute reads, safe
+        from the UI thread."""
+        now = time.monotonic()
+        out: list[tuple[str, float]] = []
+        for t, th in list(self._key_timer_threads):
+            if not th.is_alive():
+                continue
+            at = t.next_fire_at
+            if at is None:
+                continue
+            out.append((t.key, max(0.0, at - now)))
+        return out
+
+    def tracker_confidence(self) -> Optional[float]:
+        """Last template-match score (0..1) for the current Track step, or
+        None when the current step is not a Track step or the tracker has
+        no template loaded."""
+        if self.mode != "recorder" or self.tracker is None:
+            return None
+        if not (0 <= self._step_idx < len(self.recorder_steps)):
+            return None
+        if self.recorder_steps[self._step_idx].kind != KIND_TRACK:
+            return None
+        try:
+            if not self.tracker.has_template():
+                return None
+            score = float(self.tracker.snapshot_state().last_score)
+        except Exception:
+            return None
+        return max(0.0, min(1.0, score))
+
+    def target_status(self) -> tuple[str, Optional[str]]:
+        """``(status, window_title)`` of the zone the engine last resolved.
+
+        ``status`` is one of zone_lock's ``screen`` / ``locked`` / ``lost``
+        / ``minimized``. Plain tuple read so the UI can poll it from its
+        tick without touching the engine thread.
+        """
+        return self._target_status
+
+    # How long stop() waits for the engine thread to unwind. Every wait in
+    # the engine goes through Event.wait so a healthy thread exits within
+    # a few tens of ms; the cap only matters if a screen grab is wedged.
+    _STOP_JOIN_TIMEOUT_S: float = 2.0
 
     def start(self) -> None:
         if self._state != ClickerState.IDLE:
             return
+        prev = self._thread
+        if prev is not None and prev.is_alive():
+            # The previous run is still unwinding. Give it a moment, then
+            # refuse rather than let two engine threads share one state.
+            prev.join(timeout=1.0)
+            if prev.is_alive():
+                self._announce_engine_halt(
+                    "Engine is still shutting down from the last run. "
+                    "Wait a second and try again.",
+                    "warn",
+                )
+                return
         # Mode-aware safety: clicker needs a zone; recorder needs at least
         # one CLICK or TRACK step that's actually usable (zone or template).
         if self.mode == "recorder":
@@ -332,11 +541,11 @@ class Clicker:
                 or (s.kind == KIND_COLOR and s.color_target_rgb is not None)
                 or (s.kind == KIND_KEY and s.key_combo
                     and parse_combo(s.key_combo) is not None)
-                for s in self.recorder_steps
+                for s in self.recorder_steps if s.enabled
             )
             if not has_runnable_step:
                 self._announce_engine_halt(
-                    "Sequence has no runnable steps — capture a target, "
+                    "Sequence has no runnable steps, capture a target, "
                     "pick a click area, or pick a color, then try again.",
                     "warn",
                 )
@@ -344,12 +553,13 @@ class Clicker:
         else:
             if self.zone is None:
                 self._announce_engine_halt(
-                    "Click mode has no zone — draw one in the Click Zone "
+                    "Click mode has no zone, draw one in the Click Zone "
                     "card before starting.",
                     "warn",
                 )
                 return
         self._stop.clear()
+        self._paused.clear()
         # Push the active monitor rect into humanizer so every walked +
         # planned cursor position stays clear of the watchdog's 2-px
         # corner zone. Re-pushed per watchdog tick so monitor changes
@@ -383,17 +593,20 @@ class Clicker:
         self._step_target_present = {}
         self._color_last_click_pos = {}
         self.stats.reset()
+        self._fatigue = Fatigue(
+            enabled=self.fatigue_enabled,
+            break_bursts=self.break_bursts_enabled,
+            intensity=self.fatigue_intensity,
+            break_min_clicks=self.break_min_clicks,
+            break_max_clicks=self.break_max_clicks,
+            break_min_duration=self.break_min_duration,
+            break_max_duration=self.break_max_duration,
+        )
         # Pick + push the active key backend so the very first KIND_KEY
         # step (and any concurrent key timers) use the configured path.
         # Logged below so a post-mortem of any session shows whether
         # SendInput / Interception / Serial HID was active.
-        from . import key_input_backend
-        from . import key_timer
-        key_backend = key_input_backend.get_backend(
-            self.key_input_method,
-            serial_port=getattr(self, "serial_hid_port", "") or "",
-        )
-        key_timer.set_backend(key_backend)
+        key_backend = self._acquire_key_backend()
         mouse_trace.event(
             "engine_start",
             mode=self.mode,
@@ -403,7 +616,7 @@ class Clicker:
         )
         # Structured log so a session post-mortem can see the exact step
         # list the engine was given. Critical for debugging "step skipped"
-        # reports — proves whether key_combo / template_path / etc. arrived.
+        # reports, proves whether key_combo / template_path / etc. arrived.
         self.log.info(
             "engine_start mode=%s steps=%d realism=%.2f key_method=%s key_backend=%s%s",
             self.mode, len(self.recorder_steps), self.realism,
@@ -422,19 +635,61 @@ class Clicker:
                     s.template_path if s.kind == KIND_TRACK else None,
                     s.color_target_rgb if s.kind == KIND_COLOR else None,
                 )
+        self._session_id += 1
+        self.target_lost = False
+        self._target_status = (zone_lock.STATUS_SCREEN, None)
+        self._lock_cache = {}
+        self._hold_announced = None
         self._set_state(ClickerState.STARTING)
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread = threading.Thread(
+            target=self._run, args=(self._session_id,), daemon=True,
+        )
         self._thread.start()
-        self._start_watchdog()
+        if self.corner_abort_enabled:
+            self._start_watchdog()
+        else:
+            self._watchdog_thread = None
+            self.log.info("corner watchdog disabled by config")
         self._start_key_timers()
+        self._emit_event("START", f"START {self.mode.upper()}")
         # Tracker loop is owned by the App (so the user gets a live preview
         # overlay even while idle); we just read tracker.state in _tracker_zone().
+
+    def _acquire_key_backend(self):
+        """Resolve the configured keyboard backend and make it the one
+        ``key_timer.fire`` uses. Shared by start(), the per-step Test
+        button, and key_backend_status() so every path goes through the
+        same port-cached acquisition and the Arduino's COM port is
+        opened at most once."""
+        from . import key_input_backend
+        from . import key_timer
+        backend = key_input_backend.get_backend(
+            self.key_input_method,
+            serial_port=getattr(self, "serial_hid_port", "") or "",
+        )
+        key_timer.set_backend(backend)
+        return backend
+
+    def key_backend_status(self) -> tuple[bool, str]:
+        """``(available, message)`` for the configured key backend.
+
+        The UI calls this before start so a Serial HID session with an
+        unplugged board is refused up front instead of failing on the
+        first KEY step. Cheap to call repeatedly: the serial backend is
+        cached per COM port, so no reopen happens on each poll."""
+        from . import key_input_backend
+        try:
+            backend = self._acquire_key_backend()
+        except Exception as e:
+            return (False, f"Key backend failed to initialize: "
+                           f"{type(e).__name__}: {e}")
+        return key_input_backend.status(backend)
 
     def _start_key_timers(self) -> None:
         """Spawn one daemon thread per enabled, parseable key timer.
         Each thread fires the configured combo on its own clock until
         ``self._stop`` is set. Safe to call when ``self.key_timers`` is
-        empty — it's a no-op."""
+        empty, it's a no-op."""
         self._key_timer_threads = []
         if not self.key_timers:
             return
@@ -444,11 +699,20 @@ class Clicker:
             KeyTimer(
                 key=t.key, interval_min=t.interval_min,
                 interval_max=t.interval_max, enabled=t.enabled,
+                interval_unit=getattr(t, "interval_unit", "min"),
             )
             for t in self.key_timers
         ]
         for t in timers_snapshot:
             if not t.enabled or not t.key:
+                continue
+            if parse_combo(t.key) is None:
+                # run_timer_loop would exit immediately on this combo and
+                # the health check would then respawn it every 30 s.
+                self.log.warning(
+                    "key timer combo=%r not recognized; timer skipped "
+                    "for this session", t.key,
+                )
                 continue
             th = self._spawn_one_timer_thread(t)
             self._key_timer_threads.append((t, th))
@@ -464,11 +728,16 @@ class Clicker:
             kwargs={
                 "jitter_enabled": bool(self.key_timer_jitter_enabled),
                 "jitter_pct": 0.10,
+                "on_fire": self._on_key_timer_fired,
             },
             daemon=True,
         )
         th.start()
         return th
+
+    def _on_key_timer_fired(self, combo: str) -> None:
+        """Timer-thread hook: feed the deck's event log."""
+        self._emit_event("KEY", f"KEY {str(combo).upper()}")
 
     def _check_key_timer_health(self) -> None:
         """Walk the timer-thread list and respawn any that have died.
@@ -531,7 +800,7 @@ class Clicker:
         if step.kind in (KIND_PAUSE, KIND_LOOP, KIND_KEY):
             return (0, 0)
         total = max(1, int(step.click_count))
-        # Show the click that's about to fire (or just fired) — clamp to total.
+        # Show the click that's about to fire (or just fired), clamp to total.
         cur = min(total, self._step_clicks_done + 1)
         return (cur, total)
 
@@ -540,17 +809,27 @@ class Clicker:
             return
         mouse_trace.event("engine_stop", clicks=self._session_clicks)
         self._stop.set()
+        self._paused.clear()
         self._watchdog_stop.set()
-        if self._mss_engine is not None:
-            try:
-                self._mss_engine.close()
-            except Exception:
-                pass
-            self._mss_engine = None
-        # Key timer threads honor self._stop and exit on their own; just
-        # drop the references so the next start() begins clean.
-        self._key_timer_threads = []
-        self._set_state(ClickerState.IDLE)
+        # Teardown (mss handle, key release, state flip) belongs to the
+        # engine thread's finally block. Wait for it here so the caller
+        # sees IDLE on return and a fast restart can't overlap the old
+        # thread's exit. Never join from the engine thread itself: a stop
+        # requested from inside a cycle just falls through to its own
+        # finally.
+        th = self._thread
+        if (th is not None and th.is_alive()
+                and th is not threading.current_thread()):
+            th.join(timeout=self._STOP_JOIN_TIMEOUT_S)
+            if th.is_alive():
+                # Something (most likely a screen grab) is wedged. Flip
+                # the UI to idle so the user isn't stuck; the thread's
+                # own teardown still runs when it finally unblocks.
+                self.log.warning(
+                    "engine thread did not exit within %.1fs of stop()",
+                    self._STOP_JOIN_TIMEOUT_S,
+                )
+                self._set_state(ClickerState.IDLE)
 
     def toggle(self) -> None:
         if self._state == ClickerState.IDLE:
@@ -566,7 +845,7 @@ class Clicker:
         combo through the same code path the running engine uses, so a
         Test press through Serial HID actually exercises the Arduino.
 
-        ``delay_s`` defers the fire by N seconds — used by the Key Test
+        ``delay_s`` defers the fire by N seconds, used by the Key Test
         button so the user can alt-tab to the target window (e.g.
         RuneScape) before the keystroke lands. Click Test runs with
         no delay because the cursor visibly moves to the zone, which
@@ -594,7 +873,7 @@ class Clicker:
         return True
 
     def _fire_step_once_worker(self, step: RecorderStep, delay_s: float = 0.0) -> None:
-        # One-shot, so the stop event is local — Test never waits long enough
+        # One-shot, so the stop event is local, Test never waits long enough
         # to need user-cancel, and we don't want it to honor the engine's
         # main stop event since that's about loop-level state.
         stop = threading.Event()
@@ -623,17 +902,9 @@ class Clicker:
                 # through the same path the running engine would. We
                 # re-resolve every call so a UI backend change between
                 # tests takes effect without an engine restart.
-                from . import key_input_backend
-                from . import key_timer
-                backend = key_input_backend.get_backend(
-                    self.key_input_method,
-                    serial_port=getattr(self, "serial_hid_port", "") or "",
-                )
-                key_timer.set_backend(backend)
-                if self._key_controller is None:
-                    self._key_controller = keyboard.Controller()
+                self._acquire_key_backend()
                 fire_combo(
-                    self._key_controller,
+                    None,
                     step.key_combo,
                     hold_s=max(0.0, float(step.key_hold_s)),
                     stop=stop,
@@ -660,6 +931,10 @@ class Clicker:
         false-trigger.
         """
         while not self._watchdog_stop.wait(0.05):
+            if not self.corner_abort_enabled:
+                # Switched off mid-run: keep the thread alive (so a switch
+                # back on re-arms without a restart) but never trip.
+                continue
             bx, by, sw, sh = self._resolve_screen_bounds()
             if sw <= 0 or sh <= 0:
                 continue
@@ -669,7 +944,7 @@ class Clicker:
             try:
                 # _mouse.position is physical px (pynput uses GetCursorPos
                 # which returns physical when the process is per-monitor-v2
-                # DPI aware — see main._enable_dpi_awareness). The bounds
+                # DPI aware, see main._enable_dpi_awareness). The bounds
                 # above are DIPs from _resolve_screen_bounds(), so convert
                 # cursor pos to DIPs before comparing or the corner-stop
                 # mis-fires on non-100%-scaled monitors.
@@ -694,8 +969,10 @@ class Clicker:
                     "(emergency stop).",
                     "info",
                 )
+                self._emit_event("WATCHDOG", "WATCHDOG CORNER")
+                # Signal only. The engine thread owns teardown and flips
+                # the state itself once it unwinds.
                 self._stop.set()
-                self._set_state(ClickerState.IDLE)
                 return
 
     # -- internal: main loop ------------------------------------------------
@@ -743,8 +1020,8 @@ class Clicker:
         """Update the live activity indicator. ``label`` is a one-liner
         the Status card displays verbatim ("Hover visit · zone 2",
         "On break", "Searching for target"); ``duration`` is the
-        expected duration in seconds, used to compute "X s left" — set
-        to 0 when unknown (e.g. moving / clicking — too brief to bother).
+        expected duration in seconds, used to compute "X s left", set
+        to 0 when unknown (e.g. moving / clicking, too brief to bother).
 
         Called from the engine thread; the UI polls the property values
         on its own cadence so there's no cross-thread Qt risk.
@@ -784,7 +1061,7 @@ class Clicker:
     @property
     def clicks_attempted(self) -> int:
         """Cycles that set up to fire a click this session. The gap
-        between this and ``_session_clicks`` is ``cycles_aborted`` —
+        between this and ``_session_clicks`` is ``cycles_aborted`` , 
         rechecks that bailed before the click went out."""
         return self._clicks_attempted
 
@@ -817,6 +1094,13 @@ class Clicker:
         return self._click_drift_max_px
 
     def _set_state(self, state: str) -> None:
+        if state in (ClickerState.STARTING, ClickerState.ACTIVE) and self._paused.is_set():
+            # A hold is in force: remember what the engine is really doing
+            # and report PAUSED, whichever thread asked. Covers the race
+            # where the engine flips STARTING to ACTIVE just as the user
+            # presses HOLD.
+            self._pre_pause_state = state
+            state = ClickerState.PAUSED
         self._state = state
         # Keep the phase coherent with the high-level state so the UI
         # never shows e.g. "Hovering" while the engine is back at IDLE
@@ -835,34 +1119,94 @@ class Clicker:
     # Tunables for the engine resilience loop. Transient errors (mss
     # screen-grab failure during screen lock, momentary cv2 hiccup, OS
     # I/O blip) get up to MAX_RECOVERIES retries with exponential backoff
-    # capped at MAX_BACKOFF_S. Past that we give up — repeated failures
+    # capped at MAX_BACKOFF_S. Past that we give up, repeated failures
     # at this rate are no longer "transient." Resets after any successful
     # cycle (tracked inside _run_inner via _record_successful_tick).
     _MAX_RECOVERIES: int = 5
     _RECOVERY_BASE_BACKOFF_S: float = 1.0
     _MAX_BACKOFF_S: float = 30.0
 
-    def _run(self) -> None:
-        """Top-level engine loop with transient-error resilience.
+    def _run(self, session_id: int) -> None:
+        """Engine thread entry. Wraps the retry loop so teardown runs
+        exactly once per session, whatever path the loop exits by."""
+        try:
+            self._run_resilient()
+        finally:
+            self._teardown(session_id)
+
+    def _teardown(self, session_id: int) -> None:
+        """Single exit path for a session: log the summary, release
+        keys, drop the engine's mss handle, flip to IDLE. Idempotent per
+        session and a no-op for any session that has since been
+        superseded, so a late exit can't touch a newer run."""
+        if session_id != self._session_id or self._teardown_done_for == session_id:
+            return
+        self._teardown_done_for = session_id
+        # Summary line pairs with engine_start so a shared log has totals
+        # at a glance. Lives here so crash and clean exits both get one.
+        try:
+            uptime = (max(0.0, time.monotonic() - self._session_start)
+                      if self._session_start > 0 else 0.0)
+            mean_drift = (self._click_drift_total_px / self._session_clicks
+                          if self._session_clicks > 0 else 0.0)
+            self.log.info(
+                "engine_stop mode=%s clicks=%d attempted=%d aborted=%d "
+                "drift_mean=%.2fpx drift_max=%.1fpx drifted_gt2=%d "
+                "recoveries=%d uptime=%.1fs",
+                self.mode, self._session_clicks, self._clicks_attempted,
+                self._cycles_aborted, mean_drift, self._click_drift_max_px,
+                self._clicks_with_drift, self._recovery_count, uptime,
+            )
+        except Exception:
+            self.log.debug("engine_stop summary log failed", exc_info=True)
+        # Key timers only honor _stop, so set it here too for exits that
+        # came from inside the loop (session complete, crash) rather than
+        # from stop().
+        self._stop.set()
+        self._paused.clear()
+        self._watchdog_stop.set()
+        self._active_track_step_id = None
+        self.target_lost = False
+        self._target_status = (zone_lock.STATUS_SCREEN, None)
+        if self._mss_engine is not None:
+            try:
+                self._mss_engine.close()
+            except Exception:
+                pass
+            self._mss_engine = None
+        self._key_timer_threads = []
+        # A KEY step or key timer interrupted mid-combo can leave a
+        # modifier held on the Arduino. The firmware's release-all is the
+        # only thing that clears it, so send it on every exit.
+        try:
+            from . import key_input_backend, key_timer
+            key_input_backend.release_all(key_timer._active_backend())
+        except Exception:
+            pass
+        self._set_state(ClickerState.IDLE)
+        self._emit_event("STOP", f"STOP {self._session_clicks} CLICKS")
+
+    def _run_resilient(self) -> None:
+        """Retry loop around _run_inner with exponential backoff.
 
         For 8-10 hour unattended sessions, a single mss.ScreenShotError
         (e.g. user RDP-disconnected or locked the screen briefly) used
         to kill the entire engine. Now we catch a known set of transient
         errors and retry with exponential backoff before halting. Logic
-        errors (NameError, TypeError, etc.) still kill the engine —
+        errors (NameError, TypeError, etc.) still kill the engine , 
         retrying a bug is pointless.
         """
         consecutive_failures = 0
         # Snapshot click count so we can tell whether _run_inner made any
         # forward progress between failures. If yes, reset the consecutive
-        # counter — otherwise the engine could give up on a long, healthy
+        # counter, otherwise the engine could give up on a long, healthy
         # run just because errors clustered far apart.
         clicks_at_last_failure = self._session_clicks
         while not self._stop.is_set():
             try:
                 self._run_inner()
                 # Inner returned cleanly (stop was requested or session
-                # complete fired). Don't retry — exit the resilience loop.
+                # complete fired). Don't retry, exit the resilience loop.
                 return
             except _TRANSIENT_ERRORS as e:
                 if self._session_clicks > clicks_at_last_failure:
@@ -884,8 +1228,6 @@ class Clicker:
                         "Check screen access / display state.",
                         "error",
                     )
-                    self._stop.set()
-                    self._set_state(ClickerState.IDLE)
                     return
                 # Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s (cap).
                 backoff = min(
@@ -910,39 +1252,40 @@ class Clicker:
                         self.tracker.close()
                     except Exception:
                         pass
-                if self._stop.wait(backoff):
+                if self._wait(backoff):
                     return
-                # Loop continues — _run_inner picks up where state allows
+                # Loop continues, _run_inner picks up where state allows
                 # (step index, click counters preserved on the instance).
             except Exception as e:
                 # Non-transient: bug in our code or misconfiguration.
-                # Surface and stop — no point in retrying.
+                # Surface and stop, no point in retrying.
                 self.log.exception("engine loop crashed")
                 self._announce_engine_halt(
                     f"Engine crashed: {type(e).__name__}: {e}",
                     "error",
                 )
-                self._stop.set()
-                self._set_state(ClickerState.IDLE)
                 return
 
     _STUCK_TOAST_AFTER_S: float = 10.0
 
     def _run_inner(self) -> None:
-        fatigue = Fatigue(
-            enabled=self.fatigue_enabled,
-            break_bursts=self.break_bursts_enabled,
-            intensity=self.fatigue_intensity,
-            break_min_clicks=self.break_min_clicks,
-            break_max_clicks=self.break_max_clicks,
-            break_min_duration=self.break_min_duration,
-            break_max_duration=self.break_max_duration,
-        )
+        # Fatigue is built in start() and survives recovery re-entry so
+        # the break schedule isn't reset every time a screen grab hiccups.
+        fatigue = self._fatigue
+        if fatigue is None:
+            fatigue = self._fatigue = Fatigue(
+                enabled=self.fatigue_enabled,
+                break_bursts=self.break_bursts_enabled,
+                intensity=self.fatigue_intensity,
+                break_min_clicks=self.break_min_clicks,
+                break_max_clicks=self.break_max_clicks,
+                break_min_duration=self.break_min_duration,
+                break_max_duration=self.break_max_duration,
+            )
 
         # -- pre-start grace period --
         self._prestart_ends_at = time.monotonic() + self.prestart_delay
-        if self._stop.wait(self.prestart_delay):
-            self._set_state(ClickerState.IDLE)
+        if self._wait(self.prestart_delay):
             return
         self._set_state(ClickerState.ACTIVE)
 
@@ -970,19 +1313,19 @@ class Clicker:
                 step = self._peek_recorder_step()
                 if step is None:
                     self._announce_engine_halt(
-                        "Sequence has no usable steps — every step is "
+                        "Sequence has no usable steps, every step is "
                         "missing required data (zone / template / color).",
                         "warn",
                     )
                     break
-                # Pause steps fire no click — just wait (with cursor wander)
+                # Pause steps fire no click, just wait (with cursor wander)
                 # then advance. Returns to the top of the loop.
                 if step.kind == KIND_PAUSE:
                     pause_dur = self._human_delay(step.delay_min, step.delay_max)
                     self._next_click_at = time.monotonic() + pause_dur
                     self._set_phase(
                         ClickerPhase.PAUSING,
-                        f"{self._step_phase_prefix()} — pausing",
+                        f"{self._step_phase_prefix()}, pausing",
                         pause_dur,
                     )
                     if self._wait_with_wander(
@@ -992,20 +1335,18 @@ class Clicker:
                     self._advance_recorder_step("pause_complete")
                     continue
                 if step.kind == KIND_KEY:
-                    # Keyboard step — fire ``key_repeat`` presses of ``key_combo``,
+                    # Keyboard step, fire ``key_repeat`` presses of ``key_combo``,
                     # then wait the per-step delay before advancing. The cursor
                     # still wanders during the wait so the engine doesn't freeze
                     # mid-macro. Each keypress can hold for ``key_hold_s`` (0 =
                     # ordinary tap); the hold is interruptible via ``self._stop``.
-                    if self._key_controller is None:
-                        self._key_controller = keyboard.Controller()
                     repeats = max(1, int(step.key_repeat))
-                    # Phase tag so the topbar shows "Step N · KEY — pressing
-                    # 'ctrl+x' (1/3)" — without this, KEY steps look identical
+                    # Phase tag so the topbar shows "Step N · KEY, pressing
+                    # 'ctrl+x' (1/3)", without this, KEY steps look identical
                     # to silent skips since the phase indicator never updated.
                     self._set_phase(
                         ClickerPhase.KEYPRESS,
-                        f"{self._step_phase_prefix()} — pressing {step.key_combo!r}"
+                        f"{self._step_phase_prefix()}, pressing {step.key_combo!r}"
                         + (f" ×{repeats}" if repeats > 1 else ""),
                     )
                     self.log.info(
@@ -1014,10 +1355,10 @@ class Clicker:
                         float(step.key_hold_s),
                     )
                     for i in range(repeats):
-                        if self._stop.is_set():
+                        if self._wait(0):
                             break
                         ok = fire_combo(
-                            self._key_controller,
+                            None,
                             step.key_combo,
                             hold_s=max(0.0, float(step.key_hold_s)),
                             stop=self._stop,
@@ -1026,16 +1367,20 @@ class Clicker:
                             "KIND_KEY fire combo=%r ok=%s iter=%d/%d",
                             step.key_combo, ok, i + 1, repeats,
                         )
+                        if ok:
+                            self._emit_event("KEY", f"KEY {step.key_combo.upper()}")
                         if not ok:
-                            self._announce_engine_halt(
-                                f"⚠ {self._step_label_for(step.step_id)} has "
-                                f"an unrecognized key combo: {step.key_combo!r}",
-                                "warn",
-                            )
+                            if not self._stop.is_set():
+                                self._announce_engine_halt(
+                                    f"⚠ {self._step_label_for(step.step_id)} could not send "
+                                    f"{step.key_combo!r}. Sequence stopped; check the input backend.",
+                                    "error",
+                                )
+                            self._stop.set()
                             break
                         # Inter-press gap for repeating taps. The old fixed
                         # 40-120 ms range was so tight that a 5-tap macro
-                        # finished in ~500 ms — distinctly mechanical and
+                        # finished in ~500 ms, distinctly mechanical and
                         # detection-friendly. Bumped to 80-300 ms × the
                         # current fatigue multiplier so the cadence:
                         #   • clears game input poll windows reliably
@@ -1046,7 +1391,7 @@ class Clicker:
                         # Skipped on the last iteration (no trailing gap).
                         if i < repeats - 1:
                             gap = random.uniform(0.080, 0.300) * fatigue.multiplier()
-                            if self._stop.wait(gap):
+                            if self._wait(gap):
                                 break
                     if self._stop.is_set():
                         break
@@ -1092,6 +1437,12 @@ class Clicker:
                     )
                     self._step_idx = target_idx
                     self._step_clicks_done = 0
+                    self._emit_step_event()
+                    # A forever-loop whose body is entirely disabled steps
+                    # would otherwise spin this branch flat out. A short
+                    # jittered wait keeps it honest and Stop instant.
+                    if self._wait(random.uniform(0.05, 0.15)):
+                        break
                     continue
                 if step.kind == KIND_TRACK:
                     # Make sure the tracker is matching this step's template.
@@ -1100,9 +1451,9 @@ class Clicker:
                     if cycle_zone is None:
                         self._set_phase(
                             ClickerPhase.SEARCHING,
-                            f"{self._step_phase_prefix()} — searching for target",
+                            f"{self._step_phase_prefix()}, searching for target",
                         )
-                        # Not locked yet — short wait, the App-owned tracker
+                        # Not locked yet, short wait, the App-owned tracker
                         # thread keeps trying. If we've been stuck without a
                         # lock for a while, surface a warn toast (cooldowned)
                         # so the user knows why nothing is happening.
@@ -1127,10 +1478,10 @@ class Clicker:
                         if elapsed >= self._STUCK_TOAST_AFTER_S:
                             self._announce_track_stuck(step.step_id, elapsed)
                         self._step_target_present[step.step_id] = False
-                        if self._stop.wait(0.10):
+                        if self._wait(0.10):
                             break
                         continue
-                    # Locked — clear the stuck-since clock for this step.
+                    # Locked, clear the stuck-since clock for this step.
                     self._track_stuck_since.pop(step.step_id, None)
                     if self._react_to_fresh_target(step.step_id):
                         break
@@ -1149,17 +1500,22 @@ class Clicker:
                     # The cycle zone is intentionally tiny (3×3 centered on
                     # the matched pixel): we already know the exact target
                     # coord, so the cursor spread that's helpful for click /
-                    # track steps is harmful here — it widens a click that
+                    # track steps is harmful here, it widens a click that
                     # should land on a specific small UI element. Bezier
                     # path, overshoot, and timing humanization still apply
                     # via humanizer.move() / humanizer.click(). If nothing
                     # matches, wait briefly and retry next cycle without
-                    # advancing — same pattern as KIND_TRACK on lock-loss.
-                    point = self._find_color_target(step)
+                    # advancing, same pattern as KIND_TRACK on lock-loss.
+                    # A locked click area follows its window; hold here
+                    # (no scan, no click) while that window is away.
+                    color_zone = self._resolve_zone_holding(step.zone)
+                    if color_zone is None and step.zone is not None:
+                        break
+                    point = self._find_color_target(step, zone=color_zone)
                     if point is None:
                         self._set_phase(
                             ClickerPhase.SEARCHING,
-                            f"{self._step_phase_prefix()} — searching for color",
+                            f"{self._step_phase_prefix()}, searching for color",
                         )
                         now = time.monotonic()
                         first_no_match = self._color_no_match_since.setdefault(
@@ -1182,10 +1538,10 @@ class Clicker:
                             self._announce_color_no_match(
                                 step.step_id, elapsed)
                         self._step_target_present[step.step_id] = False
-                        if self._stop.wait(0.20):
+                        if self._wait(0.20):
                             break
                         continue
-                    # Match found — clear the no-match-since clock for this step.
+                    # Match found, clear the no-match-since clock for this step.
                     self._color_no_match_since.pop(step.step_id, None)
                     if self._react_to_fresh_target(step.step_id):
                         break
@@ -1193,13 +1549,16 @@ class Clicker:
                     # pixel doesn't get clicked on stale coords. Track step
                     # by step_id so we can do a proper recheck-before-click
                     # too (see below).
-                    point = self._find_color_target(step)
+                    color_zone = self._resolve_zone_holding(step.zone)
+                    if color_zone is None and step.zone is not None:
+                        break
+                    point = self._find_color_target(step, zone=color_zone)
                     if point is None:
                         self._step_target_present[step.step_id] = False
                         continue
                     color_step = step
                     color_target_point = point
-                    # 5×5 click zone instead of 3×3 — absorbs cursor
+                    # 5×5 click zone instead of 3×3, absorbs cursor
                     # tremor (~2 px) + jitter (~1 px) so the click reliably
                     # lands on the matched pixel even under sway. Still
                     # well inside any clickable UI element.
@@ -1208,19 +1567,23 @@ class Clicker:
                         point[0] + 2, point[1] + 2,
                     )
                 else:
-                    cycle_zone = step.zone
+                    cycle_zone = self._resolve_zone_holding(step.zone)
+                    if cycle_zone is None:
+                        break
                 base_delay = self._human_delay(step.delay_min, step.delay_max)
                 cycle_click_type = step.click_type
                 cycle_click_mode = step.click_mode
             else:
                 if self.zone is None:
                     self._announce_engine_halt(
-                        "Click zone was cleared while running — "
+                        "Click zone was cleared while running, "
                         "draw a new zone before starting again.",
                         "warn",
                     )
                     break
-                cycle_zone = self.zone
+                cycle_zone = self._resolve_zone_holding(self.zone)
+                if cycle_zone is None:
+                    break
                 base_delay = self._human_delay(self.min_delay, self.max_delay)
                 cycle_click_type = self.click_type
                 cycle_click_mode = self.click_mode
@@ -1229,16 +1592,16 @@ class Clicker:
             delay = base_delay * fatigue.multiplier()
             self._next_click_at = time.monotonic() + delay
 
-            # Default phase for this stretch — overridden inside
+            # Default phase for this stretch, overridden inside
             # _wait_with_wander when a hover / wander / pre-hover fires.
             self._set_phase(
                 ClickerPhase.WAITING,
-                (f"{self._step_phase_prefix()} — waiting"
+                (f"{self._step_phase_prefix()}, waiting"
                  if self.mode == "recorder" else "Waiting"),
                 delay,
             )
 
-            # Pre-hover toward THIS cycle's zone — when stacked CLICK / TRACK
+            # Pre-hover toward THIS cycle's zone, when stacked CLICK / TRACK
             # / COLOR steps target different areas, the cursor drifts partway
             # toward the upcoming click during the wait so it isn't sitting
             # on the previous click point until the very last second.
@@ -1247,6 +1610,14 @@ class Clicker:
 
             if self._stop.is_set():
                 break
+
+            # The window may have moved during the wait. Re-resolve a
+            # locked Click zone right before sampling so the target comes
+            # from where the window is now, holding if it went away.
+            if track_step is None and color_step is None and cycle_zone.lock is not None:
+                cycle_zone = self._resolve_zone_holding(cycle_zone)
+                if cycle_zone is None:
+                    break
 
             # Apply non-stationary drift to the sampling distribution so a
             # detector watching N clicks doesn't see a clean Gaussian bell
@@ -1275,7 +1646,7 @@ class Clicker:
             target = self._jitter(target, cycle_zone)
             if self._recent and target == self._recent[-1]:
                 # Bump a couple px so we don't hit the exact same pixel; but
-                # only commit the bump if it's still inside the zone — for
+                # only commit the bump if it's still inside the zone, for
                 # narrow polygons the bump can otherwise push the click off
                 # the zone entirely.
                 bumped = (target[0] + random.choice([-2, -1, 1, 2]),
@@ -1300,9 +1671,15 @@ class Clicker:
             # below and the gap between attempted and session_clicks
             # tells the user how many cycles set up to click but didn't.
             self._clicks_attempted += 1
+            # Last pause gate before the cursor commits. The move and the
+            # click that follows are never interrupted by a hold (a
+            # half-finished gesture is its own tell), so a HOLD pressed
+            # from here on takes effect at the next wait.
+            if self._wait(0.0):
+                break
             self._set_phase(
                 ClickerPhase.MOVING,
-                (f"{self._step_phase_prefix()} — moving to target"
+                (f"{self._step_phase_prefix()}, moving to target"
                  if self.mode == "recorder" else "Moving to target"),
             )
             if humanizer.move(target, stop=self._stop, fatigue=move_mult,
@@ -1318,7 +1695,7 @@ class Clicker:
                 fresh_zone = self._tracker_zone()
                 snap = self.tracker.snapshot_state() if self.tracker else None
                 if snap is None or not snap.is_locked or fresh_zone is None:
-                    # Lock dropped during the move — abort this cycle, don't
+                    # Lock dropped during the move, abort this cycle, don't
                     # fire on wrong pixels. Surface this in the status card
                     # so the user can tell "missed click" from "engine
                     # silently retried because target moved."
@@ -1330,7 +1707,7 @@ class Clicker:
                     )
                     self._set_phase(
                         ClickerPhase.SKIPPED,
-                        f"{self._step_phase_prefix()} — target moved, retrying",
+                        f"{self._step_phase_prefix()}, target moved, retrying",
                         1.5,
                     )
                     continue
@@ -1355,7 +1732,7 @@ class Clicker:
                     )
                     self._set_phase(
                         ClickerPhase.SKIPPED,
-                        f"{self._step_phase_prefix()} — match too weak, retrying",
+                        f"{self._step_phase_prefix()}, match too weak, retrying",
                         1.5,
                     )
                     continue
@@ -1366,7 +1743,7 @@ class Clicker:
                 tw, th = self.tracker.cfg.template_size
                 drift_threshold = max(8.0, min(tw, th) * 0.4)
                 if drift > drift_threshold:
-                    # Quick corrective re-aim — Wind/Hooke curve still applies
+                    # Quick corrective re-aim, Wind/Hooke curve still applies
                     # (no straight-line snap), just slightly hurried and no
                     # overshoot since this is verify-correct, not fresh aim.
                     mouse_trace.event(
@@ -1387,9 +1764,15 @@ class Clicker:
             # Re-find a match: if it's gone, abort this cycle so we don't
             # click a phantom; if it's drifted, do a quick correction.
             if color_step is not None and color_target_point is not None:
-                fresh_point = self._find_color_target(color_step)
+                # No hold mid-cycle: a window that vanished during the
+                # move reads as "no match", which aborts this click. The
+                # next cycle's resolve enters the hold properly.
+                fresh_point = None
+                res = zone_lock.resolve(color_step.zone, self._lock_cache)
+                if not res.holding:
+                    fresh_point = self._find_color_target(color_step, zone=res.zone)
                 if fresh_point is None:
-                    # Pixel disappeared during the move — abort cycle.
+                    # Pixel disappeared during the move, abort cycle.
                     self._step_target_present[color_step.step_id] = False
                     self._cycles_aborted += 1
                     self.log.warning(
@@ -1400,7 +1783,7 @@ class Clicker:
                     )
                     self._set_phase(
                         ClickerPhase.SKIPPED,
-                        f"{self._step_phase_prefix()} — color vanished, retrying",
+                        f"{self._step_phase_prefix()}, color vanished, retrying",
                         1.5,
                     )
                     continue
@@ -1422,14 +1805,14 @@ class Clicker:
 
             self._set_phase(
                 ClickerPhase.CLICKING,
-                (f"{self._step_phase_prefix()} — clicking"
+                (f"{self._step_phase_prefix()}, clicking"
                  if self.mode == "recorder" else "Clicking"),
             )
             if humanizer.click(cycle_click_type, cycle_click_mode,
                                stop=self._stop, fatigue=mult):
                 break
 
-            # Capture where the cursor actually ended up post-click — useful
+            # Capture where the cursor actually ended up post-click, useful
             # for diagnosing accuracy issues (target vs actual). Falls back
             # to target on failure.
             try:
@@ -1437,7 +1820,7 @@ class Clicker:
                 actual_x, actual_y = int(actual_x), int(actual_y)
             except Exception:
                 actual_x, actual_y = target[0], target[1]
-            # Drift accounting — track the gap between intended target
+            # Drift accounting, track the gap between intended target
             # and where the cursor actually clicked. Surfaced to the
             # user via StatusPill tooltip so they can answer "are my
             # missed clicks because the click landed off-target, or
@@ -1451,7 +1834,7 @@ class Clicker:
             # Per-click diagnostic line. Greppable, parseable, contains
             # everything needed to diagnose missed clicks from a session
             # log alone (no need to enable mouse_trace separately). One
-            # line per click — at typical click rates (300-800/hour)
+            # line per click, at typical click rates (300-800/hour)
             # this stays well within the 5 MB rotation budget.
             self.log.info(
                 "click %s target=(%d,%d) actual=(%d,%d) drift=%.1f "
@@ -1462,7 +1845,7 @@ class Clicker:
                 self._session_clicks + 1,
             )
             # Cache successful COLOR-step click positions so the next
-            # cycle's match selection anchors on this point — converges
+            # cycle's match selection anchors on this point, converges
             # the click cluster onto a stable center within a few cycles.
             if color_step is not None:
                 self._color_last_click_pos[color_step.step_id] = (
@@ -1486,7 +1869,7 @@ class Clicker:
             fatigue.record_click()
             self._session_clicks += 1
 
-            # Stop-after click limit — checked right after the increment so
+            # Stop-after click limit, checked right after the increment so
             # the very last click counted *is* the limit click, not the one
             # past it.
             if (self.stop_after_clicks_enabled
@@ -1506,7 +1889,7 @@ class Clicker:
                     self._advance_recorder_step("click_count_met")
 
             # Sometimes drift a few pixels after the click; sometimes don't.
-            # An AFK player sits still for stretches — constant post-click
+            # An AFK player sits still for stretches, constant post-click
             # motion is itself a mechanical pattern. Probability rises with
             # the realism dial (~25% at low realism, ~70% at max).
             wander_p = 0.25 + 0.45 * max(0.0, min(1.0, self.realism))
@@ -1532,10 +1915,10 @@ class Clicker:
                 self._next_click_at = time.monotonic() + brk
                 self._set_phase(
                     ClickerPhase.BREAKING,
-                    f"On break — taking a breather",
+                    f"On break, taking a breather",
                     brk,
                 )
-                # Break bursts are the largest scheduled idle window —
+                # Break bursts are the largest scheduled idle window , 
                 # always log so a multi-minute gap in click events is
                 # explained ("yes, took a 4-minute break") instead of
                 # looking like a hang.
@@ -1543,43 +1926,12 @@ class Clicker:
                     "break_burst %s duration=%.2fs after_clicks=%d",
                     self._step_log_tag(), brk, self._session_clicks,
                 )
-                if self._stop.wait(brk):
+                self._emit_event("BREAK", f"BREAK {brk:.1f} S")
+                if self._wait(brk):
                     break
 
-        # Single end-of-session summary line — pairs with engine_start at
-        # the top, so a user who shares the log gets totals at a glance
-        # without grepping every "click ..." line. Includes the same
-        # counters the StatusPill tooltip surfaces, plus an explicit
-        # uptime so multi-hour AFK sessions are easy to triage.
-        try:
-            uptime = (max(0.0, time.monotonic() - self._session_start)
-                      if self._session_start > 0 else 0.0)
-            mean_drift = (self._click_drift_total_px / self._session_clicks
-                          if self._session_clicks > 0 else 0.0)
-            self.log.info(
-                "engine_stop mode=%s clicks=%d attempted=%d aborted=%d "
-                "drift_mean=%.2fpx drift_max=%.1fpx drifted_gt2=%d "
-                "recoveries=%d uptime=%.1fs",
-                self.mode, self._session_clicks, self._clicks_attempted,
-                self._cycles_aborted, mean_drift, self._click_drift_max_px,
-                self._clicks_with_drift, self._recovery_count, uptime,
-            )
-        except Exception:
-            self.log.debug("engine_stop summary log failed", exc_info=True)
-        # Tell daemon helpers (watchdog, key timers) to wind down. Setting
-        # _stop here is critical for key timers — they only honor _stop and
-        # would otherwise keep firing after the main loop exits.
-        self._stop.set()
-        self._watchdog_stop.set()
-        self._active_track_step_id = None
-        if self._mss_engine is not None:
-            try:
-                self._mss_engine.close()
-            except Exception:
-                pass
-            self._mss_engine = None
-        self._key_timer_threads = []
-        self._set_state(ClickerState.IDLE)
+        # Session summary and resource teardown live in _teardown(), which
+        # _run() calls from its finally so crash and clean exits share it.
 
     def _wait_with_wander(
         self, total: float, fatigue: Fatigue,
@@ -1591,7 +1943,7 @@ class Clicker:
         ``next_anchor`` is the zone of the step whose click is about to
         fire (or, for pause/key waits, the next step that *has* a click
         area). When set, the cursor drifts partway toward that zone once
-        per wait window — so stacked steps don't leave the cursor sitting
+        per wait window, so stacked steps don't leave the cursor sitting
         on the previous click point until the last second. Random-gated
         and capped at one pre-hover per wait so it stays human.
 
@@ -1611,7 +1963,7 @@ class Clicker:
 
             # Pre-hover toward the next click area. Probability scales with
             # realism (more realism = more aggressive pre-positioning) but
-            # is gated so sometimes the cursor just sits — that's also
+            # is gated so sometimes the cursor just sits, that's also
             # human, and the random-chance memory rule applies.
             if (next_anchor is not None
                     and not pre_hovered
@@ -1628,7 +1980,7 @@ class Clicker:
                 # accurately labeled (the pre-hover is brief).
                 self._set_phase(
                     ClickerPhase.WAITING,
-                    (f"{self._step_phase_prefix()} — waiting"
+                    (f"{self._step_phase_prefix()}, waiting"
                      if self.mode == "recorder" else "Waiting"),
                     max(0.0, remaining - elapsed),
                 )
@@ -1639,10 +1991,8 @@ class Clicker:
                     break
                 continue
 
-            # Hover visits are rare and special — low base rate, capped at 1.
-            has_hover = self.hover_zone is not None or any(
-                z is not None for z in self.hover_zones
-            )
+            # Hover visits are rare and special, low base rate, capped at 1.
+            has_hover = any(z is not None for z in self.hover_zones)
             if not hovered:
                 roll = random.random()
                 gate_p = self.hover_frequency * 0.02
@@ -1651,7 +2001,7 @@ class Clicker:
                     and has_hover
                     and remaining > self.hover_dwell_min + 1.0
                 )
-                # Trace WHY hover does or doesn't fire — the gate is the
+                # Trace WHY hover does or doesn't fire, the gate is the
                 # most common reason users see "hover never visits" so
                 # logging the four-way condition makes diagnosis trivial.
                 if mouse_trace.is_enabled():
@@ -1676,7 +2026,7 @@ class Clicker:
                     # after the hover ate part of the wait.
                     self._set_phase(
                         ClickerPhase.WAITING,
-                        (f"{self._step_phase_prefix()} — waiting"
+                        (f"{self._step_phase_prefix()}, waiting"
                          if self.mode == "recorder" else "Waiting"),
                         max(0.0, remaining - elapsed),
                     )
@@ -1701,15 +2051,26 @@ class Clicker:
                     whole=bool(self.idle_wander_whole_screen),
                 )
                 self._set_phase(ClickerPhase.WANDERING, "Idle wander")
+                try:
+                    _wx0, _wy0 = dpi_cursor.get_pos()
+                except Exception:
+                    _wx0 = _wy0 = None
                 interrupted, elapsed = idle_wanderer.wander(
                     wander_zone, self.idle_wander_padding,
                     stop=self._stop, fatigue=fatigue.multiplier(),
                     screen_bounds=_screen_lrtb,
                 )
                 drift_count += 1
+                if _wx0 is not None:
+                    try:
+                        _wx1, _wy1 = dpi_cursor.get_pos()
+                        _wd = math.hypot(_wx1 - _wx0, _wy1 - _wy0)
+                        self._emit_event("WANDER", f"WANDER {int(round(_wd))} PX")
+                    except Exception:
+                        pass
                 self._set_phase(
                     ClickerPhase.WAITING,
-                    (f"{self._step_phase_prefix()} — waiting"
+                    (f"{self._step_phase_prefix()}, waiting"
                      if self.mode == "recorder" else "Waiting"),
                     max(0.0, remaining - elapsed),
                 )
@@ -1718,11 +2079,11 @@ class Clicker:
                 remaining -= elapsed
                 continue
             chunk = min(remaining, random.uniform(0.2, 0.6))
-            if self._stop.wait(chunk):
+            if self._wait(chunk):
                 return True
             remaining -= chunk
             # Background micro-jitter. Used to fire 30-75% per chunk
-            # (~1.5 jitters/sec at default realism — visibly buzzy and
+            # (~1.5 jitters/sec at default realism, visibly buzzy and
             # not at all how real humans sit). Now gated by both a low
             # per-chunk probability AND a minimum interval since the
             # last jitter, so the cursor stays still for stretches and
@@ -1736,7 +2097,7 @@ class Clicker:
     def _pre_hover_toward(
         self, anchor: Zone, fatigue_mult: float,
     ) -> tuple[bool, float]:
-        """Drift cursor partway toward a future target zone — no click.
+        """Drift cursor partway toward a future target zone, no click.
 
         Moves a random fraction of the way toward a random point inside
         ``anchor`` so the actual click move still has a meaningful aim
@@ -1764,7 +2125,7 @@ class Clicker:
         except Exception:
             return (False, 0.0)
         dist = math.hypot(sample[0] - cx, sample[1] - cy)
-        # Already close — let the click move handle it. A pre-hover that
+        # Already close, let the click move handle it. A pre-hover that
         # only travels a few px would look more robotic, not less.
         if dist < 60.0:
             return (False, 0.0)
@@ -1780,7 +2141,7 @@ class Clicker:
             frac=round(frac, 2), dist=int(dist),
         )
         t0 = time.monotonic()
-        # Slightly hurried, no overshoot — this is a setup motion, not an
+        # Slightly hurried, no overshoot, this is a setup motion, not an
         # aim. fatigue_mult * 0.85 keeps it feeling natural even at
         # high fatigue (where the click move itself slows).
         interrupted = humanizer.move(
@@ -1788,6 +2149,31 @@ class Clicker:
             overshoot_enabled=False, overshoot_probability=0.0,
         )
         return (bool(interrupted), time.monotonic() - t0)
+
+    @staticmethod
+    def _physical_capture_rect(step) -> Optional[tuple[int, int, int, int]]:
+        """``step.capture_rect`` as physical (x1, y1, x2, y2).
+
+        Steps saved before ``capture_rect_space`` existed hold DIP rects;
+        the tracker seeds ``last_position`` from this rect, so those must
+        be converted or a scaled monitor seeds the search in the wrong
+        place.
+        """
+        rect = step.capture_rect
+        if not rect:
+            return None
+        x1, y1, x2, y2 = rect
+        if getattr(step, "capture_rect_space", "physical") == "physical":
+            return (int(x1), int(y1), int(x2), int(y2))
+        px, py, pw, ph = dpi_cursor.dip_rect_to_physical(x1, y1, x2 - x1, y2 - y1)
+        return (px, py, px + pw, py + ph)
+
+    @staticmethod
+    def _physical_rect_to_dip_zone(x1, y1, x2, y2) -> Zone:
+        """Build a DIP-space Zone from a physical (x1, y1, x2, y2) rect."""
+        dx1, dy1 = dpi_cursor.physical_to_dip(float(x1), float(y1))
+        dx2, dy2 = dpi_cursor.physical_to_dip(float(x2), float(y2))
+        return Zone.make_rect(int(dx1), int(dy1), int(dx2), int(dy2))
 
     def _next_action_anchor(self) -> Optional[Zone]:
         """Walk forward from the current step looking for the next step
@@ -1811,15 +2197,14 @@ class Clicker:
                         z = self._tracker_zone()
                         if z is not None:
                             return z
-                if s.capture_rect:
-                    x1, y1, x2, y2 = s.capture_rect
-                    return Zone.make_rect(x1, y1, x2, y2)
+                cap = self._physical_capture_rect(s)
+                if cap:
+                    return self._physical_rect_to_dip_zone(*cap)
             if s.kind == KIND_COLOR:
                 if s.zone is not None:
                     return s.zone
                 if s.color_search_rect is not None:
-                    x1, y1, x2, y2 = s.color_search_rect
-                    return Zone.make_rect(x1, y1, x2, y2)
+                    return self._physical_rect_to_dip_zone(*s.color_search_rect)
         return None
 
     def _next_zone_min_dim(self) -> Optional[int]:
@@ -1866,7 +2251,7 @@ class Clicker:
         The earlier version computed ``val = exp(gauss(mu, sigma))`` then
         clamped via ``max(lo, min(upper_soft, val))``. On typical user
         ranges (0.5–1.0 s wide) this clamped ~60 % of samples to exactly
-        ``lo`` or exactly ``upper_soft`` — visible as two huge spikes at
+        ``lo`` or exactly ``upper_soft``, visible as two huge spikes at
         the boundaries of the wait-time histogram, and a fingerprint in
         any inter-action timing analysis (the same boundary value
         repeats hundreds of times per session). See
@@ -1881,15 +2266,20 @@ class Clicker:
            without forcing samples to the boundary by clamping.
         2. **Rejection sampling** replaces the hard clamp. Out-of-range
            samples are rejected and resampled (up to 8 retries). If
-           we exhaust the budget — rare with a properly-scaled sigma —
+           we exhaust the budget, rare with a properly-scaled sigma , 
            we fall back to a uniform draw inside ``[lo, upper_soft]``
            instead of pinning to a boundary.
         """
         r = max(0.0, min(1.0, self.realism))
-        if r < 0.05 or hi <= lo:
+        if hi <= lo:
+            # A pinned range would return the same constant every cycle,
+            # which is the loudest periodic tell there is. Same +-10%
+            # treatment the key timers get.
+            return max(0.0, lo * random.uniform(0.90, 1.10))
+        if self._delay_is_uniform():
             return random.uniform(lo, hi)
         span = hi - lo
-        # Median sits 30% into the user's range — most clicks feel snappy.
+        # Median sits 30% into the user's range, most clicks feel snappy.
         median = lo + 0.30 * span
         mu = math.log(max(0.05, median))
         # Allow occasional overshoot up to hi + 50% of span at max realism.
@@ -1910,7 +2300,7 @@ class Clicker:
             if lo <= val <= upper_soft:
                 return val
         # Budget exhausted (very rare with the recalibrated sigma).
-        # Uniform fallback — still random, still in range, never
+        # Uniform fallback, still random, still in range, never
         # pins to an exact boundary value.
         return lo + random.random() * (upper_soft - lo)
 
@@ -1919,7 +2309,7 @@ class Clicker:
         a low per-chunk probability AND a minimum interval since the
         last jitter.
 
-        Real human idle isn't continuous tremor — it's long stillness
+        Real human idle isn't continuous tremor, it's long stillness
         punctuated by occasional small shifts (settling, posture
         adjustment). The previous implementation fired ~1.5 jitters/sec
         at default realism, which read as a constant 1-3 px buzz. This
@@ -1933,7 +2323,7 @@ class Clicker:
         # detectable rhythm.
         if now - self._last_micro_jitter_at < self._next_micro_jitter_min_gap:
             return
-        # Per-chunk probability — small at any realism. Real idle:
+        # Per-chunk probability, small at any realism. Real idle:
         #   realism 0.3 → ~1.5% per chunk → ~1 jitter/30 s
         #   realism 0.5 → ~2.5% per chunk → ~1 jitter/20 s
         #   realism 1.0 → ~5%   per chunk → ~1 jitter/10 s
@@ -1955,7 +2345,7 @@ class Clicker:
         frequency (see ``_maybe_micro_jitter``); this just runs the
         physical movement.
 
-        A single 1-2 px curved drift over 80-180 ms — looks like a
+        A single 1-2 px curved drift over 80-180 ms, looks like a
         settling hand, not a pixel snap. Most of the time the radius
         sits at 1-2 px (sensor-noise scale); occasionally bumps to 3 px
         for a slightly larger "shift" that mimics posture adjustment.
@@ -1985,7 +2375,7 @@ class Clicker:
     def _maybe_distraction_spike(self) -> bool:
         """Inject a "looked away" pause every 60-180 clicks.
 
-        Distinct from the explicit Breaks feature — these are short,
+        Distinct from the explicit Breaks feature, these are short,
         unannounced delays (3-12s scaled by realism) that just happen.
         Returns True if interrupted."""
         if self.realism < 0.2:
@@ -2005,7 +2395,8 @@ class Clicker:
             "distraction_spike %s duration=%.2fs next_in_clicks=%d",
             self._step_log_tag(), spike, self._next_distraction_at,
         )
-        return self._stop.wait(spike)
+        self._emit_event("DISTRACTION", f"DISTRACTION {spike:.1f} S")
+        return self._wait(spike)
 
     def _muscle_memory_factor(self) -> float:
         """Movement-duration multiplier: cold at session start, warm later.
@@ -2047,7 +2438,7 @@ class Clicker:
             img = _cv2.imread(rel_or_abs_path, _cv2.IMREAD_COLOR)
             if img is None and not _os.path.isabs(rel_or_abs_path):
                 # Per-step PNGs are stored relative to the writable install
-                # root (next to the .exe when frozen, repo root in dev) —
+                # root (next to the .exe when frozen, repo root in dev) , 
                 # NOT relative to this module's dir, which is _MEIPASS in a
                 # frozen build and never holds user-captured templates.
                 from utils.paths import writable_root
@@ -2115,14 +2506,14 @@ class Clicker:
         idx = self._step_label_for(step_id)
         msg = (
             f"⚠ {idx} has found no matching pixels for "
-            f"{int(secs_since)} s — check tolerance, click area, or monitor."
+            f"{int(secs_since)} s, check tolerance, click area, or monitor."
         )
         self._announce_engine_halt(msg, "warn")
 
     def _announce_track_stuck(self, step_id: str, secs_since: float) -> None:
         """Surface a "track step has been searching for X s" warn toast.
         Distinct from ``_announce_track_error`` (which is for the *load*
-        failure of a missing/unreadable PNG) — this one fires when the
+        failure of a missing/unreadable PNG), this one fires when the
         template loads fine but the tracker can't lock onto a match."""
         now = time.monotonic()
         # Reuse the track-error cooldown bucket so we don't double-toast
@@ -2133,7 +2524,7 @@ class Clicker:
         self._track_error_last_at[step_id] = now
         idx = self._step_label_for(step_id)
         msg = (
-            f"⚠ {idx} has been searching for {int(secs_since)} s — "
+            f"⚠ {idx} has been searching for {int(secs_since)} s, "
             "target may be off-screen or hidden."
         )
         self._announce_engine_halt(msg, "warn")
@@ -2158,7 +2549,7 @@ class Clicker:
         action = ("engine stopped" if step.on_timeout == "stop"
                   else "skipped")
         self._announce_engine_halt(
-            f"⚠ {idx} timed out after {int(secs_elapsed)} s — {action}.",
+            f"⚠ {idx} timed out after {int(secs_elapsed)} s, {action}.",
             "warn",
         )
 
@@ -2172,7 +2563,7 @@ class Clicker:
         self._loop_orphan_last_at[step_id] = now
         idx = self._step_label_for(step_id)
         self._announce_engine_halt(
-            f"⚠ {idx} (Loop) points to a deleted step — skipping.",
+            f"⚠ {idx} (Loop) points to a deleted step, skipping.",
             "warn",
         )
 
@@ -2239,9 +2630,9 @@ class Clicker:
                 if img is not None:
                     extras.append(img)
             self.tracker.set_templates(
-                primary, extras, tuple(step.capture_rect))
+                primary, extras, self._physical_capture_rect(step))
             self._active_track_step_id = step.step_id
-            # Successful load — drop any prior cooldown so a later
+            # Successful load: drop any prior cooldown so a later
             # regression on the same step toasts again right away.
             self._track_error_last_at.pop(step.step_id, None)
         # Always re-push per-step settings (cheap; covers user edits).
@@ -2255,14 +2646,15 @@ class Clicker:
             self.tracker.cfg.scale_steps = 1 if j < 1e-3 else 5
             self.tracker.cfg.update_rate_hz = float(step.tracker_update_rate_hz)
         if not same_step:
-            # First-locate uses the target monitor's bounds so a tracker
-            # on a non-primary screen can still cold-lock without waiting
-            # a full App-loop tick. mss / cv2 work in absolute virtual-
-            # desktop coords, so passing width × height is sufficient
-            # here (the tracker uses GetCursorPos for offset).
-            _bx, _by, sw, sh = self._resolve_screen_bounds()
+            # First-locate scans the target monitor so a tracker on a
+            # non-primary screen cold-locks without waiting a full
+            # App-loop tick. The tracker works in physical mss pixels
+            # (monitors[0] space, possibly negative), so convert the
+            # DIP bounds before handing them over.
+            bx, by, sw, sh = self._resolve_screen_bounds()
             try:
-                self.tracker.locate(sw, sh)  # immediate first lock
+                phys = dpi_cursor.dip_rect_to_physical(bx, by, sw, sh)
+                self.tracker.locate(search_rect=phys)  # immediate first lock
             except Exception:
                 pass
 
@@ -2270,7 +2662,7 @@ class Clicker:
         """Build a click-zone rectangle from the tracker's current match.
 
         Returns ``None`` when the tracker isn't currently locked onto its
-        target — the click loop uses that as a "skip this cycle" signal.
+        target, the click loop uses that as a "skip this cycle" signal.
 
         The zone size comes from the template that *won* the last locate
         (state.last_template_size), not always the primary, so that clicks
@@ -2288,16 +2680,25 @@ class Clicker:
             tw, th = self.tracker.cfg.template_size
         if tw <= 0 or th <= 0:
             return None
-        x1 = cx - tw // 2
-        y1 = cy - th // 2
-        x2 = x1 + tw
-        y2 = y1 + th
+        # Tracker positions are physical mss pixels; zones are DIPs (the
+        # humanizer converts back at move time). Convert the top-left and
+        # the centre (both interior points, so neither hits the identity
+        # fallback on a monitor edge) and mirror the half-size to get the
+        # far corner.
+        px1 = cx - tw // 2
+        py1 = cy - th // 2
+        x1, y1 = dpi_cursor.physical_to_dip(px1, py1)
+        cxd, cyd = dpi_cursor.physical_to_dip(cx, cy)
+        x2 = cxd + (cxd - x1)
+        y2 = cyd + (cyd - y1)
+        if x2 <= x1 or y2 <= y1:
+            return None
         return Zone.make_rect(x1, y1, x2, y2)
 
     def _post_click_micro_wander(self, fatigue_mult: float) -> bool:
         """Tiny curved drift right after a click.
 
-        Always runs — keeps the cursor visibly alive between clicks even when
+        Always runs, keeps the cursor visibly alive between clicks even when
         Idle wander is off. Drift is short (5-30 px, 0.10-0.25 s) so it never
         eats meaningful inter-click time. Result: cursor never freezes on the
         exact click point, which is one of the loudest auto-clicker tells.
@@ -2342,10 +2743,9 @@ class Clicker:
 
     def _pick_hover_zone(self) -> Optional[Zone]:
         """Choose which hover zone to visit. Honors hover_selection mode."""
-        # Priority: multi-zone list. Fall back to legacy single zone.
         zones = [z for z in self.hover_zones if z is not None]
         if not zones:
-            return self.hover_zone if self.hover_zone is not None else None
+            return None
         if self.hover_selection == "order":
             z = zones[self._hover_idx % len(zones)]
             self._hover_idx = (self._hover_idx + 1) % len(zones)
@@ -2359,7 +2759,7 @@ class Clicker:
         if zone is None:
             # The hover gate passed but no zone is configured. Surface
             # this so the user can see exactly why hover never visits
-            # — easiest way to spot "I forgot to draw a hover zone".
+            #, easiest way to spot "I forgot to draw a hover zone".
             mouse_trace.event("hover_no_zone")
             return False, 0.0
         target = zone.random_point()
@@ -2388,7 +2788,7 @@ class Clicker:
         if humanizer.drift(target, self._stop, duration, curvature, clamp=False):
             mouse_trace.event("hover_visit_end", interrupted=True, phase="drift")
             return True, time.monotonic() - t0
-        if self._stop.wait(dwell):
+        if self._wait(dwell):
             mouse_trace.event("hover_visit_end", interrupted=True, phase="dwell")
             return True, time.monotonic() - t0
         mouse_trace.event("hover_visit_end", interrupted=False)
@@ -2403,7 +2803,7 @@ class Clicker:
             return None
         for _ in range(n):
             step = self.recorder_steps[self._step_idx]
-            # User-disabled steps rotate past silently — same effect as
+            # User-disabled steps rotate past silently, same effect as
             # commenting the step out for testing. No toast (it's intentional).
             if not getattr(step, "enabled", True):
                 self._step_idx = (self._step_idx + 1) % n
@@ -2420,7 +2820,7 @@ class Clicker:
             if (step.kind == KIND_KEY and step.key_combo
                     and parse_combo(step.key_combo) is not None):
                 return step
-            # Step is missing its required data — surface why so the user
+            # Step is missing its required data, surface why so the user
             # isn't left wondering why the engine "skipped past" their step.
             self._announce_step_skipped(step)
             self._step_idx = (self._step_idx + 1) % n
@@ -2428,14 +2828,14 @@ class Clicker:
         return None
 
     # Tighter cooldown specifically for step-skipped messages. The
-    # default 30 s was too quiet — a user debugging "why doesn't my KEY
+    # default 30 s was too quiet, a user debugging "why doesn't my KEY
     # step run" needed to see the warning loud + often.
     _STEP_SKIP_COOLDOWN_S: float = 5.0
 
     def _announce_step_skipped(self, step: RecorderStep) -> None:
         """Surface a warn toast AND set the SKIPPED phase when the engine
         rotates past a step that's missing required data. Critical for
-        keyboard steps — without this, an unbound key combo silently
+        keyboard steps, without this, an unbound key combo silently
         disappears from the cycle and the user thinks the engine is
         broken. Keeps the phase active so the topbar shows the issue
         between cooldowned toasts."""
@@ -2458,7 +2858,7 @@ class Clicker:
         # too fast to notice).
         self._set_phase(
             ClickerPhase.SKIPPED,
-            f"{label} skipped — {reason}",
+            f"{label} skipped, {reason}",
             5.0,
         )
         now = time.monotonic()
@@ -2470,7 +2870,7 @@ class Clicker:
             return
         self._step_skip_last_at[sid] = now
         self.log.info("skipping step %s (%s): %s", sid, step.kind, reason)
-        self._announce_engine_halt(f"⚠ {label} skipped — {reason}", "warn")
+        self._announce_engine_halt(f"⚠ {label} skipped, {reason}", "warn")
 
     def _resolve_loop_target(self, step: RecorderStep) -> Optional[int]:
         """Look up a loop step's target by step_id; return its current index
@@ -2491,8 +2891,62 @@ class Clicker:
             self._mss_engine = _mss.mss()
         return self._mss_engine
 
-    def _find_color_target(self, step: RecorderStep
-                            ) -> Optional[tuple[int, int]]:
+    def _resolve_zone_holding(self, zone: Optional[Zone]) -> Optional[Zone]:
+        """Resolve a possibly window-locked zone, holding until it is back.
+
+        Returns the zone to click in (rebased for a locked window, the
+        input itself for a screen lock or ``None`` input). Returns
+        ``None`` only when Stop was pressed during a hold, so callers
+        break out of the cycle loop.
+
+        A hold is not a click: the cursor stays put, no wander, no
+        fatigue. It announces once on entry ("TARGET LOST" or "TARGET
+        MINIMIZED") and once on exit ("TARGET REACQUIRED"). Every wait is
+        ``self._stop.wait`` so Stop breaks the hold instantly.
+        """
+        if zone is None or zone.lock is None:
+            self._target_status = (zone_lock.STATUS_SCREEN, None)
+            return zone
+        while True:
+            res = zone_lock.resolve(zone, self._lock_cache)
+            title = res.title or zone.lock.title or ""
+            self._target_status = (res.status, title or None)
+            if not res.holding:
+                if self.target_lost:
+                    self.target_lost = False
+                    self._hold_announced = None
+                    self.log.info("window_lock reacquired title=%r", title)
+                    self._announce_engine_halt("TARGET REACQUIRED", "info")
+                    self._emit_event("TARGET REACQUIRED",
+                                     f"TARGET REACQUIRED {self._short_title(title)}")
+                return res.zone
+            if self._hold_announced != res.status:
+                # First hold of this outage, or a lost window that came
+                # back minimized: say which one, once.
+                self.target_lost = True
+                self._hold_announced = res.status
+                word = "MINIMIZED" if res.status == zone_lock.STATUS_MINIMIZED else "LOST"
+                self.log.warning("window_lock %s title=%r cls=%r",
+                                 res.status, zone.lock.title, zone.lock.cls)
+                self._announce_engine_halt(f"TARGET {word} · {title}", "warn")
+                self._emit_event(f"TARGET {word}",
+                                 f"TARGET {word} {self._short_title(title)}")
+            self._set_phase(
+                ClickerPhase.SEARCHING,
+                f"Target window {res.status}, holding",
+            )
+            if self._wait(0.5):
+                return None
+
+    @staticmethod
+    def _short_title(title: Optional[str]) -> str:
+        """Window title trimmed for the event log column."""
+        s = (title or "").strip()
+        return s if len(s) <= 24 else s[:23] + "~"
+
+    def _find_color_target(self, step: RecorderStep, *,
+                           zone: Optional[Zone] = None,
+                           ) -> Optional[tuple[int, int]]:
         """Snapshot the configured screen rect and return a random pixel
         whose RGB is within ``step.color_tolerance`` of
         ``step.color_target_rgb``. Returns absolute screen coords or
@@ -2502,9 +2956,16 @@ class Clicker:
         bounds when the user picks a color) so multi-monitor users don't
         pay for the full virtual desktop on every cycle. Falls back to the
         full virtual screen if the rect isn't set (legacy configs).
+
+        ``zone`` overrides ``step.zone`` for the click-area test; callers
+        pass the window-lock-resolved zone. When that zone is locked, its
+        own bounds become the scan window instead of the picked monitor,
+        so the search follows the window across monitors too.
         """
         if step.color_target_rgb is None:
             return None
+        if zone is None:
+            zone = step.zone
         try:
             import numpy as _np
             import cv2 as _cv2
@@ -2517,8 +2978,8 @@ class Clicker:
             colors.extend(step.color_extra_rgbs or [])
 
             sct = self._get_engine_mss()
-            if step.color_search_rect is not None:
-                bl, bt, br, bb = step.color_search_rect
+            if step.color_search_rect is not None and (zone is None or zone.lock is None):
+                bl, bt, br, bb = self._physical_color_search_rect(step)
             else:
                 v = sct.monitors[0]
                 bl, bt = int(v["left"]), int(v["top"])
@@ -2526,14 +2987,19 @@ class Clicker:
 
             # If the user drew a "click area" zone, intersect its AABB with
             # the search rect so we capture and scan only the relevant pixels
-            # — keeps HUD elements / on-screen UI of the same color out of
+            #, keeps HUD elements / on-screen UI of the same color out of
             # the candidate set, and is cheaper too.
-            if step.zone is not None:
-                zx1, zy1, zx2, zy2 = step.zone.aabb()
-                bl = max(bl, int(zx1))
-                bt = max(bt, int(zy1))
-                br = min(br, int(zx2))
-                bb = min(bb, int(zy2))
+            if zone is not None:
+                # The zone is DIPs; the search rect and the grab are
+                # physical mss pixels. Convert before intersecting or the
+                # scan window lands short on any monitor above 100%.
+                zx1, zy1, zx2, zy2 = zone.aabb()
+                px, py, pw, ph = dpi_cursor.dip_rect_to_physical(
+                    zx1, zy1, zx2 - zx1, zy2 - zy1)
+                bl = max(bl, int(px))
+                bt = max(bt, int(py))
+                br = min(br, int(px + pw))
+                bb = min(bb, int(py + ph))
                 if br - bl < 2 or bb - bt < 2:
                     # Zone is outside the search rect (or off-screen entirely).
                     return None
@@ -2587,14 +3053,19 @@ class Clicker:
             # shape (rect zones always pass; polygon/circle may not).
             n = len(pts)
             need_filter = (
-                step.zone is not None and step.zone.shape != "rect"
+                zone is not None and zone.shape != "rect"
             )
+            # coords are physical mss pixels from here on. The anchor
+            # (last click, stored in DIPs) is converted to match, and
+            # every candidate is converted back to DIPs before the zone
+            # test and before it is returned, because the humanizer does
+            # its own DIP-to-physical conversion at move time.
             coords = pts[:, 0, :].astype(_np.int32)
             coords[:, 0] = coords[:, 0] * step_px + int(mon["left"])
             coords[:, 1] = coords[:, 1] * step_px + int(mon["top"])
             hint = self._color_last_click_pos.get(step.step_id)
             if hint is not None:
-                ax, ay = int(hint[0]), int(hint[1])
+                ax, ay = dpi_cursor.dip_to_physical(int(hint[0]), int(hint[1]))
             else:
                 ax = int(coords[:, 0].mean())
                 ay = int(coords[:, 1].mean())
@@ -2604,26 +3075,53 @@ class Clicker:
             order = _np.argsort(d2)
             tries = min(n, 64) if need_filter else 1
             for ix in order[:tries]:
-                x = int(coords[int(ix), 0])
-                y = int(coords[int(ix), 1])
-                if not need_filter or step.zone.contains(x, y):
+                x, y = dpi_cursor.physical_to_dip(
+                    int(coords[int(ix), 0]), int(coords[int(ix), 1]))
+                if not need_filter or zone.contains(x, y):
                     return (x, y)
             # Sampled tries all landed outside the shape (very narrow
             # polygon vs. a sparse colour). Fall back to a full scan of
             # all candidates so we don't miss a real hit.
             if need_filter:
                 for ix in order:
-                    x = int(coords[int(ix), 0])
-                    y = int(coords[int(ix), 1])
-                    if step.zone.contains(x, y):
+                    x, y = dpi_cursor.physical_to_dip(
+                        int(coords[int(ix), 0]), int(coords[int(ix), 1]))
+                    if zone.contains(x, y):
                         return (x, y)
             return None
+        except _TRANSIENT_ERRORS:
+            # Screen-grab / cv2 failures belong to _run()'s recovery path
+            # (backoff, handle rebuild, give up after N). Swallowing them
+            # here used to turn a dead display into a silent "searching".
+            raise
         except Exception:
-            self.log.debug(
-                "color target search failed: step_id=%r",
-                getattr(step, "step_id", None), exc_info=True,
-            )
+            now = time.monotonic()
+            if now - self._color_error_last_log_at >= self._ANNOUNCE_COOLDOWN_S:
+                self._color_error_last_log_at = now
+                self.log.warning(
+                    "color target search failed: step_id=%r",
+                    getattr(step, "step_id", None), exc_info=True,
+                )
             return None
+
+    @staticmethod
+    def _physical_color_search_rect(step: RecorderStep) -> tuple[int, int, int, int]:
+        """``color_search_rect`` as physical mss pixels. Steps saved before
+        the space tag existed carry Qt DIPs and are converted here, once,
+        at the grab boundary (same rule as ``_physical_capture_rect``)."""
+        l, t_, r, b = step.color_search_rect
+        space = getattr(step, "color_search_rect_space", COLOR_SEARCH_SPACE_PHYSICAL)
+        if space == COLOR_SEARCH_SPACE_PHYSICAL:
+            return (int(l), int(t_), int(r), int(b))
+        px, py, pw, ph = dpi_cursor.dip_rect_to_physical(l, t_, r - l, b - t_)
+        return (int(px), int(py), int(px + pw), int(py + ph))
+
+    def _emit_step_event(self) -> None:
+        """STEP event for the step the engine is now on, e.g. "STEP 03 COLOR"."""
+        if not (0 <= self._step_idx < len(self.recorder_steps)):
+            return
+        kind = str(self.recorder_steps[self._step_idx].kind or "").upper()
+        self._emit_event("STEP", f"STEP {self._step_idx + 1:02d} {kind}")
 
     def _advance_recorder_step(self, reason: str = "unspecified") -> None:
         """Move to the next step and reset the click-in-step counter.
@@ -2644,6 +3142,7 @@ class Clicker:
             "step_advance from=%s to=%s reason=%s",
             from_tag, self._step_log_tag(), reason,
         )
+        self._emit_step_event()
 
     def _react_to_fresh_target(self, step_id: str) -> bool:
         """Pause for a randomized 'see → decide → move' delay when a TRACK
@@ -2658,7 +3157,7 @@ class Clicker:
         delay = self._reaction_delay()
         if delay <= 0:
             return False
-        return self._stop.wait(delay)
+        return self._wait(delay)
 
     def _reaction_delay(self) -> float:
         """Sample a humanlike reaction delay scaled by the realism dial.
@@ -2682,7 +3181,7 @@ class Clicker:
         w = max(2, x2 - x1)
         h = max(2, y2 - y1)
         # Cap drift to a quarter of the smaller dimension so the mean
-        # never leaves a sensible band — small zones drift less.
+        # never leaves a sensible band, small zones drift less.
         max_offset = max(2.0, min(w, h) * 0.25)
         ox, oy, sscale = self._advance_zone_drift(key, max_offset)
         zone.drift_offset_x = ox
@@ -2726,7 +3225,7 @@ class Clicker:
         """Repel target away from recent click points.
 
         On out-of-zone repulsion (tight zones where the push direction
-        leaves the shape), don't fall back to the original target — that
+        leaves the shape), don't fall back to the original target, that
         defeats the feature entirely. Instead, draw 5 fresh zone samples
         and return the one with the largest minimum distance from the
         recent deque (i.e. the candidate that's furthest from any cluster
@@ -2736,7 +3235,7 @@ class Clicker:
             return target
         tx, ty = float(target[0]), float(target[1])
         # Zone-aware effective radius. The user's configured radius is a
-        # cap, not a target — for tight zones (small game buttons),
+        # cap, not a target, for tight zones (small game buttons),
         # repelling by 18+ px from the previous click pushes the cursor
         # to or past the button edge, making the second click miss. We
         # clamp the effective radius to ~1/4 of the zone's smaller
@@ -2750,7 +3249,7 @@ class Clicker:
                 zone_min_dim = max(2, min(x2 - x1, y2 - y1))
                 # Tight zones: the user explicitly drew a small box around
                 # a single small target. Anti-cluster's bot-evasion benefit
-                # is moot — the zone IS the click target — and any
+                # is moot, the zone IS the click target, and any
                 # repulsion can push the click onto a margin where the
                 # actual game element doesn't reach. Skip entirely.
                 if zone_min_dim <= 16:
@@ -2800,11 +3299,11 @@ class Clicker:
         target (e.g. a float-rounding boundary case on a polygon
         vertex). This catches any such leak and snaps to a fresh
         in-zone sample. Called as the LAST step in the target pipeline
-        — after this point, the cursor moves and clicks at exactly
+       , after this point, the cursor moves and clicks at exactly
         ``target``.
 
         No-op when ``zone`` is None (legacy callers without a cycle
-        zone — e.g. the standalone test-click path).
+        zone, e.g. the standalone test-click path).
         """
         if zone is None:
             return target
@@ -2837,7 +3336,7 @@ class Clicker:
         # Gaussian with σ scaled by realism: clean precise aim at low
         # realism (σ≈0.4 px), sloppier human aim at high realism
         # (σ≈1.6 px). Clipped to ±cap px so we never miss a small zone.
-        # This is NOT visible jitter — it just shifts where the smooth
+        # This is NOT visible jitter, it just shifts where the smooth
         # Bezier path ends. Visible wobble lives in `_walk_phys`.
         sigma = 0.4 + 1.2 * max(0.0, min(1.0, self.realism))
         # Zone-size-aware cap. For a 30×30 button the original ±3 px

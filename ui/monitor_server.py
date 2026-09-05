@@ -1,16 +1,33 @@
 """Local LAN HTTP server for the Monitor tab.
 
 Streams the screen as MJPEG, exposes engine status as JSON, and (when the
-user opts in) accepts POST control actions to start/stop the bot or close
-RuneScape — all from the user's phone over the same Wi-Fi.
+user opts in) accepts POST control actions to start/stop the bot, pick an
+AI bot, or close RuneScape, all from the user's phone over the same Wi-Fi.
+
+Endpoints
+---------
+- ``GET /``              the phone page (sets the ``pc_token`` cookie)
+- ``GET /stream``        ``multipart/x-mixed-replace`` MJPEG
+- ``GET /snapshot.jpg``  one JPEG frame
+- ``GET /status``        JSON: engine state, phase, stats, AI runner summary
+- ``GET /ai/bots``       JSON list of bots in ``ai/tasks/library``
+- ``POST /control/start`` / ``POST /control/stop``
+- ``POST /control/close-window``  requires ``confirm=true`` in the body
+- ``POST /ai/select``    body ``slug=<bot slug>``; persists ``ai_bot_slug``
 
 Threading model
 ---------------
-- Capture thread: persistent ``mss.mss()`` handle, grabs ``monitors[0]``
-  at the configured FPS, resizes to ≤1280px wide, JPEG-encodes via Pillow,
-  writes the bytes to ``self._latest_frame``.
+- Capture thread: persistent ``mss.mss()`` handle, grabs the configured
+  monitor rect at ``monitor_fps`` (default 15), downscales to at most
+  ``monitor_max_width`` px wide (default 1920, 0 = native), JPEG-encodes
+  via Pillow at ``monitor_jpeg_quality`` (default 85), and writes the
+  bytes to ``self._latest_frame``.
 - Server thread: ``ThreadingHTTPServer`` accepting connections; each
   handler runs in its own thread (stdlib default).
+- GUI thread: handler threads never write ``app.cfg`` or call Qt
+  directly. Start/stop go through ``ui.engine_bridge`` and the AI bot
+  selection goes through ``_GuiBridge`` (a queued Qt signal), both of
+  which land on the Qt main thread.
 - Lifetime: created once by ``ui.app.App`` at startup; ``start()`` /
   ``stop()`` cycle the threads. ``stop()`` is called from ``closeEvent``.
 
@@ -22,10 +39,13 @@ Security
 - Read endpoints (``/``, ``/stream``, ``/snapshot.jpg``, ``/status``) work
   whenever the server is up.
 - Write endpoints (``POST /control/*``) additionally require
-  ``cfg["monitor_remote_control_enabled"]`` — a separate toggle so
+  ``cfg["monitor_remote_control_enabled"]``, a separate toggle so
   view-only is the safer default.
 - ``/control/close-window`` requires ``confirm=true`` in the form body so
   a stray request can't kick the user out of their game.
+- POST bodies are capped at ``_MAX_POST_BYTES``; anything larger is
+  answered with 413 before it is read.
+- The token is never written to the log. The cookie is ``HttpOnly``.
 """
 
 from __future__ import annotations
@@ -34,26 +54,65 @@ import hmac
 import io
 import json
 import logging
+import re
 import secrets
 import socket
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
 from PIL import Image
+from PySide6.QtCore import QCoreApplication, QObject, Qt, Signal, Slot
 
 from ui.config_io import save_config
 from utils.logger import get_logger
-from utils.window_finder import close_all_runescape_windows, find_runescape_windows
+from utils.window_finder import close_all_runescape_windows
 
 
 _log = get_logger("monitor")
-# Resize floor — anything below this is too small to be useful on a phone
+# Resize floor, anything below this is too small to be useful on a phone
 # screen. Hard cap on the upper end is whatever the source resolution is
 # (no upscale).
 _MIN_FRAME_WIDTH = 640
+# Largest POST body we will read. Control requests are a few dozen bytes of
+# form data; the cap stops a LAN peer from making a handler thread buffer
+# an arbitrary amount of memory.
+_MAX_POST_BYTES = 64 * 1024
+# Matches "token=<value>" inside a URL or query string so log lines can
+# strip the secret while keeping the rest of the request readable.
+_TOKEN_IN_QUERY = re.compile(r"(token=)[^&\s\"]*")
+
+
+class _GuiBridge(QObject):
+    """Queued-signal hop from HTTP handler threads to the Qt main thread.
+
+    ``app.cfg`` is owned by the GUI thread and ``save_config`` is not
+    thread-safe against the card widgets that also write it. The bridge
+    object is created in ``MonitorServer.__init__``, which ``App`` runs on
+    the GUI thread, so its slots execute there when the signal is emitted
+    from a handler thread (Qt queues cross-thread signal delivery).
+    """
+
+    aiSelectRequested = Signal(str)
+
+    def __init__(self, app):
+        super().__init__()
+        self._app = app
+        self.aiSelectRequested.connect(self._apply_ai_select, Qt.QueuedConnection)
+
+    @Slot(str)
+    def _apply_ai_select(self, slug: str) -> None:
+        self._app.cfg["ai_bot_slug"] = slug
+        save_config(self._app.cfg)
+
+    def request_ai_select(self, slug: str) -> None:
+        if QCoreApplication.instance() is None:
+            # No event loop is running (tests, tooling), so there is no
+            # GUI thread to protect and a queued emit would never fire.
+            self._apply_ai_select(slug)
+            return
+        self.aiSelectRequested.emit(slug)
 
 
 # ---- HTML page -----------------------------------------------------------
@@ -114,10 +173,10 @@ _PAGE_HTML = """<!doctype html>
 </header>
 <img class="stream" src="/stream?token=__TOKEN__" alt="Live screen">
 <div class="stats">
-  <div><span class="k">Clicks</span><span class="v" id="s-total">—</span></div>
-  <div><span class="k">CPM</span><span class="v" id="s-cpm">—</span></div>
-  <div><span class="k">Elapsed</span><span class="v" id="s-elapsed">—</span></div>
-  <div><span class="k">Last pos</span><span class="v" id="s-pos">—</span></div>
+  <div><span class="k">Clicks</span><span class="v" id="s-total">, </span></div>
+  <div><span class="k">CPM</span><span class="v" id="s-cpm">, </span></div>
+  <div><span class="k">Elapsed</span><span class="v" id="s-elapsed">, </span></div>
+  <div><span class="k">Last pos</span><span class="v" id="s-pos">, </span></div>
 </div>
 <div id="controls" class="controls three hidden">
   <button id="btn-start" class="primary">▶ Start</button>
@@ -156,11 +215,11 @@ _PAGE_HTML = """<!doctype html>
       const s = j.state || 'idle';
       setPill(s.charAt(0).toUpperCase() + s.slice(1) + (j.phase_label ? ' · ' + j.phase_label : ''),
               s === 'active' ? 'active' : (s === 'idle' ? '' : 'ok'));
-      document.getElementById('s-total').textContent = j.stats.total ?? '—';
+      document.getElementById('s-total').textContent = j.stats.total ?? ', ';
       document.getElementById('s-cpm').textContent = (j.stats.cpm || 0).toFixed(1);
       document.getElementById('s-elapsed').textContent = fmtElapsed(j.stats.elapsed);
       const p = j.stats.last_pos;
-      document.getElementById('s-pos').textContent = p ? p[0] + ', ' + p[1] : '—';
+      document.getElementById('s-pos').textContent = p ? p[0] + ', ' + p[1] : ', ';
     } catch (e) {
       setPill('Offline', '');
     }
@@ -207,6 +266,7 @@ class MonitorServer:
         self._latest_frame_lock = threading.Lock()
         self._is_running: bool = False
         self._last_error: str = ""
+        self._gui = _GuiBridge(app)
 
     # -- Public API -------------------------------------------------------
 
@@ -261,7 +321,8 @@ class MonitorServer:
         self._server_thread.start()
         self._capture_thread.start()
         self._is_running = True
-        _log.info("monitor_server start port=%d url=%s", port, self.lan_url())
+        _log.info("monitor_server start port=%d token_set=%s",
+                  port, bool(cfg.get("monitor_token")))
         return True
 
     def stop(self) -> None:
@@ -275,10 +336,13 @@ class MonitorServer:
             except Exception:
                 pass
             self._server = None
-        # Threads are daemons; join briefly to keep shutdown clean.
+        # Threads are daemons; join briefly to keep shutdown clean. This
+        # runs on the GUI thread (card toggles and closeEvent call it), so
+        # the joins are kept short: the capture loop wakes at least once
+        # per frame interval and serve_forever returns after shutdown().
         for t in (self._server_thread, self._capture_thread):
             if t is not None and t.is_alive():
-                t.join(timeout=1.5)
+                t.join(timeout=0.5)
         self._server_thread = None
         self._capture_thread = None
         self._is_running = False
@@ -296,7 +360,7 @@ class MonitorServer:
         (resolved by the card from the user-picked Qt screen), then falls back
         to mss's primary monitor. Always returns an mss-compatible dict.
 
-        Sanity-clamps degenerate rects (width or height ≤ 0) back to primary —
+        Sanity-clamps degenerate rects (width or height ≤ 0) back to primary , 
         this can happen if a monitor was unplugged since the rect was cached.
         """
         rect = cfg.get("monitor_capture_rect")
@@ -314,13 +378,13 @@ class MonitorServer:
             except (TypeError, ValueError):
                 pass
         # Fallback: mss primary (monitors[1]); if that's missing, virtual
-        # union (monitors[0]) — old behavior.
+        # union (monitors[0]), old behavior.
         if len(sct.monitors) > 1:
             return sct.monitors[1]
         return sct.monitors[0]
 
     def _capture_loop(self) -> None:
-        """Persistent mss handle (per modules/tracker.py:70+ pattern) — avoids
+        """Persistent mss handle (per modules/tracker.py:70+ pattern), avoids
         DC handle leak from per-frame open/close."""
         import mss
         try:
@@ -345,14 +409,14 @@ class MonitorServer:
                     monitor = self._resolve_capture_rect(sct, cfg)
                     shot = sct.grab(monitor)
                     img = Image.frombytes("RGB", shot.size, shot.rgb)
-                    # Downscale only — never upscale a smaller monitor up to
+                    # Downscale only, never upscale a smaller monitor up to
                     # the cap (would just blur for no clarity gain). max_w==0
                     # means "send native" (no resize at all).
                     if max_w > 0 and img.width > max_w:
                         ratio = max_w / img.width
                         # LANCZOS is meaningfully sharper than BILINEAR for
                         # screen content (text, UI edges) at the cost of ~2x
-                        # CPU on the resize step — still trivial at 10 fps.
+                        # CPU on the resize step, still trivial at 10 fps.
                         img = img.resize(
                             (max_w, int(img.height * ratio)),
                             Image.LANCZOS,
@@ -363,7 +427,7 @@ class MonitorServer:
                         self._latest_frame = buf.getvalue()
                 except Exception as e:
                     # Transient capture errors (e.g. DPI changes, RDP screen-locks)
-                    # — log once per kind, keep going so the stream resumes when the
+                    #, log once per kind, keep going so the stream resumes when the
                     # underlying issue clears.
                     _log.debug("monitor_capture frame error: %s", e)
                 self._stop.wait(1.0 / fps)
@@ -380,17 +444,26 @@ class MonitorServer:
 def _make_handler(server: "MonitorServer"):
     """Bind the MonitorServer instance into a fresh handler class. The
     handler is instantiated per-request by ThreadingHTTPServer, so we
-    can't pass instance state via __init__ — closure is the cleanest
+    can't pass instance state via __init__, closure is the cleanest
     bridge."""
 
     class _Handler(BaseHTTPRequestHandler):
         # Quiet the default "127.0.0.1 - - [time] GET /stream" stderr spam;
         # routed through the project logger instead at debug level.
+        # The stdlib logs the raw request line, which carries the token in
+        # its query string. Redact before it reaches the file.
+        @staticmethod
+        def _redact(args):
+            return tuple(
+                _TOKEN_IN_QUERY.sub(r"\1<redacted>", a) if isinstance(a, str) else a
+                for a in args
+            )
+
         def log_message(self, fmt, *args):
-            _log.debug("monitor_http " + fmt, *args)
+            _log.debug("monitor_http " + fmt, *self._redact(args))
 
         def log_error(self, fmt, *args):
-            _log.warning("monitor_http " + fmt, *args)
+            _log.warning("monitor_http " + fmt, *self._redact(args))
 
         # -- Auth ---------------------------------------------------------
 
@@ -458,7 +531,7 @@ def _make_handler(server: "MonitorServer"):
                 if path == "/ai/bots":
                     return self._serve_ai_bots()
             except (BrokenPipeError, ConnectionResetError):
-                # Client closed the stream — normal, especially on phones
+                # Client closed the stream, normal, especially on phones
                 # backgrounding the browser.
                 return
             self._send_text(404, "Not found")
@@ -474,7 +547,8 @@ def _make_handler(server: "MonitorServer"):
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             if token:
-                self.send_header("Set-Cookie", f"pc_token={token}; Path=/; SameSite=Strict")
+                self.send_header("Set-Cookie",
+                                 f"pc_token={token}; Path=/; SameSite=Strict; HttpOnly")
             self.end_headers()
             self.wfile.write(body)
 
@@ -517,7 +591,10 @@ def _make_handler(server: "MonitorServer"):
                         last = frame
                     except (BrokenPipeError, ConnectionResetError):
                         return
-                time.sleep(1.0 / fps)
+                # Waiting on the stop event (not time.sleep) lets stop()
+                # end every open stream at once.
+                if server._stop.wait(1.0 / fps):
+                    return
 
         def _serve_status(self) -> None:
             app = server.app
@@ -591,7 +668,13 @@ def _make_handler(server: "MonitorServer"):
                 self._send_json(403, {"ok": False,
                                       "message": "Remote control is disabled"})
                 return
-            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = 0
+            if length > _MAX_POST_BYTES:
+                self._send_json(413, {"ok": False, "message": "Body too large"})
+                return
             raw = self.rfile.read(length) if length > 0 else b""
             form = parse_qs(raw.decode("utf-8", errors="replace"))
 
@@ -643,7 +726,6 @@ def _make_handler(server: "MonitorServer"):
                                       "message": "Missing confirm=true"})
                 return
             try:
-                hwnds = find_runescape_windows()
                 count = close_all_runescape_windows()
                 _log.info("monitor_control action=close-window client=%s matched=%d ok=True",
                           client, count)
@@ -668,7 +750,6 @@ def _make_handler(server: "MonitorServer"):
                 return
             try:
                 from ui.cards.ai import _enumerate_bots
-                from ui.config_io import save_config
                 bots = _enumerate_bots()
                 if not any(b["slug"] == slug for b in bots):
                     self._send_json(404, {
@@ -676,11 +757,10 @@ def _make_handler(server: "MonitorServer"):
                         "message": f"Bot {slug!r} not in library",
                     })
                     return
-                server.app.cfg["ai_bot_slug"] = slug
-                save_config(server.app.cfg)
-                # Best-effort GUI refresh — the dropdown updates next user
-                # interaction. Skipping cross-thread Qt mutation here keeps
-                # the server thread Qt-free.
+                # cfg write + save happen on the GUI thread via the
+                # bridge; the AI card re-reads ai_bot_slug on its next
+                # refresh, so no widget is touched from here.
+                server._gui.request_ai_select(slug)
                 _log.info("monitor_control action=ai-select client=%s slug=%s ok=True",
                           client, slug)
                 self._send_json(200, {"ok": True, "slug": slug})
@@ -697,7 +777,7 @@ def _make_handler(server: "MonitorServer"):
 
 def _detect_lan_ip() -> str:
     """Best-effort LAN IP detection. Uses the connectionless UDP-route trick
-    (no packet sent — getsockname returns the interface that *would* be used
+    (no packet sent, getsockname returns the interface that *would* be used
     to reach 8.8.8.8). Falls back to 127.0.0.1 if no route exists."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -712,7 +792,7 @@ def _detect_lan_ip() -> str:
             pass
 
 
-# Quiet noisy http.server stderr at module import time (defensive — the
+# Quiet noisy http.server stderr at module import time (defensive, the
 # handler also overrides log_message but the base class still logs to
 # stderr on certain socket errors before our override runs).
 logging.getLogger("http.server").setLevel(logging.WARNING)

@@ -1,4 +1,4 @@
-"""``ZonePreview`` — mini-map of the target monitor with one or more zones
+"""``ZonePreview``, mini-map of the target monitor with one or more zones
 painted on top.
 
 Used by both the Click page (single zone or empty) and the Hover page
@@ -8,7 +8,7 @@ grid, then draws each zone using the same shape branches as
 :class:`~ui.overlays.zone_overlay.ZoneOverlay`.
 
 Color is fixed at :data:`ui.theme.ACCENT` rather than the user's overlay
-color — this is a UI affordance, not a fidelity preview of the in-world
+color, this is a UI affordance, not a fidelity preview of the in-world
 overlay.
 """
 
@@ -33,6 +33,10 @@ class ZonePreview(QWidget):
         self._zones: List = []
         self._monitor_label: str = ""
         self._monitor_size: Tuple[int, int] = (0, 0)
+        # DIP origin of the monitor being previewed. Non-zero for
+        # secondary screens, so zones drawn there land inside the
+        # mini-map instead of off its right/bottom edge.
+        self._monitor_origin: Tuple[int, int] = (0, 0)
         self._show_indices: bool = False
         self._empty_caption: str = "Drag to define your click area"
 
@@ -46,10 +50,12 @@ class ZonePreview(QWidget):
         *,
         show_indices: bool = False,
         empty_caption: Optional[str] = None,
+        monitor_origin: Tuple[int, int] = (0, 0),
     ) -> None:
         self._zones = [z for z in (zones or []) if z is not None]
         self._monitor_label = monitor_label
         self._monitor_size = monitor_size
+        self._monitor_origin = monitor_origin
         self._show_indices = show_indices
         if empty_caption is not None:
             self._empty_caption = empty_caption
@@ -61,9 +67,11 @@ class ZonePreview(QWidget):
         zone,
         monitor_label: str = "",
         monitor_size: Tuple[int, int] = (0, 0),
+        monitor_origin: Tuple[int, int] = (0, 0),
     ) -> None:
         self.set_zones([zone] if zone is not None else [],
-                       monitor_label, monitor_size)
+                       monitor_label, monitor_size,
+                       monitor_origin=monitor_origin)
 
     # -- Painting ----------------------------------------------------------
 
@@ -135,7 +143,7 @@ class ZonePreview(QWidget):
     # -- Zone painting -----------------------------------------------------
 
     def _zones_aabb(self) -> Tuple[int, int, int, int]:
-        """AABB across every zone — used as a fallback fit when the
+        """AABB across every zone, used as a fallback fit when the
         monitor size is unknown."""
         xs1, ys1, xs2, ys2 = [], [], [], []
         for z in self._zones:
@@ -163,9 +171,10 @@ class ZonePreview(QWidget):
             dx = pad_x - x1 * scale + (inner_w - mw * scale) / 2
             dy = pad_y_top - y1 * scale + (inner_h - mh * scale) / 2
             return (scale, dx, dy)
+        ox, oy = self._monitor_origin
         scale = min(inner_w / mw, inner_h / mh)
-        dx = pad_x + (inner_w - mw * scale) / 2
-        dy = pad_y_top + (inner_h - mh * scale) / 2
+        dx = pad_x + (inner_w - mw * scale) / 2 - ox * scale
+        dy = pad_y_top + (inner_h - mh * scale) / 2 - oy * scale
         return (scale, dx, dy)
 
     def _paint_zone(self, p: QPainter, z, idx: int) -> None:
@@ -218,7 +227,7 @@ class ZonePreview(QWidget):
         p.setPen(Qt.NoPen)
         p.setBrush(QBrush(bg))
         p.drawRoundedRect(rect, 3, 3)
-        p.setPen(QPen(QColor("#1a0510")))
+        p.setPen(QPen(QColor(t.BG)))
         p.drawText(rect.adjusted(4, 1, 0, -1),
                    Qt.AlignVCenter | Qt.AlignLeft, text)
 

@@ -3,7 +3,7 @@
 Saved colours / snapshots / recordings can be promoted from a single
 bot bundle's per-bot ``assets/`` folder to a project-wide library at
 ``ai/captures/global/``. Once promoted, any bot can import them by
-name — particularly useful for shared signals like the Seren spirit
+name, particularly useful for shared signals like the Seren spirit
 halo or Brooch of the Gods divine blessing proc, which appear in
 every skilling bot.
 

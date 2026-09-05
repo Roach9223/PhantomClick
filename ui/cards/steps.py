@@ -1,4 +1,4 @@
-"""Step row builder — per-kind body rendering for the recorder list.
+"""Step row builder, per-kind body rendering for the recorder list.
 
 Each step row is a self-contained card with:
 - Header (kind label + reorder/duplicate/remove icon buttons)
@@ -18,32 +18,38 @@ from __future__ import annotations
 
 import copy
 import os
+import shutil
+from pathlib import Path
 from typing import Callable, Optional
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QAction, QFontMetrics, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QMessageBox, QPushButton, QRadioButton, QVBoxLayout, QWidget,
+    QMenu, QMessageBox, QPushButton, QRadioButton, QSizePolicy, QToolButton,
+    QVBoxLayout, QWidget,
 )
 
 from modules.recorder import (
-    KIND_CLICK, KIND_COLOR, KIND_KEY, KIND_LOOP, KIND_PAUSE, KIND_TRACK,
-    RecorderStep,
+    CAPTURE_SPACE_PHYSICAL, KIND_CLICK, KIND_COLOR, KIND_KEY, KIND_LOOP,
+    KIND_PAUSE, KIND_TRACK, RecorderStep, new_view_id,
+    orphaned_template_paths,
 )
 from modules.key_timer import (
     display as combo_display, fire as fire_combo, parse_combo,
 )
 
 from utils.logger import get_logger
-from ui.config_io import save_config
+from ui.config_io import _config_dir, _templates_dir, save_config
 
-from .. import theme as t
+from .. import icons, theme as t
 from ..format import fmt_delay
+from ..screen_utils import screen_at_dip, screen_physical_rect
 from ..widgets.expander import Expander
 from ..widgets.field import Field
 from ..widgets.ios_switch import IOSSwitch
 from ..widgets.key_chip import KeyChip
+from ..widgets.lock_control import ZoneLockControl
 from ..widgets.range_spin_slider import RangeSpinSlider
 from ..widgets.section import Section
 
@@ -101,12 +107,54 @@ def _join_combo(mods: set[str], base: str) -> str:
 def _pretty_base(base: str) -> str:
     """Display form of the base key for the KeyChip / chip text."""
     if not base:
-        return "—"
+        return ", "
     if len(base) == 1:
         return base.upper()
     if base.startswith("f") and base[1:].isdigit():
         return base.upper()
     return base.replace("_", " ").title()
+
+
+class _ElidedLabel(QLabel):
+    """Single-line label that elides on the right to whatever width the
+    row gives it. The full text stays in the tooltip."""
+
+    def __init__(self, text: str, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._full = text
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.setMinimumWidth(40)
+        self._apply()
+
+    def _apply(self) -> None:
+        avail = max(0, self.width() - 2)
+        fm = QFontMetrics(self.font())
+        self.setText(fm.elidedText(self._full, Qt.ElideRight, avail) if avail > 20 else self._full)
+
+    def resizeEvent(self, event):  # noqa: N802 (Qt name)
+        super().resizeEvent(event)
+        self._apply()
+
+    def minimumSizeHint(self):  # noqa: N802 (Qt name)
+        hint = super().minimumSizeHint()
+        hint.setWidth(40)
+        return hint
+
+
+class _StepCard(QFrame):
+    """A step's card. ``menu`` is the overflow menu the header builds;
+    a right-click anywhere on the card pops it."""
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.menu: Optional[QMenu] = None
+
+    def contextMenuEvent(self, event):  # noqa: N802 (Qt name)
+        if self.menu is not None:
+            self.menu.exec(event.globalPos())
+            event.accept()
+            return
+        super().contextMenuEvent(event)
 
 
 class _KeyCaptureBridge(QObject):
@@ -116,7 +164,7 @@ class _KeyCaptureBridge(QObject):
     ``HotkeyManager.capture_next``'s callback fires on the listener
     thread; touching Qt widgets from there is unsafe (silent corruption
     on Windows, crashes elsewhere). Emitting a Qt signal across threads
-    is the canonical fix — Qt detects the thread mismatch and queues
+    is the canonical fix, Qt detects the thread mismatch and queues
     the slot call through the receiver's event loop. Each StepRowBuilder
     owns one bridge whose ``captured`` signal carries (step_id, key_name).
     """
@@ -129,8 +177,10 @@ class StepRowBuilder:
 
     def __init__(self, app):
         self.app = app
-        self._advanced_open: dict[int, bool] = {}
-        # Body collapsibility — list-of-expanded semantics. step_id present
+        # Keyed by step_id (not list index) so reorder / delete above a
+        # step doesn't hand its open state to a neighbour.
+        self._advanced_open: dict[str, bool] = {}
+        # Body collapsibility, list-of-expanded semantics. step_id present
         # in this set = body visible; default = collapsed. Newly-added
         # steps get marked expanded via :meth:`mark_expanded` so the user
         # sees their controls immediately. Persisted to cfg so collapse
@@ -145,7 +195,7 @@ class StepRowBuilder:
         #   {"chip": KeyChip, "btn": QPushButton, "checks": {mod: QCheckBox},
         #    "timer": QTimer | None, "lbl": QLabel}
         self._key_widgets: dict[str, dict] = {}
-        # Lazy keyboard controller for the per-step "▶ Test" button.
+        # Lazy keyboard controller for the per-step "Test" button.
         self._test_kb_controller = None
         # Cross-thread bridge: the pynput listener (capture_next callback)
         # runs on its own thread; the Qt-side handler must run on the main
@@ -171,6 +221,13 @@ class StepRowBuilder:
     def mark_expanded(self, step_id: str) -> None:
         """Convenience: expand a single step (used after on_add_*)."""
         self.set_expanded(step_id, True)
+
+    def expand_only(self, step_id: str) -> None:
+        """Expand ``step_id`` and collapse every other step, so a step
+        picked from the deck's SEQUENCE panel is the one card open."""
+        self._expanded = {step_id}
+        self.app.cfg["recorder_expanded_steps"] = sorted(self._expanded)
+        save_config(self.app.cfg)
 
     # -- Action row (Test + Clear, equal weight, divider above) ------------
 
@@ -200,7 +257,7 @@ class StepRowBuilder:
         row.setSpacing(t.SP_SM)
 
         if on_test is not None:
-            # Plain "Test step" — was prefixed with ▶ which read as a
+            # Plain "Test step", was prefixed with ▶ which read as a
             # disclosure chevron rather than a play icon and confused the
             # button's affordance. The ghost-button shape already says
             # "click me" without an icon.
@@ -254,12 +311,12 @@ class StepRowBuilder:
         if step.kind == KIND_LOOP:
             for s in self.app._steps:
                 if s.step_id == step.loop_target_step_id:
-                    return f"→ {s.label or s.kind}"
+                    return f"to {s.label or s.kind}"
             return "loop target unset"
         return ""
 
     def _label_section(self, idx: int, step: RecorderStep) -> Section:
-        """Standard 'Label' section — single text input, used by every
+        """Standard 'Label' section, single text input, used by every
         step kind that supports human-readable labels (all except LOOP)."""
         section = Section("Label")
         edit = self.app.locker.register(QLineEdit(step.label or ""))
@@ -273,9 +330,33 @@ class StepRowBuilder:
         section.add(edit)
         return section
 
+    def _details_expander(self, idx: int, step: RecorderStep, *,
+                          resilience: bool = False) -> Expander:
+        """Collapsed 'Details' block at the foot of a step body: the
+        optional label and, for the poll-based kinds, the resilience
+        (timeout) settings. Kept out of the way so a body opens on the
+        target and the timing, which is what the user came to change."""
+        parts = ["label", "resilience"] if resilience else ["label"]
+        exp = Expander("Details", preview=", ".join(parts))
+        body = QWidget()
+        col = QVBoxLayout(body)
+        col.setContentsMargins(0, t.SP_XS, 0, 0)
+        col.setSpacing(t.SECTION_GAP)
+        col.addWidget(self._label_section(idx, step))
+        if resilience:
+            col.addWidget(self._timeout_section(idx, step))
+        exp.set_content(body)
+        key = f"{step.step_id}:details"
+        if self._advanced_open.get(key, False):
+            exp.set_open(True)
+        exp._toggle.clicked.connect(
+            lambda k=key, e=exp: self._set_advanced_open(k, e.is_open())
+        )
+        return exp
+
     def _timeout_section(self, idx: int, step: RecorderStep) -> Section:
-        """Per-step 'Resilience' section — timeout + on-timeout action.
-        Wraps the existing _build_timeout_row in a proper Section."""
+        """Per-step 'Resilience' section: timeout + on-timeout action for
+        the poll-based kinds (Track, Color) that can stall on a target."""
         from PySide6.QtWidgets import QDoubleSpinBox
 
         section = Section(
@@ -347,7 +428,7 @@ class StepRowBuilder:
 
     def build_row(self, idx: int, refresh_cb: Callable[[], None]) -> QFrame:
         step = self.app._steps[idx]
-        card = QFrame()
+        card = _StepCard()
         card.setObjectName("step-card")
         # Drives the QSS [expanded="true"] left-stripe rule so the editor
         # target is visually distinguishable from collapsed sibling steps.
@@ -365,7 +446,7 @@ class StepRowBuilder:
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(t.SECTION_GAP)
 
-        # Header row — chevron + title + actions. Header builder needs the
+        # Header row, chevron + title + actions. Header builder needs the
         # body widget so the chevron click can toggle visibility directly.
         outer.addLayout(self._build_header(idx, step, refresh_cb, body_widget, card))
 
@@ -410,10 +491,11 @@ class StepRowBuilder:
         # Chevron toggles the body. ▾ open / ▸ collapsed. icon variant so
         # it matches the trailing Up / Down / Delete buttons in style.
         expanded_now = self.is_expanded(step.step_id)
-        chevron = QPushButton("▾" if expanded_now else "▸")
+        chevron = QPushButton()
+        chevron.setIcon(icons.icon("chevron-down" if expanded_now else "chevron-right"))
         chevron.setProperty("variant", "icon")
-        chevron.setMaximumSize(28, 24)
-        chevron.setMinimumSize(28, 24)
+        chevron.setMaximumSize(t.ICON_BUTTON, t.ICON_BUTTON)
+        chevron.setMinimumSize(t.ICON_BUTTON, t.ICON_BUTTON)
         chevron.setCursor(Qt.PointingHandCursor)
         chevron.setToolTip(
             "Collapse this step" if expanded_now else "Expand this step"
@@ -423,7 +505,7 @@ class StepRowBuilder:
                      body=body_widget, c=card):
             new_expanded = not body.isVisible()
             body.setVisible(new_expanded)
-            btn.setText("▾" if new_expanded else "▸")
+            btn.setIcon(icons.icon("chevron-down" if new_expanded else "chevron-right"))
             btn.setToolTip(
                 "Collapse this step" if new_expanded else "Expand this step"
             )
@@ -445,7 +527,7 @@ class StepRowBuilder:
 
         kind_lbl = QLabel(kind_label)
         kind_lbl.setStyleSheet(
-            f"color: {color}; font-family: {t.FONT_DISPLAY}; "
+            f"color: {color}; font-family: {t.FONT_MONO}; "
             f"font-size: {t.SIZE_BODY}px; font-weight: 700; "
             f"letter-spacing: 1.2px;"
         )
@@ -465,38 +547,38 @@ class StepRowBuilder:
         else:
             label_is_fallback = False
         if label_text:
-            label_lbl = QLabel(label_text)
+            label_lbl = _ElidedLabel(label_text)
             # Fallbacks render in tertiary tone (still visible but quieter
             # than a deliberate user label) so the user can tell at a
             # glance whether a step has been named.
             color = t.TEXT_TERTIARY if label_is_fallback else t.TEXT_SECONDARY
             label_lbl.setStyleSheet(
                 f"color: {color}; font-style: italic; "
-                f"font-family: {t.FONT_MONO if label_is_fallback else t.FONT_FAMILY}; "
+                f"font-family: {t.FONT_MONO}; "
                 f"font-size: {t.SIZE_BODY}px;"
             )
-            label_lbl.setMaximumWidth(220)
             label_lbl.setToolTip(label_text)
-            head.addWidget(label_lbl)
+            # Takes the slack in the row and elides, so a long label can
+            # never push the switch and the menu off a narrow pane.
+            head.addWidget(label_lbl, 1)
 
-        # Inline error indicator — visible when the step is missing required
+        # Inline error indicator, visible when the step is missing required
         # data so the user catches it BEFORE running the engine instead of
         # via a missed toast mid-run. The same predicate the engine uses to
         # decide "skip this step" (see Clicker._peek_recorder_step).
         problem = self._step_problem(step, idx)
         if problem:
-            warn_lbl = QLabel("⚠")
-            warn_lbl.setStyleSheet(
-                f"color: {t.WARN}; font-size: {t.SIZE_BODY}px; "
-                f"font-weight: 700;"
-            )
+            warn_lbl = QLabel()
+            warn_lbl.setPixmap(icons.pixmap("alert", 14, t.WARN))
+            warn_lbl.setFixedSize(14, 14)
             warn_lbl.setToolTip(problem)
             head.addWidget(warn_lbl)
 
-        head.addStretch(1)
+        if not label_text:
+            head.addStretch(1)
 
         # Per-step enable toggle. Disabled steps rotate past silently in
-        # the engine (see Clicker._peek_recorder_step) — same effect as
+        # the engine (see Clicker._peek_recorder_step), same effect as
         # commenting the step out for testing, no need to delete +
         # recreate. Persists via the standard step JSON save.
         enable_switch = self.app.locker.register(IOSSwitch())
@@ -507,29 +589,49 @@ class StepRowBuilder:
         )
         head.addWidget(enable_switch)
 
-        for icon, tooltip, handler, variant in [
-            ("⎘", "Duplicate this step", lambda: self._duplicate(idx, refresh_cb), "icon"),
-            ("▲", "Move up", lambda: self._move(idx, -1, refresh_cb), "icon"),
-            ("▼", "Move down", lambda: self._move(idx, +1, refresh_cb), "icon"),
-            ("⨯", "Remove this step", lambda: self._remove(idx, refresh_cb), "icon-danger"),
+        # Reorder / duplicate / remove live behind one menu button so the
+        # header stays a single line inside the editor pane.
+        n_steps = len(self.app._steps)
+        more = self.app.locker.register(QToolButton())
+        more.setText("···")
+        more.setObjectName("step-more-btn")
+        more.setFixedSize(t.ICON_BUTTON, t.ICON_BUTTON)
+        more.setCursor(Qt.PointingHandCursor)
+        more.setToolTip("Move, duplicate or remove this step.")
+        more.setPopupMode(QToolButton.InstantPopup)
+        more.setStyleSheet(
+            f"QToolButton#step-more-btn {{ background: {t.SURFACE_PANEL}; "
+            f"color: {t.TEXT_SECONDARY}; border: 1px solid {t.BORDER}; "
+            f"border-radius: {t.RADIUS_BUTTON}px; padding: 0; "
+            f"font-size: {t.SIZE_LG}px; font-weight: 700; }}"
+            f"QToolButton#step-more-btn::menu-indicator {{ image: none; width: 0; }}"
+            f"QToolButton#step-more-btn:hover {{ background: {t.SURFACE_HIGH}; "
+            f"color: {t.TEXT_PRIMARY}; border-color: {t.BORDER_STRONG}; }}"
+        )
+        menu = QMenu(more)
+        for icon, text, handler, enabled in [
+            ("arrow-up", "Move up", lambda: self._move(idx, -1, refresh_cb), idx > 0),
+            ("arrow-down", "Move down", lambda: self._move(idx, +1, refresh_cb), idx < n_steps - 1),
+            ("duplicate", "Duplicate", lambda: self._duplicate(idx, refresh_cb), True),
         ]:
-            btn = self.app.locker.register(QPushButton(icon))
-            btn.setProperty("variant", variant)
-            btn.setMaximumSize(28, 24)
-            btn.setMinimumSize(28, 24)
-            btn.setCursor(Qt.PointingHandCursor)
-            btn.setToolTip(tooltip)
-            btn.clicked.connect(handler)
-            head.addWidget(btn)
+            act = QAction(icons.icon(icon), text, menu)
+            act.setEnabled(bool(enabled))
+            act.triggered.connect(lambda _c=False, h=handler: h())
+            menu.addAction(act)
+        menu.addSeparator()
+        rm = QAction(icons.icon("trash", 16, t.DANGER), "Remove step", menu)
+        rm.triggered.connect(lambda _c=False: self._remove(idx, refresh_cb))
+        menu.addAction(rm)
+        more.setMenu(menu)
+        head.addWidget(more)
+        if isinstance(card, _StepCard):
+            card.menu = menu
         return head
 
     # -- Pause body -------------------------------------------------------
 
     def _build_pause_body(self, layout: QVBoxLayout, idx: int, step: RecorderStep,
                           refresh_cb: Callable[[], None]) -> None:
-        # LABEL
-        layout.addWidget(self._label_section(idx, step))
-
         # WAIT
         wait_section = Section("Wait", hint="cursor still drifts during the wait")
         delay_lbl = QLabel(self._delay_text("Wait for", step))
@@ -546,16 +648,14 @@ class StepRowBuilder:
         )
         wait_section.add(rng)
         layout.addWidget(wait_section)
+        layout.addWidget(self._details_expander(idx, step))
 
     # -- Click body -------------------------------------------------------
 
     def _build_click_body(self, layout: QVBoxLayout, idx: int, step: RecorderStep,
                           refresh_cb: Callable[[], None]) -> None:
-        # LABEL
-        layout.addWidget(self._label_section(idx, step))
-
-        # CLICK TARGET — empty state shows the prominent CTA, configured
-        # state demotes Pick to a small "↻ Redraw" and surfaces the
+        # CLICK TARGET, empty state shows the prominent CTA, configured
+        # state demotes Pick to a small "Redraw" and surfaces the
         # captured rect as the section's primary content.
         target_section = Section("Click target")
         if step.zone is None:
@@ -565,7 +665,7 @@ class StepRowBuilder:
             empty.addWidget(prompt)
             empty.addStretch(1)
             pick_btn = self.app.locker.register(
-                QPushButton("🔲  Pick click area")
+                QPushButton("Pick click area")
             )
             pick_btn.setProperty("variant", "primary")
             pick_btn.setMinimumHeight(t.BUTTON_H_PRIMARY)
@@ -583,82 +683,75 @@ class StepRowBuilder:
             )
             data.setWordWrap(True)
             row.addWidget(data, 1)
-            redraw = self.app.locker.register(QPushButton("↻ Redraw"))
+            redraw = self.app.locker.register(QPushButton("Redraw"))
+            redraw.setIcon(icons.icon("redraw"))
             redraw.setProperty("variant", "ghost")
             redraw.setCursor(Qt.PointingHandCursor)
             redraw.clicked.connect(lambda: self._on_draw_step(idx))
             row.addWidget(redraw)
             target_section.addLayout(row)
+            target_section.add(self._lock_row(idx, step))
         layout.addWidget(target_section)
 
-        # TIMING — two-column grid (Clicks count | Delay range).
+        # TIMING: clicks-per-visit on one row, the delay slider under it.
+        # Stacked, not side by side, so the section fits the editor pane.
         timing_section = Section("Timing")
-        grid = QHBoxLayout()
-        grid.setSpacing(t.SP_LG)
-
-        clicks_col = QVBoxLayout()
-        clicks_col.setSpacing(4)
-        clicks_lbl = QLabel("Clicks")
+        clicks_row = QHBoxLayout()
+        clicks_row.setSpacing(t.SP_SM)
+        clicks_lbl = QLabel("Clicks before the next step")
         clicks_lbl.setStyleSheet(
             f"color: {t.TEXT_PRIMARY}; "
             f"font-size: {t.SIZE_FIELD_LABEL}px; font-weight: 600;"
         )
-        clicks_col.addWidget(clicks_lbl)
+        clicks_row.addWidget(clicks_lbl)
+        clicks_row.addStretch(1)
         clicks_entry = self.app.locker.register(QLineEdit(str(int(step.click_count))))
-        clicks_entry.setMaximumWidth(96)
+        clicks_entry.setFixedWidth(88)
         clicks_entry.setAlignment(Qt.AlignCenter)
         clicks_entry.setProperty("role", "mono")
         clicks_entry.editingFinished.connect(
             lambda i=idx, e=clicks_entry: self._on_click_count_change(i, e.text())
         )
-        clicks_col.addWidget(clicks_entry)
-        clicks_col.addStretch(1)
-        clicks_wrap = QWidget()
-        clicks_wrap.setLayout(clicks_col)
-        clicks_wrap.setMaximumWidth(120)
-        grid.addWidget(clicks_wrap)
+        clicks_row.addWidget(clicks_entry)
+        timing_section.addLayout(clicks_row)
 
-        delay_col = QVBoxLayout()
-        delay_col.setSpacing(4)
-        delay_lbl = QLabel(self._delay_text("Delay range", step))
+        delay_lbl = QLabel(self._delay_text("Delay between clicks", step))
         delay_lbl.setStyleSheet(
             f"color: {t.TEXT_PRIMARY}; "
             f"font-size: {t.SIZE_FIELD_LABEL}px; font-weight: 600;"
         )
-        delay_col.addWidget(delay_lbl)
+        timing_section.add(delay_lbl)
         rng = RangeSpinSlider(
             from_=0.01, to=120.0, steps=11990,
             init_min=step.delay_min, init_max=step.delay_max,
         )
         rng.valueChanged.connect(
             lambda lo, hi, i=idx, lbl=delay_lbl: self._on_delay_change(
-                i, lo, hi, "Delay range", lbl,
+                i, lo, hi, "Delay between clicks", lbl,
             )
         )
-        delay_col.addWidget(rng)
-        delay_wrap = QWidget()
-        delay_wrap.setLayout(delay_col)
-        grid.addWidget(delay_wrap, 1)
-        timing_section.addLayout(grid)
+        timing_section.add(rng)
         layout.addWidget(timing_section)
 
         # ADVANCED expander (collapsed by default, with content preview).
-        is_open = self._advanced_open.get(idx, False)
-        adv = Expander("Advanced", preview="shape, button, mode")
+        is_open = self._advanced_open.get(step.step_id, False)
+        adv = Expander("Details", preview="label, shape, button, mode")
         adv_body = QWidget()
         adv_layout = QVBoxLayout(adv_body)
-        adv_layout.setContentsMargins(0, 4, 0, 0)
+        adv_layout.setContentsMargins(0, t.SP_XS, 0, 0)
         adv_layout.setSpacing(t.SP_SM)
+        adv_layout.addWidget(self._label_section(idx, step))
+        adv_layout.addSpacing(t.SP_XS)
         self._build_step_advanced(adv_layout, idx, step)
         adv.set_content(adv_body)
         if is_open:
             adv.set_open(True)
         adv._toggle.clicked.connect(
-            lambda i=idx, e=adv: self._set_advanced_open(i, e.is_open())
+            lambda sid=step.step_id, e=adv: self._set_advanced_open(sid, e.is_open())
         )
         layout.addWidget(adv)
 
-        # ACTION ROW — Test + Clear, equal weight, divider above.
+        # ACTION ROW, Test + Clear, equal weight, divider above.
         layout.addWidget(self._build_action_row(
             on_test=lambda: self._on_test(idx),
             on_clear=(
@@ -672,10 +765,7 @@ class StepRowBuilder:
 
     def _build_track_body(self, layout: QVBoxLayout, idx: int, step: RecorderStep,
                           refresh_cb: Callable[[], None]) -> None:
-        # LABEL
-        layout.addWidget(self._label_section(idx, step))
-
-        # TARGET — thumbnail + meta when set, big primary CTA when empty.
+        # TARGET, thumbnail + meta when set, big primary CTA when empty.
         target_section = Section("Target")
         if not step.template_path:
             empty = QHBoxLayout()
@@ -683,7 +773,8 @@ class StepRowBuilder:
             prompt.setProperty("role", "hint")
             empty.addWidget(prompt)
             empty.addStretch(1)
-            cap_btn = self.app.locker.register(QPushButton("🎯  Capture target"))
+            cap_btn = self.app.locker.register(QPushButton("Capture target"))
+            cap_btn.setIcon(icons.icon("target", 16, t.TEXT_ON_ACCENT))
             cap_btn.setProperty("variant", "primary")
             cap_btn.setMinimumHeight(t.BUTTON_H_PRIMARY)
             cap_btn.setCursor(Qt.PointingHandCursor)
@@ -693,29 +784,7 @@ class StepRowBuilder:
         else:
             row = QHBoxLayout()
             row.setSpacing(t.SP_MD)
-            thumb = QLabel()
-            thumb.setFixedSize(96, 64)
-            thumb.setStyleSheet(
-                f"background: {t.BG}; border: 1px solid {t.BORDER_SUBTLE}; "
-                f"border-radius: {t.RADIUS_INPUT}px;"
-            )
-            thumb.setAlignment(Qt.AlignCenter)
-            try:
-                from ui.config_io import _config_dir
-                from pathlib import Path
-                p = Path(step.template_path)
-                if not p.is_absolute():
-                    p = _config_dir() / p
-                pix = QPixmap(str(p))
-                if not pix.isNull():
-                    thumb.setPixmap(pix.scaled(
-                        92, 60, Qt.KeepAspectRatio, Qt.SmoothTransformation,
-                    ))
-                else:
-                    thumb.setText("?")
-            except Exception:
-                thumb.setText("?")
-            row.addWidget(thumb)
+            row.addWidget(self._template_thumb(step.template_path))
 
             info = QLabel(self._track_info_text(step))
             info.setWordWrap(True)
@@ -726,13 +795,63 @@ class StepRowBuilder:
             )
             row.addWidget(info, 1)
 
-            redraw = self.app.locker.register(QPushButton("↻ Recapture"))
+            redraw = self.app.locker.register(QPushButton("Recapture"))
+            redraw.setIcon(icons.icon("redraw"))
             redraw.setProperty("variant", "ghost")
             redraw.setCursor(Qt.PointingHandCursor)
             redraw.clicked.connect(lambda: self._on_track_capture(idx))
             row.addWidget(redraw)
             target_section.addLayout(row)
         layout.addWidget(target_section)
+
+        # ALTERNATE VIEWS. Extra captures of the same target (rotated NPC,
+        # different camera angle). Only offered once a primary exists,
+        # since the engine sizes the click box by whichever view wins.
+        if step.template_path:
+            views_section = Section(
+                "Alternate views",
+                hint="more captures of the same target; best match wins",
+            )
+            for v_idx, rel in enumerate(step.extra_template_paths or []):
+                vrow = QHBoxLayout()
+                vrow.setSpacing(t.SP_MD)
+                vrow.addWidget(self._template_thumb(rel, 72, 48))
+                sizes = step.extra_template_sizes or []
+                vw, vh = sizes[v_idx] if v_idx < len(sizes) else (0, 0)
+                meta = QLabel(f"View {v_idx + 1}  ·  {vw}×{vh} px")
+                meta.setStyleSheet(
+                    f"color: {t.TEXT_SECONDARY}; "
+                    f"font-family: {t.FONT_MONO}; "
+                    f"font-size: {t.SIZE_BODY}px;"
+                )
+                vrow.addWidget(meta, 1)
+                rm = self.app.locker.register(QPushButton())
+                rm.setIcon(icons.icon("x"))
+                rm.setProperty("variant", "icon-danger")
+                rm.setMaximumSize(t.ICON_BUTTON, t.ICON_BUTTON)
+                rm.setMinimumSize(t.ICON_BUTTON, t.ICON_BUTTON)
+                rm.setCursor(Qt.PointingHandCursor)
+                rm.setToolTip("Remove this view")
+                rm.clicked.connect(
+                    lambda _=False, i=idx, v=v_idx, r=refresh_cb:
+                    self._on_remove_track_view(i, v, r)
+                )
+                vrow.addWidget(rm)
+                views_section.addLayout(vrow)
+            add_row = QHBoxLayout()
+            add_row.addStretch(1)
+            add_view = self.app.locker.register(QPushButton("+ Add view"))
+            add_view.setProperty("variant", "ghost")
+            add_view.setMinimumHeight(t.BUTTON_H)
+            add_view.setCursor(Qt.PointingHandCursor)
+            add_view.setToolTip(
+                "Drag a rectangle around the same target as seen from "
+                "another angle. Saved as templates/<step>_view_<id>.png."
+            )
+            add_view.clicked.connect(lambda: self._on_track_add_view(idx))
+            add_row.addWidget(add_view)
+            views_section.addLayout(add_row)
+            layout.addWidget(views_section)
 
         # TIMING
         timing_section = Section("Timing")
@@ -754,17 +873,14 @@ class StepRowBuilder:
         timing_section.add(rng)
         layout.addWidget(timing_section)
 
-        # RESILIENCE — timeout + on-timeout action, side-by-side.
-        layout.addWidget(self._timeout_section(idx, step))
+        # DETAILS: label + resilience (timeout, on-timeout action).
+        layout.addWidget(self._details_expander(idx, step, resilience=True))
 
     # -- Color body -------------------------------------------------------
 
     def _build_color_body(self, layout: QVBoxLayout, idx: int, step: RecorderStep,
                           refresh_cb: Callable[[], None]) -> None:
-        # LABEL
-        layout.addWidget(self._label_section(idx, step))
-
-        # TARGET — swatch + hex/rgb when set, primary CTA when empty.
+        # TARGET, swatch + hex/rgb when set, primary CTA when empty.
         target_section = Section("Target")
         rgb = step.color_target_rgb
         if rgb is None:
@@ -773,7 +889,8 @@ class StepRowBuilder:
             prompt.setProperty("role", "hint")
             empty.addWidget(prompt)
             empty.addStretch(1)
-            pick_btn = self.app.locker.register(QPushButton("🎯  Pick target color"))
+            pick_btn = self.app.locker.register(QPushButton("Pick target color"))
+            pick_btn.setIcon(icons.icon("target", 16, t.TEXT_ON_ACCENT))
             pick_btn.setProperty("variant", "primary")
             pick_btn.setMinimumHeight(t.BUTTON_H_PRIMARY)
             pick_btn.setCursor(Qt.PointingHandCursor)
@@ -799,13 +916,91 @@ class StepRowBuilder:
                 f"font-size: {t.SIZE_BODY}px;"
             )
             row.addWidget(data, 1)
-            redraw = self.app.locker.register(QPushButton("↻ Recapture"))
+            redraw = self.app.locker.register(QPushButton("Recapture"))
+            redraw.setIcon(icons.icon("redraw"))
             redraw.setProperty("variant", "ghost")
             redraw.setCursor(Qt.PointingHandCursor)
             redraw.clicked.connect(lambda: self._on_color_pick(idx))
             row.addWidget(redraw)
             target_section.addLayout(row)
+
+            # Extra accepted shades from the multi-sample eyedropper. Any
+            # pixel matching any swatch counts; each swatch has its own
+            # remove so a stray click can be undone without re-picking.
+            extras = list(step.color_extra_rgbs or [])
+            if extras:
+                also = QLabel("Also matches")
+                also.setProperty("role", "hint")
+                target_section.add(also)
+                srow = QHBoxLayout()
+                srow.setSpacing(t.SP_XS)
+                for e_idx, e_rgb in enumerate(extras):
+                    e_hex = "#{:02x}{:02x}{:02x}".format(*e_rgb)
+                    sw = self.app.locker.register(QPushButton(""))
+                    sw.setFixedSize(22, 22)
+                    sw.setCursor(Qt.PointingHandCursor)
+                    sw.setToolTip(
+                        f"rgb({e_rgb[0]}, {e_rgb[1]}, {e_rgb[2]})  {e_hex}\n"
+                        "Click to remove this shade."
+                    )
+                    sw.setStyleSheet(
+                        f"background: {e_hex}; border: 1px solid {t.BORDER_SUBTLE}; "
+                        f"border-radius: {t.RADIUS_INPUT}px;"
+                    )
+                    sw.clicked.connect(
+                        lambda _=False, i=idx, e=e_idx, r=refresh_cb:
+                        self._on_remove_color_extra(i, e, r)
+                    )
+                    srow.addWidget(sw)
+                srow.addStretch(1)
+                target_section.addLayout(srow)
         layout.addWidget(target_section)
+
+        # CLICK AREA. Optional zone that limits where matches count, for
+        # colors that also appear on the HUD. Same drawer as Click steps.
+        area_section = Section(
+            "Click area",
+            hint="optional; only matches inside it are clicked",
+        )
+        if step.zone is None:
+            arow = QHBoxLayout()
+            aprompt = QLabel("Whole monitor")
+            aprompt.setProperty("role", "hint")
+            arow.addWidget(aprompt)
+            arow.addStretch(1)
+            set_btn = self.app.locker.register(QPushButton("Set click area"))
+            set_btn.setProperty("variant", "ghost")
+            set_btn.setMinimumHeight(t.BUTTON_H)
+            set_btn.setCursor(Qt.PointingHandCursor)
+            set_btn.clicked.connect(lambda: self._on_color_zone_draw(idx))
+            arow.addWidget(set_btn)
+            area_section.addLayout(arow)
+        else:
+            arow = QHBoxLayout()
+            adata = QLabel(self._zone_summary(step))
+            adata.setStyleSheet(
+                f"color: {t.TEXT_PRIMARY}; "
+                f"font-family: {t.FONT_MONO}; "
+                f"font-size: {t.SIZE_BODY}px;"
+            )
+            adata.setWordWrap(True)
+            arow.addWidget(adata, 1)
+            aredraw = self.app.locker.register(QPushButton("Redraw"))
+            aredraw.setIcon(icons.icon("redraw"))
+            aredraw.setProperty("variant", "ghost")
+            aredraw.setCursor(Qt.PointingHandCursor)
+            aredraw.clicked.connect(lambda: self._on_color_zone_draw(idx))
+            arow.addWidget(aredraw)
+            aclear = self.app.locker.register(QPushButton("Clear"))
+            aclear.setProperty("variant", "ghost")
+            aclear.setCursor(Qt.PointingHandCursor)
+            aclear.clicked.connect(
+                lambda _=False, i=idx, r=refresh_cb: self._on_clear_step_zone(i, r)
+            )
+            arow.addWidget(aclear)
+            area_section.addLayout(arow)
+            area_section.add(self._lock_row(idx, step))
+        layout.addWidget(area_section)
 
         # TOLERANCE
         tol_section = Section("Tolerance")
@@ -851,14 +1046,14 @@ class StepRowBuilder:
         timing_section.add(rng)
         layout.addWidget(timing_section)
 
-        # RESILIENCE
-        layout.addWidget(self._timeout_section(idx, step))
+        # DETAILS: label + resilience (timeout, on-timeout action).
+        layout.addWidget(self._details_expander(idx, step, resilience=True))
 
     # -- Loop body --------------------------------------------------------
 
     def _build_loop_body(self, layout: QVBoxLayout, idx: int, step: RecorderStep,
                          refresh_cb: Callable[[], None]) -> None:
-        # TARGET — which prior step to loop back to.
+        # TARGET, which prior step to loop back to.
         target_section = Section("Target")
         tgt_lbl = QLabel("Loop back to")
         tgt_lbl.setStyleSheet(
@@ -879,7 +1074,7 @@ class StepRowBuilder:
         target_section.add(combo)
         layout.addWidget(target_section)
 
-        # COUNT — engine semantic: N = "loop back N more times" so a
+        # COUNT, engine semantic: N = "loop back N more times" so a
         # CLICK→LOOP block with loop_count=2 runs the CLICK three times
         # (initial pass + 2 loop-backs).
         count_section = Section("Count")
@@ -925,13 +1120,10 @@ class StepRowBuilder:
         sid = step.step_id
         mods, base = _split_combo(step.key_combo)
 
-        # LABEL
-        layout.addWidget(self._label_section(idx, step))
-
-        # KEYBINDING — modifier toggles + key chip + Capture button.
+        # KEYBINDING, modifier toggles + key chip + Capture button.
         # When key is unset, Capture is the prominent primary CTA. When
         # set, the chip carries the value and Capture demotes to a small
-        # ghost "↻ Recapture" inline.
+        # ghost "Recapture" inline.
         binding_section = Section(
             "Keybinding",
             hint="run as admin if the target app is elevated",
@@ -975,9 +1167,9 @@ class StepRowBuilder:
         cap_row.addWidget(chip)
         cap_row.addStretch(1)
 
-        # Capture button — primary when no key set, ghost ↻ when set.
+        # Capture button, primary when no key set, ghost ↻ when set.
         capture_btn = self.app.locker.register(
-            QPushButton("🎯  Press a key" if not base else "↻ Recapture")
+            QPushButton("Press a key" if not base else "Recapture")
         )
         capture_btn.setProperty(
             "variant", "primary" if not base else "ghost"
@@ -1011,7 +1203,7 @@ class StepRowBuilder:
             "timer": None,
         }
 
-        # REPEAT — count + hold duration in a 2-col grid.
+        # REPEAT, count + hold duration in a 2-col grid.
         repeat_section = Section("Repeat")
         rgrid = QHBoxLayout()
         rgrid.setSpacing(t.SP_LG)
@@ -1065,7 +1257,7 @@ class StepRowBuilder:
         repeat_section.addLayout(rgrid)
         layout.addWidget(repeat_section)
 
-        # TIMING — wait time AFTER the keypress before the next step.
+        # TIMING, wait time AFTER the keypress before the next step.
         timing_section = Section("Timing")
         delay_lbl = QLabel(self._delay_text("Wait after press", step))
         delay_lbl.setStyleSheet(
@@ -1084,6 +1276,7 @@ class StepRowBuilder:
         )
         timing_section.add(rng)
         layout.addWidget(timing_section)
+        layout.addWidget(self._details_expander(idx, step))
 
         # ACTION ROW
         layout.addWidget(self._build_action_row(
@@ -1151,7 +1344,7 @@ class StepRowBuilder:
         """Return a human-readable problem string when this step is
         unrunnable, or empty string when fine. Mirrors the predicate
         Clicker._peek_recorder_step uses to decide whether to skip a
-        step at run time (clicker.py — checks template_path / zone /
+        step at run time (clicker.py, checks template_path / zone /
         color_target_rgb / valid key_combo / loop target). Surfaces the
         same conditions in the UI so users catch broken steps before
         they hit Start."""
@@ -1160,7 +1353,7 @@ class StepRowBuilder:
         if step.kind == KIND_LOOP:
             target_id = step.loop_target_step_id
             if not target_id:
-                return ("Loop has no target step — pick which earlier "
+                return ("Loop has no target step, pick which earlier "
                         "step to loop back to.")
             steps = self.app._steps
             for i, s in enumerate(steps):
@@ -1169,22 +1362,22 @@ class StepRowBuilder:
                         return ("Loop must point to an EARLIER step, "
                                 "not itself or later.")
                     return ""
-            return "Loop target step was deleted — pick a new target."
+            return "Loop target step was deleted, pick a new target."
         if step.kind == KIND_TRACK:
             if not step.template_path:
-                return "No target captured — tap Capture target."
+                return "No target captured, tap Capture target."
             return ""
         if step.kind == KIND_COLOR:
             if step.color_target_rgb is None:
-                return "No color picked — tap Pick target color."
+                return "No color picked, tap Pick target color."
             return ""
         if step.kind == KIND_CLICK:
             if step.zone is None:
-                return "No click area — tap Pick click area."
+                return "No click area, tap Pick click area."
             return ""
         if step.kind == KIND_KEY:
             if not step.key_combo:
-                return "No key bound — tap Press a key to bind one."
+                return "No key bound. Tap Press a key to bind one."
             if parse_combo(step.key_combo) is None:
                 return f"Key combo '{step.key_combo}' isn't recognized."
             return ""
@@ -1194,75 +1387,6 @@ class StepRowBuilder:
         lbl = QLabel(text)
         lbl.setProperty("role", "secondary")
         return lbl
-
-    def _build_label_row(self, layout: QVBoxLayout, idx: int,
-                         step: RecorderStep) -> None:
-        """Optional per-step label edit. Lives at the top of every body so
-        users see + edit it next to the rest of the step's controls.
-        Empty input clears the label (header reverts to step number + kind)."""
-        row = QHBoxLayout()
-        row.setSpacing(t.SP_SM)
-        edit = self.app.locker.register(QLineEdit(step.label or ""))
-        edit.setPlaceholderText("Optional label (e.g. 'Drop logs', 'Bank deposit')")
-        edit.setMaxLength(80)
-        edit.editingFinished.connect(
-            lambda i=idx, e=edit: self._on_label_change(i, e.text())
-        )
-        row.addWidget(edit, 1)
-        layout.addLayout(row)
-
-    def _build_timeout_row(self, layout: QVBoxLayout, idx: int,
-                           step: RecorderStep) -> None:
-        """Per-step timeout controls. Used by Track + Color (the two
-        poll-based step kinds that can stall waiting for a target). 0s =
-        wait forever (default; legacy behavior); > 0 dispatches on_timeout.
-
-        Inline rather than tucked behind an Advanced expander because
-        Track / Color bodies don't currently have one — and resilience
-        defaults are something a serious AFK user wants visible, not
-        hidden two clicks deep.
-        """
-        from PySide6.QtWidgets import QDoubleSpinBox
-
-        row = QHBoxLayout()
-        row.setSpacing(t.SP_SM)
-        row.addWidget(self._field_label("Timeout:"))
-
-        spin = self.app.locker.register(QDoubleSpinBox())
-        spin.setRange(0.0, 600.0)
-        spin.setSingleStep(1.0)
-        spin.setDecimals(1)
-        spin.setSuffix(" s")
-        spin.setSpecialValueText("off")
-        spin.setValue(float(step.timeout_seconds))
-        spin.setToolTip(
-            "After this many seconds without finding the target, do the "
-            "selected on-timeout action. 0 = wait forever (default)."
-        )
-        row.addWidget(spin)
-
-        action = self.app.locker.register(QComboBox())
-        action.addItem("Skip step", "skip")
-        action.addItem("Stop engine", "stop")
-        idx_default = 0 if (step.on_timeout or "skip") != "stop" else 1
-        action.setCurrentIndex(idx_default)
-        action.setEnabled(float(step.timeout_seconds) > 0.0)
-        action.setToolTip(
-            "What the engine does when this step times out."
-        )
-        row.addWidget(action, 1)
-
-        # Wire spin → save + enable/disable the action combo so users see
-        # at a glance that the action is moot when timeout is "off".
-        def _on_spin(v: float, i: int = idx, a: QComboBox = action) -> None:
-            self._on_timeout_seconds_change(i, v)
-            a.setEnabled(v > 0.0)
-
-        spin.valueChanged.connect(_on_spin)
-        action.currentIndexChanged.connect(
-            lambda _, a=action, i=idx: self._on_on_timeout_change(i, a.currentData())
-        )
-        layout.addLayout(row)
 
     def _delay_text(self, prefix: str, step: RecorderStep) -> str:
         # Field labels now show ONLY the field name; the live values are
@@ -1274,7 +1398,7 @@ class StepRowBuilder:
 
     def _zone_summary(self, step: RecorderStep) -> str:
         if step.zone is None:
-            return "No click area picked yet — tap “Pick click area” above"
+            return "No click area picked yet, tap “Pick click area” above"
         z = step.zone
         if z.shape == "rect":
             x1, y1, x2, y2 = z.rect
@@ -1286,10 +1410,33 @@ class StepRowBuilder:
 
     def _track_info_text(self, step: RecorderStep) -> str:
         if not step.template_path:
-            return "No target captured yet — tap Capture target."
+            return "No target captured yet. Tap Capture target."
         rect = step.capture_rect or (0, 0, 0, 0)
+        n_views = len(step.extra_template_paths or [])
+        views = f"\n+{n_views} alternate view{'s' if n_views != 1 else ''}" if n_views else ""
         return (f"Captured at ({rect[0]},{rect[1]}) "
-                f"{rect[2] - rect[0]}×{rect[3] - rect[1]} px")
+                f"{rect[2] - rect[0]}×{rect[3] - rect[1]} px{views}")
+
+    def _resolve_template(self, rel_or_abs: str) -> Path:
+        p = Path(rel_or_abs)
+        return p if p.is_absolute() else _config_dir() / p
+
+    def _template_thumb(self, rel_or_abs: Optional[str], w: int = 96, h: int = 64) -> QLabel:
+        thumb = QLabel()
+        thumb.setFixedSize(w, h)
+        thumb.setStyleSheet(
+            f"background: {t.BG}; border: 1px solid {t.BORDER_SUBTLE}; "
+            f"border-radius: {t.RADIUS_INPUT}px;"
+        )
+        thumb.setAlignment(Qt.AlignCenter)
+        pix = QPixmap(str(self._resolve_template(rel_or_abs))) if rel_or_abs else QPixmap()
+        if not pix.isNull():
+            thumb.setPixmap(pix.scaled(
+                w - 4, h - 4, Qt.KeepAspectRatio, Qt.SmoothTransformation,
+            ))
+        else:
+            thumb.setText("?")
+        return thumb
 
     def _loop_target_label(self, i: int, s: RecorderStep) -> str:
         kind_word = {
@@ -1297,10 +1444,10 @@ class StepRowBuilder:
             KIND_COLOR: "Color", KIND_PAUSE: "Pause", KIND_LOOP: "Loop",
         }.get(s.kind, "")
         # Picking your loop target by name beats picking by step number every
-        # time — surface step.label here when present.
+        # time, surface step.label here when present.
         label = (s.label or "").strip()
         if label:
-            return f"Step {i+1} — {label} · {kind_word}"
+            return f"Step {i+1}, {label} · {kind_word}"
         return f"Step {i+1}: {kind_word}"
 
     def _loop_summary(self, step: RecorderStep) -> str:
@@ -1311,10 +1458,10 @@ class StepRowBuilder:
             None,
         )
         if idx is None:
-            return "Loop target missing — pick one above."
+            return "Loop target missing, pick one above."
         if step.loop_count <= 0:
-            return f"↻  Loops back to Step {idx+1} forever."
-        return f"↻  Loops back to Step {idx+1}, {step.loop_count}× more."
+            return f"Loops back to Step {idx+1} forever."
+        return f"Loops back to Step {idx+1}, {step.loop_count} more times."
 
     # -- Edit handlers ---------------------------------------------------
 
@@ -1324,16 +1471,17 @@ class StepRowBuilder:
             return
         self.app._steps[idx].delay_min = float(lo)
         self.app._steps[idx].delay_max = float(hi)
-        self.app._save_steps()
+        # Fires per slider pixel; the spinboxes already show the live value.
+        self.app.save_steps_later()
         # Label is the static field name now ("Delay range" / "Wait for")
-        # — values live in the slider's min/max input boxes. Re-set the
+        #, values live in the slider's min/max input boxes. Re-set the
         # label to ``prefix`` (cheap; harmless if the text didn't change)
         # so any caller that wires this up still sees a consistent state.
         lbl.setText(prefix)
 
     def _on_step_enabled_toggled(self, idx: int, checked: bool) -> None:
         """Persist the new enable state. The engine's _peek_recorder_step
-        will naturally skip disabled steps on the next cycle — no engine
+        will naturally skip disabled steps on the next cycle, no engine
         restart needed. We don't trigger a row re-render here because Qt
         is mid-emit on the switch widget itself; the live switch state
         is the source of truth until the next structural refresh."""
@@ -1397,7 +1545,7 @@ class StepRowBuilder:
     def _chip_text(self, mods: set[str], base: str) -> str:
         """Pretty-printed combo for the KeyChip. Empty when nothing's bound."""
         if not base:
-            return "—"
+            return ", "
         ordered = [_MOD_LABELS[m] for m in _MOD_KEYS if m in mods]
         # KeyChip uppercases; show pretty case with " + " separator.
         parts = ordered + [_pretty_base(base)]
@@ -1409,14 +1557,14 @@ class StepRowBuilder:
             return "Press the capture button to bind a key."
         combo = _join_combo(mods, base)
         if parse_combo(combo) is None:
-            return f"⚠ unrecognized key: {base!r}"
-        return f"✓ bound: {combo_display(combo)}"
+            return f"unrecognized key: {base!r}"
+        return f"bound: {combo_display(combo)}"
 
     def _on_key_mod_toggle(self, idx: int, sid: str, mod: str, on: bool) -> None:
         if not (0 <= idx < len(self.app._steps)):
             return
         step = self.app._steps[idx]
-        # Read the full toggle state — what the user sees is the truth.
+        # Read the full toggle state, what the user sees is the truth.
         mods = self._mods_from_checks(sid)
         if on:
             mods.add(mod)
@@ -1453,7 +1601,7 @@ class StepRowBuilder:
         btn.setText("Press any key…")
         btn.setEnabled(False)
         widgets["lbl"].setText(
-            "Listening — press the key you want bound (Esc to cancel)."
+            "Listening, press the key you want bound (Esc to cancel)."
         )
         # Modifier-aware capture: feed the next press through the QObject
         # signal bridge so the slot runs on the Qt main thread. Modifiers
@@ -1471,7 +1619,7 @@ class StepRowBuilder:
         widgets["timer"] = timer
 
     def _on_key_captured_main_thread(self, sid: str, name: str) -> None:
-        """Bridge slot — runs on the Qt main thread regardless of which
+        """Bridge slot, runs on the Qt main thread regardless of which
         thread emitted ``captured``. Resolves sid → idx and dispatches."""
         _log.info("key capture delivered sid=%s name=%r", sid, name)
         idx = next(
@@ -1492,7 +1640,7 @@ class StepRowBuilder:
         step = self.app._steps[idx]
         canonical = _MOD_ALIASES.get(name, name)
 
-        # Modifiers live in the checkbox state, not in step.key_combo —
+        # Modifiers live in the checkbox state, not in step.key_combo , 
         # that way the Clear button (which empties the combo because a
         # bare modifier is unrunnable) doesn't drop the user's chosen
         # modifier toggles.
@@ -1503,7 +1651,7 @@ class StepRowBuilder:
         if canonical == "esc":
             self._end_capture(sid)
             self.app.toasts.post(
-                "Capture cancelled — Esc isn't bound to this step.",
+                "Capture cancelled, Esc isn't bound to this step.",
                 kind="info",
             )
             return
@@ -1523,7 +1671,7 @@ class StepRowBuilder:
             )
             return
 
-        # Base key — accept it, finalize the capture.
+        # Base key, accept it, finalize the capture.
         if not name:
             self._end_capture(sid)
             return
@@ -1562,11 +1710,11 @@ class StepRowBuilder:
         if 0 <= idx < len(self.app._steps):
             mods, base = _split_combo(self.app._steps[idx].key_combo)
             self._refresh_key_widgets(sid, mods, base)
-        widgets["btn"].setText("🎯 Press a key")
+        widgets["btn"].setText("Press a key")
         widgets["btn"].setEnabled(True)
         if hasattr(self.app, "toasts"):
             self.app.toasts.post(
-                "Key capture timed out — nothing was bound.", kind="info",
+                "Key capture timed out, nothing was bound.", kind="info",
             )
 
     def _end_capture(self, sid: str) -> None:
@@ -1584,7 +1732,7 @@ class StepRowBuilder:
             pass
         btn = widgets.get("btn")
         if btn is not None:
-            btn.setText("🎯 Press a key")
+            btn.setText("Press a key")
             btn.setEnabled(True)
 
     def _on_key_test(self, idx: int, sid: str) -> None:
@@ -1593,11 +1741,11 @@ class StepRowBuilder:
         step = self.app._steps[idx]
         if not step.key_combo or parse_combo(step.key_combo) is None:
             self.app.toasts.post(
-                "Bind a key first — nothing to test.", kind="warn",
+                "Bind a key first, nothing to test.", kind="warn",
             )
             return
         # Route through the engine so Test exercises whichever backend
-        # the user picked (Serial HID / Interception / SendInput) — the
+        # the user picked (Serial HID / Interception / SendInput), the
         # old pynput-Controller path always used SendInput regardless
         # of UI selection, which made Test useless for verifying that
         # NXT actually sees keystrokes from the configured backend.
@@ -1609,12 +1757,12 @@ class StepRowBuilder:
         if scheduled:
             self.app.toasts.post(
                 f"Firing {combo_display(step.key_combo)} in "
-                f"{countdown_s:.0f}s — alt-tab to your target window now.",
+                f"{countdown_s:.0f}s, alt-tab to your target window now.",
                 kind="info",
             )
         else:
             self.app.toasts.post(
-                "Can't test right now — engine is running. Stop it first.",
+                "Can't test right now, engine is running. Stop it first.",
                 kind="warn",
             )
 
@@ -1622,7 +1770,7 @@ class StepRowBuilder:
         self, sid: str, mods: set[str], base: str,
     ) -> None:
         """Sync the chip / checkboxes / validity label to a (mods, base) pair.
-        Safe to call from any handler — block-signals on the checkboxes so
+        Safe to call from any handler, block-signals on the checkboxes so
         the toggled signal doesn't recurse into _on_key_mod_toggle."""
         widgets = self._key_widgets.get(sid)
         if widgets is None:
@@ -1656,8 +1804,16 @@ class StepRowBuilder:
         self.app._steps[idx].key_hold_s = max(0.0, min(10.0, v))
         self.app._save_steps()
 
-    def _set_advanced_open(self, idx: int, open_: bool) -> None:
-        self._advanced_open[idx] = open_
+    def _set_advanced_open(self, step_id: str, open_: bool) -> None:
+        self._advanced_open[step_id] = open_
+
+    def cancel_all_captures(self) -> None:
+        """Stop every pending key-capture timer (app close)."""
+        for sid in list(self._key_widgets):
+            try:
+                self._end_capture(sid)
+            except Exception:
+                pass
 
     # -- Reorder / duplicate / remove ------------------------------------
 
@@ -1673,20 +1829,50 @@ class StepRowBuilder:
     def _duplicate(self, idx: int, refresh_cb) -> None:
         if not (0 <= idx < len(self.app._steps)):
             return
+        from modules.recorder import _new_step_id
         new_step = copy.deepcopy(self.app._steps[idx])
+        # Every step gets a fresh id (loop targets and expanded-state keys
+        # are id-based). Track steps also get their own copies of the PNGs
+        # so a later Recapture / remove on either step can't touch the
+        # other's files.
+        new_step.step_id = _new_step_id()
         if new_step.kind == KIND_TRACK:
-            from modules.recorder import _new_step_id
-            new_step.step_id = _new_step_id()
+            new_step.template_path = self._copy_template(
+                new_step.template_path, f"{new_step.step_id}.png",
+            )
+            new_step.extra_template_paths = [
+                self._copy_template(p, f"{new_step.step_id}_view_{new_view_id()}.png")
+                for p in (new_step.extra_template_paths or [])
+            ]
         self.app._steps.insert(idx + 1, new_step)
         self.app._save_steps()
         refresh_cb()
         self.app.overlay_manager.refresh_step_overlays()
 
+    def _copy_template(self, src_rel: Optional[str], dst_name: str) -> Optional[str]:
+        """Copy a template PNG to ``templates/<dst_name>`` and return the new
+        relative path. On any failure the original path is returned so the
+        duplicate still works, merely sharing the file as before."""
+        if not src_rel:
+            return src_rel
+        try:
+            src = self._resolve_template(src_rel)
+            if not src.exists():
+                return src_rel
+            tdir = _templates_dir()
+            tdir.mkdir(parents=True, exist_ok=True)
+            dst = tdir / dst_name
+            shutil.copy2(str(src), str(dst))
+            return os.path.relpath(str(dst), str(_config_dir())).replace("\\", "/")
+        except Exception:
+            _log.warning("template copy failed for %r", src_rel, exc_info=True)
+            return src_rel
+
     def _remove(self, idx: int, refresh_cb) -> None:
         if not (0 <= idx < len(self.app._steps)):
             return
         if QMessageBox.question(
-            None, "Remove step",
+            self.app, "Remove step",
             f"Remove step {idx + 1}? You can restore it from the "
             "Record-tab footer until the app closes.",
         ) != QMessageBox.Yes:
@@ -1698,20 +1884,13 @@ class StepRowBuilder:
         if sid is not None and sid in self._key_widgets:
             self._end_capture(sid)
             self._key_widgets.pop(sid, None)
-        # Collect template files that should be moved to .trash/ instead
-        # of unlinked, so the user can restore the step (and its captured
-        # images) until the app closes.
-        from pathlib import Path
-        from ui.config_io import _config_dir
-        template_paths: list[Path] = []
-        if step.kind == KIND_TRACK:
-            for rel in [step.template_path, *step.extra_template_paths]:
-                if not rel:
-                    continue
-                p = Path(rel)
-                if not p.is_absolute():
-                    p = _config_dir() / p
-                template_paths.append(p)
+        # Template files go to .trash/ (restorable until app close), but
+        # only the ones no surviving step still references. Legacy
+        # duplicates shared a single PNG; taking it would break the twin.
+        template_paths = [
+            self._resolve_template(p)
+            for p in orphaned_template_paths(step, self.app._steps)
+        ]
         # Push to trash BEFORE removing from the list so the restore
         # index reflects the pre-delete position.
         self.app._push_step_to_trash(step, idx, template_paths)
@@ -1733,6 +1912,32 @@ class StepRowBuilder:
         refresh_cb()
         self.app.overlay_manager.refresh_step_overlays()
 
+    def _lock_row(self, idx: int, step: RecorderStep) -> QWidget:
+        """LOCK  WINDOW | SCREEN row for a step's click area."""
+        ctl = self.app.locker.register(ZoneLockControl())
+        ctl.set_zone(step.zone)
+        ctl.modeChanged.connect(lambda m, i=idx: self._on_step_lock_mode(i, m))
+        return ctl
+
+    def _on_step_lock_mode(self, idx: int, mode: str) -> None:
+        if not (0 <= idx < len(self.app._steps)):
+            return
+        step = self.app._steps[idx]
+        if step.zone is None:
+            return
+        from modules.zone_lock import apply_lock_mode
+        new_zone = apply_lock_mode(step.zone, mode)
+        if mode == "window" and new_zone.lock is None:
+            self.app.toasts.post(
+                "No window under the click area centre, so it stays screen-locked.",
+                kind="warn",
+            )
+        step.zone = new_zone
+        self.app.zone_locks.forget(step.step_id)
+        self.app._save_steps()
+        self.app.record_mode_tab.render_all()
+        self.app.overlay_manager.refresh_step_overlays()
+
     def _on_draw_step(self, idx: int) -> None:
         if not (0 <= idx < len(self.app._steps)):
             return
@@ -1747,11 +1952,12 @@ class StepRowBuilder:
             if 0 <= idx < len(self.app._steps):
                 self.app._steps[idx].zone = zone
                 self.app._steps[idx].shape = zone.shape
+                self.app.zone_locks.forget(self.app._steps[idx].step_id)
                 self.app._save_steps()
                 self.app.record_mode_tab.render_all()
                 self.app.overlay_manager.refresh_step_overlays()
 
-        self.app.open_zone_drawer(step.shape, _done)
+        self.app.open_zone_drawer(step.shape, _done, attach_lock=True)
 
     def _on_track_capture(self, idx: int) -> None:
         if not (0 <= idx < len(self.app._steps)):
@@ -1768,32 +1974,48 @@ class StepRowBuilder:
         # Track captures use rect bounds.
         self.app.open_zone_drawer("rect", _done)
 
-    def _adopt_track_template(self, idx: int, zone) -> None:
-        """Capture the screen region inside ``zone`` and save it as this
-        step's template PNG.
+    def _grab_zone_png(self, zone, dst_name: str):
+        """Grab the screen inside ``zone`` (drawn in Qt DIPs) and write it
+        to ``templates/<dst_name>``.
+
+        Returns ``(rel_path, (w, h), (x1, y1, x2, y2))`` with the rect in
+        PHYSICAL pixels. mss addresses physical pixels, so on a 150% DPI
+        monitor a DIP rect grabbed as-is captured the wrong (smaller,
+        offset) region; the conversion goes through ``dpi_cursor`` so it
+        matches how the engine moves the cursor.
         """
-        if not (0 <= idx < len(self.app._steps)):
-            return
+        import cv2
+        import mss
+        from ui.config_io import _shot_to_bgr_array
+        from utils.dpi_cursor import dip_rect_to_physical
         x1, y1, x2, y2 = zone.aabb()
         x1, x2 = sorted((x1, x2))
         y1, y2 = sorted((y1, y2))
+        px, py, pw, ph = dip_rect_to_physical(x1, y1, x2 - x1, y2 - y1)
+        if pw < 1 or ph < 1:
+            raise ValueError("capture area is empty")
+        with mss.mss() as sct:
+            shot = sct.grab({"left": px, "top": py, "width": pw, "height": ph})
+        bgr = _shot_to_bgr_array(shot)
+        tdir = _templates_dir()
+        tdir.mkdir(parents=True, exist_ok=True)
+        dst = tdir / dst_name
+        cv2.imwrite(str(dst), bgr)
+        rel = os.path.relpath(str(dst), str(_config_dir())).replace("\\", "/")
+        return rel, (int(bgr.shape[1]), int(bgr.shape[0])), (px, py, px + pw, py + ph)
+
+    def _adopt_track_template(self, idx: int, zone) -> None:
+        """Capture the screen region inside ``zone`` and save it as this
+        step's primary template PNG."""
+        if not (0 <= idx < len(self.app._steps)):
+            return
+        step = self.app._steps[idx]
         try:
-            import cv2
-            import mss
-            from ui.config_io import _config_dir, _shot_to_bgr_array, _templates_dir
-            with mss.mss() as sct:
-                shot = sct.grab({"left": x1, "top": y1,
-                                  "width": x2 - x1, "height": y2 - y1})
-            bgr = _shot_to_bgr_array(shot)
-            tdir = _templates_dir()
-            tdir.mkdir(parents=True, exist_ok=True)
-            step = self.app._steps[idx]
-            dst = tdir / f"{step.step_id}.png"
-            cv2.imwrite(str(dst), bgr)
-            rel = os.path.relpath(str(dst), str(_config_dir())).replace("\\", "/")
+            rel, size, phys_rect = self._grab_zone_png(zone, f"{step.step_id}.png")
             step.template_path = rel
-            step.template_size = (bgr.shape[1], bgr.shape[0])
-            step.capture_rect = (x1, y1, x2, y2)
+            step.template_size = size
+            step.capture_rect = phys_rect
+            step.capture_rect_space = CAPTURE_SPACE_PHYSICAL
             self.app._save_steps()
             self.app.record_mode_tab.render_all()
             # Push as the live preview for the tracker tick.
@@ -1801,6 +2023,64 @@ class StepRowBuilder:
                 self.app.tracker_preview.set_preview_step(step)
         except Exception as e:
             self.app.toasts.post(f"Capture failed: {e}", kind="danger")
+
+    def _on_track_add_view(self, idx: int) -> None:
+        """Capture another look at the same target (rotated NPC, other
+        camera angle). Stored beside the primary and matched every frame."""
+        if not (0 <= idx < len(self.app._steps)):
+            return
+        from modules.clicker import ClickerState
+        if self.app.clicker.state != ClickerState.IDLE:
+            return
+
+        def _done(zone):
+            if zone is None or zone.shape != "rect":
+                return
+            self._adopt_track_view(idx, zone)
+
+        self.app.open_zone_drawer("rect", _done)
+
+    def _adopt_track_view(self, idx: int, zone) -> None:
+        if not (0 <= idx < len(self.app._steps)):
+            return
+        step = self.app._steps[idx]
+        try:
+            rel, size, _rect = self._grab_zone_png(
+                zone, f"{step.step_id}_view_{new_view_id()}.png",
+            )
+            step.extra_template_paths.append(rel)
+            step.extra_template_sizes.append(size)
+            self.app._save_steps()
+            self.app.record_mode_tab.render_all()
+            if hasattr(self.app, "tracker_preview"):
+                self.app.tracker_preview.set_preview_step(step)
+        except Exception as e:
+            self.app.toasts.post(f"View capture failed: {e}", kind="danger")
+
+    def _on_remove_track_view(self, idx: int, view_idx: int,
+                              refresh_cb: Callable[[], None]) -> None:
+        if not (0 <= idx < len(self.app._steps)):
+            return
+        step = self.app._steps[idx]
+        if not (0 <= view_idx < len(step.extra_template_paths)):
+            return
+        rel = step.extra_template_paths.pop(view_idx)
+        if view_idx < len(step.extra_template_sizes):
+            step.extra_template_sizes.pop(view_idx)
+        # Delete the PNG only if nothing else (this step's primary, or any
+        # other step) still points at it.
+        probe = copy.copy(step)
+        probe.template_path = rel
+        probe.extra_template_paths = []
+        if orphaned_template_paths(probe, self.app._steps):
+            try:
+                self._resolve_template(rel).unlink(missing_ok=True)
+            except Exception:
+                pass
+        self.app._save_steps()
+        refresh_cb()
+        if hasattr(self.app, "tracker_preview"):
+            self.app.tracker_preview.set_preview_step(step)
 
     def _on_color_pick(self, idx: int) -> None:
         if not (0 <= idx < len(self.app._steps)):
@@ -1812,13 +2092,32 @@ class StepRowBuilder:
         def _done(result):
             if result is None:
                 return
+            # ColorPickResult (samples + last_xy) or a legacy (rgb, x, y)
+            # tuple; both unpack the same way for the primary.
             (rgb, x, y) = result
-            if 0 <= idx < len(self.app._steps):
-                self.app._steps[idx].color_target_rgb = tuple(rgb)
-                # Default search rect = whole virtual screen until the user
-                # restricts it; store as the picked monitor's bounds.
-                self.app._save_steps()
-                self.app.record_mode_tab.render_all()
+            samples = list(getattr(result, "samples", None) or [tuple(rgb)])
+            if not (0 <= idx < len(self.app._steps)):
+                return
+            step = self.app._steps[idx]
+            step.color_target_rgb = tuple(int(c) for c in samples[0])
+            # Additional eyedropper clicks become alternate accepted colors
+            # (gradient shades, anti-aliased edges). Duplicates dropped.
+            extras: list[tuple[int, int, int]] = []
+            for s in samples[1:]:
+                rgb_t = tuple(int(c) for c in s)
+                if rgb_t != step.color_target_rgb and rgb_t not in extras:
+                    extras.append(rgb_t)
+            step.color_extra_rgbs = extras
+            # Bound the per-cycle scan to the monitor the pick landed on,
+            # in mss physical pixels (the engine grabs with these numbers).
+            screen = screen_at_dip(x, y)
+            if screen is not None:
+                px, py, pw, ph = screen_physical_rect(screen)
+                step.color_search_rect = (px, py, px + pw, py + ph)
+            else:
+                step.color_search_rect = None
+            self.app._save_steps()
+            self.app.record_mode_tab.render_all()
 
         self.app.open_color_picker(_done)
 
@@ -1834,7 +2133,40 @@ class StepRowBuilder:
             return
         self.app._steps[idx].color_tolerance = int(value)
         lbl.setText(str(int(value)))
-        self.app._save_steps()
+        self.app.save_steps_later()
+
+    def _on_remove_color_extra(self, idx: int, extra_idx: int,
+                               refresh_cb: Callable[[], None]) -> None:
+        if not (0 <= idx < len(self.app._steps)):
+            return
+        extras = self.app._steps[idx].color_extra_rgbs
+        if 0 <= extra_idx < len(extras):
+            del extras[extra_idx]
+            self.app._save_steps()
+            refresh_cb()
+
+    def _on_color_zone_draw(self, idx: int) -> None:
+        """Restrict where color matches count. Same drawer the Click step
+        uses; the engine intersects this zone with the search rect."""
+        if not (0 <= idx < len(self.app._steps)):
+            return
+        from modules.clicker import ClickerState
+        if self.app.clicker.state != ClickerState.IDLE:
+            return
+        step = self.app._steps[idx]
+
+        def _done(zone):
+            if zone is None:
+                return
+            if 0 <= idx < len(self.app._steps):
+                self.app._steps[idx].zone = zone
+                self.app._steps[idx].shape = zone.shape
+                self.app.zone_locks.forget(self.app._steps[idx].step_id)
+                self.app._save_steps()
+                self.app.record_mode_tab.render_all()
+                self.app.overlay_manager.refresh_step_overlays()
+
+        self.app.open_zone_drawer(step.shape or "rect", _done, attach_lock=True)
 
     def _on_loop_target_change(self, idx: int, target_id) -> None:
         if 0 <= idx < len(self.app._steps) and target_id:

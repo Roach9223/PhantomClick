@@ -1,31 +1,37 @@
-"""Input backends for scripts. Two adapters:
+"""Input and capture seams for the bot framework.
 
-* ``post_message`` — Win32 PostMessage, RS3 background play.
-* ``real``        — pyautogui + pynput, any Windows app, real cursor.
+- :class:`InputBackend` is the Protocol every actuator satisfies. The
+  only shipped implementation is
+  :class:`ai.input.clicker_actuator.ClickerActuatorBackend`, which
+  routes through PhantomClick's humanizer and keyboard backends. The
+  app builds it once and hands it to ``BotRunner.play``.
+- :class:`FrameSource` / :class:`FrameMapper` (see ``frame_source``)
+  are the capture side: where frames come from and how frame pixels
+  map back to screen pixels.
 
-Each script's YAML header carries an ``input_mode`` field; the runtime
-picks the adapter accordingly.
-
-API (uniform across backends)::
-
-    from rs3vision_studio.input import get_backend
-
-    inp = get_backend("post_message")
-    inp.click(x, y, button="left")
-    inp.move(x, y)
-    inp.type_text("hello")
+Phase 2 adds a KMBox NET actuator and a capture-card frame source
+behind the same two Protocols.
 """
 
 from __future__ import annotations
 
-from typing import Any, Callable, Literal, Optional, Protocol
+from typing import Protocol
+
+from .frame_source import (
+    FrameMapper,
+    FrameSource,
+    MssFrameSource,
+    ReplaySource,
+    cursor_screen_xy,
+)
 
 
 class InputBackend(Protocol):
     """Minimal surface every input adapter must provide.
 
-    Optional ``shutdown()`` lets backends release watchdog threads;
-    callers should invoke it when a run ends. Missing method is fine.
+    Coordinates are physical screen pixels. Optional extras the runner
+    probes with ``getattr``: ``click_here(button)``, ``shutdown()``,
+    ``stop_event``, ``set_input_listener(fn)``, ``last_input_at``.
     """
 
     name: str
@@ -43,31 +49,11 @@ class InputBackend(Protocol):
     ) -> None: ...
 
 
-BackendName = Literal["post_message", "real"]
-
-
-def get_backend(
-    mode: BackendName,
-    *,
-    humanizer_config: Optional[Any] = None,
-    is_stopped: Optional[Callable[[], bool]] = None,
-    on_failsafe: Optional[Callable[[], None]] = None,
-) -> InputBackend:
-    """Construct an input backend.
-
-    ``humanizer_config`` and ``is_stopped`` are plumbed through to the
-    ``real`` backend so the runtime can share its stop flag and
-    :class:`~rs3vision_studio.humanize.config.HumanizerConfig` with the
-    click layer. Ignored for backends that don't use humanization.
-    """
-    if mode == "post_message":
-        from .post_message import PostMessageBackend
-        return PostMessageBackend()
-    if mode == "real":
-        from .real import RealInputBackend
-        return RealInputBackend(
-            cfg=humanizer_config,
-            is_stopped=is_stopped,
-            on_failsafe=on_failsafe,
-        )
-    raise ValueError(f"unknown input mode: {mode!r}")
+__all__ = [
+    "FrameMapper",
+    "FrameSource",
+    "InputBackend",
+    "MssFrameSource",
+    "ReplaySource",
+    "cursor_screen_xy",
+]

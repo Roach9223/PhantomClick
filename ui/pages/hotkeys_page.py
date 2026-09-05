@@ -1,4 +1,4 @@
-"""Hotkeys page — :class:`PageHeader` + :class:`HotkeysPageBody`.
+"""Hotkeys page, :class:`PageHeader` + :class:`HotkeysPageBody`.
 
 Mirrors the structure of :mod:`ui.pages.hover_page`: single left-aligned
 column, content max-width capped at

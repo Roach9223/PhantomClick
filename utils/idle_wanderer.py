@@ -18,21 +18,20 @@ import threading
 import time
 from typing import Optional
 
-from pynput.mouse import Controller
-
 from . import dpi_cursor, humanizer
-
-_mouse = Controller()
 
 
 def _screen_bounds() -> tuple[int, int, int, int]:
     """Primary-monitor bounds, used as the fallback when no explicit
     target was passed in. Multi-monitor support comes from the caller
-    threading bounds through ``wander(... screen_bounds=...)``."""
+    threading bounds through ``wander(... screen_bounds=...)``.
+
+    DPI awareness is a process-wide, set-once property owned by
+    ``main.py``; flipping it here would silently change how every other
+    Win32 coordinate call in the process behaves."""
     try:
         import ctypes
         user32 = ctypes.windll.user32
-        user32.SetProcessDPIAware()
         w = user32.GetSystemMetrics(0)
         h = user32.GetSystemMetrics(1)
         return (0, 0, w, h)
@@ -57,7 +56,7 @@ def _allowed_bounds(zone, padding: int,
 
 
 def _clamp(pt: tuple[float, float], bounds: tuple[int, int, int, int]) -> tuple[int, int]:
-    # Margin matches humanizer.SAFE_MARGIN — keeps drifts strictly
+    # Margin matches humanizer.SAFE_MARGIN, keeps drifts strictly
     # outside the watchdog's 2-px corner zone (clicker.py::_watchdog_loop).
     m = humanizer.SAFE_MARGIN
     bx1, by1, bx2, by2 = bounds
@@ -85,7 +84,7 @@ def wander(
     """Perform one aimless drift.
 
     ``screen_bounds`` is an optional ``(left, top, right, bottom)`` rect
-    describing the monitor the engine should clamp drifts inside —
+    describing the monitor the engine should clamp drifts inside , 
     threaded down from the Settings card's monitor selector so a multi-
     monitor user's drifts never leak across a bezel. When omitted, falls
     back to the primary-monitor heuristic.
@@ -97,7 +96,7 @@ def wander(
     bounds = _allowed_bounds(zone, padding, screen_bounds)
     final = _pick_target(bounds)
 
-    # Speed category — 25% fast / 50% medium / 25% slow.
+    # Speed category, 25% fast / 50% medium / 25% slow.
     roll = random.random()
     if roll < 0.25:
         duration = random.uniform(0.08, 0.20)

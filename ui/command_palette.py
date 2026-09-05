@@ -1,4 +1,4 @@
-"""Command palette — Ctrl+K popup over the App window.
+"""Command palette, Ctrl+K popup over the App window.
 
 Frameless dialog with a search input on top and a custom-painted list of
 matching commands below. Empty search shows every available command grouped
@@ -165,7 +165,7 @@ class CommandPalette(QDialog):
         cmd = self._list.command_at(self._highlight)
         if cmd is None:
             return
-        # Close *first*, then dispatch — closing while the action runs
+        # Close *first*, then dispatch, closing while the action runs
         # avoids focus weirdness if the action spawns an overlay.
         self.close()
         try:
@@ -202,7 +202,7 @@ class _Row(QFrame):
             cat_lbl = QLabel(category.upper())
             cat_lbl.setStyleSheet(
                 f"color: {t.TEXT_TERTIARY}; font-size: {t.SIZE_SMALL}px; "
-                f"font-family: {t.FONT_DISPLAY}; font-weight: 700; "
+                f"font-family: {t.FONT_FAMILY}; font-weight: 700; "
                 f"letter-spacing: 1.4px; min-width: 64px;"
             )
             layout.addWidget(cat_lbl)
@@ -234,7 +234,7 @@ class _Header(QLabel):
         super().__init__(text.upper(), parent)
         self.setStyleSheet(
             f"color: {t.TEXT_TERTIARY}; font-size: {t.SIZE_SMALL}px; "
-            f"font-family: {t.FONT_DISPLAY}; font-weight: 700; "
+            f"font-family: {t.FONT_FAMILY}; font-weight: 700; "
             f"letter-spacing: 1.6px; padding: {t.SP_SM}px {t.SP_SM}px {t.SP_XS}px;"
         )
 

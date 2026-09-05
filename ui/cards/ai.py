@@ -1,19 +1,19 @@
-"""AI card — third top-level mode body, in the Click/Record card style.
+"""AI card, third top-level mode body, in the Click/Record card style.
 
 Five stacked :class:`Card` sections, top to bottom:
 
-1. **Hero** — current bot: picker, goal, phase chips, setup-notes link.
-2. **Live** — animated :class:`StatusDot` + state word, last-fired rule,
+1. **Hero**, current bot: picker, goal, phase chips, setup-notes link.
+2. **Live**, animated :class:`StatusDot` + state word, last-fired rule,
    tick/clicks/CPM/watchdog stat chips, live screen-preview thumbnail
    driven by the BotRunner's ``frame_captured`` signal.
-3. **Rules** — list of every ``@bot.rule`` with phase chip and active
+3. **Rules**, list of every ``@bot.rule`` with phase chip and active
    highlight (the rule that fired this tick lights up).
-4. **Config** — :class:`LabeledSlider` tick rate, monitor picker,
+4. **Config**, :class:`LabeledSlider` tick rate, monitor picker,
    :class:`IOSSwitch` dry-run, :class:`Expander` for the watchdog knobs.
-5. **Log** — segmented filter (All / Rules / Errors) + colored output.
+5. **Log**, segmented filter (All / Rules / Errors) + colored output.
 
 The bot picker, dry-run, and tick-rate values still live in
-``app.cfg["ai_*"]``; the redesign is purely UI — wiring is unchanged.
+``app.cfg["ai_*"]``; the redesign is purely UI, wiring is unchanged.
 ``AIPageBody.tick()`` runs each app frame and refreshes whichever bits
 need polling (status dot, stat chips, watchdog progress).
 """
@@ -33,9 +33,9 @@ from PySide6.QtWidgets import (
     QPushButton, QSizePolicy, QVBoxLayout, QWidget,
 )
 
-from ui.config_io import save_config
+from ui.config_io import DEFAULTS, save_config
 
-from .. import theme as t
+from .. import icons, theme as t
 from ..widgets.card import Card
 from ..widgets.expander import Expander
 from ..widgets.ios_switch import IOSSwitch
@@ -45,7 +45,7 @@ from ..widgets.status_dot import StatusDot
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Bot enumeration & import (unchanged surface — still called by app.py
+# Bot enumeration & import (unchanged surface, still called by app.py
 # and ui/monitor_server.py via ``from ui.cards.ai import _enumerate_bots``)
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -93,7 +93,14 @@ def _import_bot(bot_ref: str, yaml_path: str):
     if spec is None or spec.loader is None:
         raise ImportError(f"can't load module spec for {py_path}")
     module = _ilu.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as e:
+        # A bot script that fails at import (syntax error, missing dep)
+        # must read as a load failure, not a random traceback in the log.
+        raise ImportError(
+            f"{py_path.name} failed to import: {type(e).__name__}: {e}"
+        ) from e
     bot = getattr(module, "bot", None)
     if bot is None:
         raise ImportError(f"{py_path} has no module-level `bot` symbol")
@@ -101,19 +108,19 @@ def _import_bot(bot_ref: str, yaml_path: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Phase color palette — distinct hues so the eye can scan the rules
+# Phase color palette, distinct hues so the eye can scan the rules
 # list and tell which phases a bot moves through.
 # ─────────────────────────────────────────────────────────────────────────
 
 
 _PHASE_COLORS: dict[str, str] = {
-    "scanning":         "#5b8def",   # info blue
-    "chopping":         "#34d399",   # green
-    "collecting_boon":  "#fbbf24",   # amber
-    "banking":          "#a78bfa",   # violet
-    "fighting":         "#ef4444",   # danger
-    "eating":           "#f97316",   # orange
-    "skilling":         "#22d3ee",   # cyan
+    "scanning":         t.INFO,
+    "chopping":         t.ACCENT,
+    "collecting_boon":  t.WARN,
+    "banking":          t.TEXT_SECONDARY,
+    "fighting":         t.DANGER,
+    "eating":           t.WARN,
+    "skilling":         t.ACCENT,
 }
 
 
@@ -124,7 +131,7 @@ def _phase_color(phase: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Small helpers — phase chip, stat chip, rule pill, preview thumb
+# Small helpers, phase chip, stat chip, rule pill, preview thumb
 # ─────────────────────────────────────────────────────────────────────────
 
 
@@ -174,7 +181,7 @@ class _StatChip(QFrame):
         col.setSpacing(0)
         col.setAlignment(Qt.AlignCenter)
 
-        self._value = QLabel("—")
+        self._value = QLabel(", ")
         self._value.setStyleSheet(
             f"color: {t.TEXT_PRIMARY}; "
             f"font-family: {t.FONT_MONO}; "
@@ -225,8 +232,9 @@ class _RuleRow(QFrame):
         row.setContentsMargins(10, 6, 10, 6)
         row.setSpacing(t.SP_SM)
 
-        self._dot = QLabel("●")
-        self._dot.setStyleSheet(f"color: {t.TEXT_DISABLED}; font-size: 10px;")
+        self._dot = QLabel()
+        self._dot.setFixedSize(8, 8)
+        self._dot.setPixmap(icons.pixmap("square", 8, t.TEXT_DISABLED))
         row.addWidget(self._dot)
 
         self._name_label = QLabel(name)
@@ -256,15 +264,13 @@ class _RuleRow(QFrame):
     def _refresh_style(self) -> None:
         active = self._active_until > 0.0
         if active:
-            bg = "rgba(34, 211, 238, 0.08)"
-            border = "rgba(34, 211, 238, 0.40)"
-            self._dot.setStyleSheet(f"color: {t.ACCENT}; font-size: 10px;")
+            bg = t.ACCENT_DIM
+            border = t.ACCENT
+            self._dot.setPixmap(icons.pixmap("square", 8, t.ACCENT))
         else:
             bg = "transparent"
             border = "transparent"
-            self._dot.setStyleSheet(
-                f"color: {t.TEXT_DISABLED}; font-size: 10px;"
-            )
+            self._dot.setPixmap(icons.pixmap("square", 8, t.TEXT_DISABLED))
         self.setStyleSheet(
             f"QFrame[role=\"rule-row\"] {{"
             f"  background: {bg}; "
@@ -337,7 +343,7 @@ class _HeroSection(Card):
         self.app = app
         self._parent_body = parent_body
 
-        # Big bot dropdown — looks like a heading, not a form field.
+        # Big bot dropdown, looks like a heading, not a form field.
         self.bot_combo = QComboBox()
         self.bot_combo.setStyleSheet(
             f"QComboBox {{"
@@ -346,7 +352,7 @@ class _HeroSection(Card):
             f"  border-radius: 8px; "
             f"  padding: 8px 12px; "
             f"  color: {t.TEXT_PRIMARY}; "
-            f"  font-family: {t.FONT_DISPLAY}; "
+            f"  font-family: {t.FONT_MONO}; "
             f"  font-size: 18px; "
             f"  font-weight: 600;"
             f"}}"
@@ -363,7 +369,7 @@ class _HeroSection(Card):
         self.bot_combo.currentIndexChanged.connect(self._on_bot_changed)
         self.add(self.bot_combo)
 
-        # Goal text — wraps, secondary tone.
+        # Goal text, wraps, secondary tone.
         self.goal_label = QLabel("")
         self.goal_label.setWordWrap(True)
         self.goal_label.setStyleSheet(
@@ -382,7 +388,7 @@ class _HeroSection(Card):
         self._chips_layout.setAlignment(Qt.AlignLeft)
         self.add(self.chips_host)
 
-        # Replay button (D.1) — feeds saved frames into the runtime
+        # Replay button (D.1), feeds saved frames into the runtime
         # instead of live mss capture. Useful for tuning detection
         # against a captured fishing-spot directory or replaying a
         # failure case from runs/<session>/failures/. Forced dry_run
@@ -391,7 +397,8 @@ class _HeroSection(Card):
         rrow = QHBoxLayout(replay_row)
         rrow.setContentsMargins(0, t.SP_XS, 0, 0)
         rrow.setSpacing(t.SP_SM)
-        self.btn_replay = QPushButton("▶ Replay frames…")
+        self.btn_replay = QPushButton("Replay frames…")
+        self.btn_replay.setIcon(icons.icon("play"))
         self.btn_replay.setCursor(Qt.PointingHandCursor)
         self.btn_replay.setStyleSheet(
             f"QPushButton {{"
@@ -410,14 +417,14 @@ class _HeroSection(Card):
         self.btn_replay.setToolTip(
             "Run the bot against saved PNG frames (a failure folder, a "
             "captured recording, …) instead of live capture. Dry-run is "
-            "forced — the actuator won't fire input on stale frames."
+            "forced, the actuator won't fire input on stale frames."
         )
         self.btn_replay.clicked.connect(self._on_replay_clicked)
         rrow.addWidget(self.btn_replay)
         rrow.addStretch(1)
         self.add(replay_row)
 
-        # Setup-notes disclosure — only visible if the YAML has notes.
+        # Setup-notes disclosure, only visible if the YAML has notes.
         # Uses the canonical Expander widget (chevron + slide animation)
         # so disclosure looks the same as the Config-section "Advanced"
         # expander; matches the same pattern Record-tab step bodies use.
@@ -450,25 +457,25 @@ class _HeroSection(Card):
     def _refresh(self) -> None:
         self.bot_combo.blockSignals(True)
         self.bot_combo.clear()
-        # 1. Bundles — user-authored bots living in <root>/bots/<slug>/.
+        # 1. Bundles, user-authored bots living in <root>/bots/<slug>/.
         bundles = self._parent_body._bundles or []
         if bundles:
             for b in bundles:
                 tag = f"  ({b.target_skill})" if b.target_skill else ""
                 self.bot_combo.addItem(
-                    f"📁  {b.name}{tag}", f"{self.BUNDLE_PREFIX}{b.slug}",
+                    f"{b.name}{tag}", f"{self.BUNDLE_PREFIX}{b.slug}",
                 )
             self.bot_combo.insertSeparator(self.bot_combo.count())
         # 2. New-bundle action.
-        self.bot_combo.addItem("✚  New custom bot…", self.NEW_BUNDLE_DATA)
-        # 3. Legacy in-cfg custom entry — only show if there's existing
+        self.bot_combo.addItem("New custom bot...", self.NEW_BUNDLE_DATA)
+        # 3. Legacy in-cfg custom entry, only show if there's existing
         # data, so new users don't see a confusing duplicate of the
         # bundle workflow.
         if self.app.cfg.get("ai_user_bot_steps"):
             self.bot_combo.addItem(
-                "◇  Custom Bot (legacy / in-cfg)", self.CUSTOM_BOT_DATA,
+                "Custom Bot (legacy / in-cfg)", self.CUSTOM_BOT_DATA,
             )
-        # 4. Library bots — Python-authored bots from ai/tasks/library/.
+        # 4. Library bots, Python-authored bots from ai/tasks/library/.
         bots = self._parent_body._bots
         if bots:
             self.bot_combo.insertSeparator(self.bot_combo.count())
@@ -508,7 +515,7 @@ class _HeroSection(Card):
         idx = self.bot_combo.currentIndex()
         data = self.bot_combo.itemData(idx)
         if data == self.NEW_BUNDLE_DATA:
-            # User clicked the "+ New custom bot…" action — prompt for
+            # User clicked the "+ New custom bot…" action, prompt for
             # a name, materialize a bundle, switch to it.
             self._prompt_create_bundle()
             return
@@ -546,13 +553,13 @@ class _HeroSection(Card):
         runner = getattr(self.app, "bot_runner", None)
         if runner is None:
             self.app.toasts.post(
-                "⚠ AI mode unavailable — ai/ subpackage didn't load.",
+                "AI mode unavailable, ai/ subpackage didn't load.",
                 kind="error",
             )
             return
         if runner.is_running():
             self.app.toasts.post(
-                "⚠ Stop the bot first — replay can't share the runner.",
+                "Stop the bot first, replay can't share the runner.",
                 kind="warn",
             )
             return
@@ -584,7 +591,7 @@ class _HeroSection(Card):
         # Compile the bundle to a Bot the same way Start does.
         if bundle is None:
             self.app.toasts.post(
-                "⚠ Replay needs an active bundle. Pick a bot first.",
+                "Replay needs an active bundle. Pick a bot first.",
                 kind="warn",
             )
             return
@@ -602,7 +609,7 @@ class _HeroSection(Card):
             bundle=bundle,
         )
         self.app.toasts.post(
-            "▶ Replay started — frames feed in dry-run.",
+            "Replay started, frames feed in dry-run.",
             kind="info",
         )
 
@@ -628,13 +635,13 @@ class _HeroSection(Card):
             bundle = BotBundle.create(root, slug, name=name.strip())
         except FileExistsError:
             self.app.toasts.post(
-                f"⚠ A bot named {name!r} already exists.", kind="warn",
+                f"A bot named {name!r} already exists.", kind="warn",
             )
             self._refresh()
             return
         except Exception as e:
             self.app.toasts.post(
-                f"⚠ Couldn't create bundle: {type(e).__name__}: {e}",
+                f"Couldn't create bundle: {type(e).__name__}: {e}",
                 kind="error",
             )
             self._refresh()
@@ -648,14 +655,14 @@ class _HeroSection(Card):
         self._parent_body._activate_bundle(slug)
         self._refresh()
         self.app.toasts.post(
-            f"✓ Created new bot: {bundle.name}", kind="success",
+            f"Created new bot: {bundle.name}", kind="success",
         )
 
     def _sync_to_current(self) -> None:
         idx = self.bot_combo.currentIndex()
         data = self.bot_combo.itemData(idx)
         if data == self.NEW_BUNDLE_DATA:
-            # Transient state — _on_bot_changed re-routes immediately.
+            # Transient state, _on_bot_changed re-routes immediately.
             return
         if isinstance(data, str) and data.startswith(self.BUNDLE_PREFIX):
             slug = data[len(self.BUNDLE_PREFIX):]
@@ -668,7 +675,7 @@ class _HeroSection(Card):
                 self._clear_chips()
                 self.notes_expander.setVisible(False)
                 return
-            target = bundle.target_skill or "—"
+            target = bundle.target_skill or ", "
             n_proc = len((bundle.procedures or {}).get("procedures") or {})
             n_int = len((bundle.procedures or {}).get("interrupts") or [])
             self.goal_label.setText(
@@ -682,7 +689,7 @@ class _HeroSection(Card):
         if data == self.CUSTOM_BOT_DATA:
             self.goal_label.setText(
                 "Build a bot in-GUI by adding steps below. Steps run "
-                "top-to-bottom each tick — first match wins."
+                "top-to-bottom each tick, first match wins."
             )
             self._clear_chips()
             self.notes_expander.setVisible(False)
@@ -732,7 +739,7 @@ class _LiveSection(Card):
         self.state_label = QLabel("IDLE")
         self.state_label.setStyleSheet(
             f"color: {t.TEXT_PRIMARY}; "
-            f"font-family: {t.FONT_DISPLAY}; "
+            f"font-family: {t.FONT_MONO}; "
             f"font-size: 16px; "
             f"font-weight: 700; "
             f"letter-spacing: 1.4px;"
@@ -789,7 +796,7 @@ class _LiveSection(Card):
             self.state_label.setText("PAUSED")
             self.state_label.setStyleSheet(
                 f"color: {t.WARN}; "
-                f"font-family: {t.FONT_DISPLAY}; "
+                f"font-family: {t.FONT_MONO}; "
                 f"font-size: 16px; "
                 f"font-weight: 700; "
                 f"letter-spacing: 1.4px;"
@@ -799,7 +806,7 @@ class _LiveSection(Card):
             self.state_label.setText("RUNNING")
             self.state_label.setStyleSheet(
                 f"color: {t.START}; "
-                f"font-family: {t.FONT_DISPLAY}; "
+                f"font-family: {t.FONT_MONO}; "
                 f"font-size: 16px; "
                 f"font-weight: 700; "
                 f"letter-spacing: 1.4px;"
@@ -809,7 +816,7 @@ class _LiveSection(Card):
             self.state_label.setText("IDLE")
             self.state_label.setStyleSheet(
                 f"color: {t.TEXT_PRIMARY}; "
-                f"font-family: {t.FONT_DISPLAY}; "
+                f"font-family: {t.FONT_MONO}; "
                 f"font-size: 16px; "
                 f"font-weight: 700; "
                 f"letter-spacing: 1.4px;"
@@ -822,8 +829,8 @@ class _LiveSection(Card):
 
         self.chip_tick.set_value(f"{tick}")
         self.chip_clicks.set_value(f"{clicks}")
-        self.chip_cpm.set_value(f"{cpm:.0f}" if cpm > 0 else "—")
-        self.chip_phase.set_value(phase or "—",
+        self.chip_cpm.set_value(f"{cpm:.0f}" if cpm > 0 else ", ")
+        self.chip_phase.set_value(phase or ", ",
                                    color=_phase_color(phase) if phase else None)
 
         # Watchdog colors: green when far from limit, amber close, red at.
@@ -841,7 +848,7 @@ class _LiveSection(Card):
 
 
 class _RulesSection(Card):
-    """Rules list — populated when a bot is selected."""
+    """Rules list, populated when a bot is selected."""
 
     def __init__(self):
         super().__init__("Rules")
@@ -928,7 +935,7 @@ class _ConfigSection(Card):
         mr.addWidget(self.monitor_combo)
         self.add(mon_row)
 
-        # Dry-run toggle — IOSSwitch with status text.
+        # Dry-run toggle, IOSSwitch with status text.
         dry_row = QWidget()
         dr = QHBoxLayout(dry_row)
         dr.setContentsMargins(0, 6, 0, 0)
@@ -948,16 +955,16 @@ class _ConfigSection(Card):
         dr.addWidget(self.dry_status)
         dr.addStretch(1)
         self.dry_switch = IOSSwitch()
-        self.dry_switch.setChecked(bool(app.cfg.get("ai_dry_run", False)))
+        self.dry_switch.setChecked(bool(app.cfg.get("ai_dry_run", DEFAULTS["ai_dry_run"])))
         self.dry_switch.toggled.connect(self._on_dry_run_changed)
         dr.addWidget(self.dry_switch)
         self.add(dry_row)
         self._refresh_dry_status()
 
-        # Advanced expander — watchdog/auto-camera knobs. The Expander
-        # widget owns its own chevron — pass label only, never bake the
+        # Advanced expander, watchdog/auto-camera knobs. The Expander
+        # widget owns its own chevron, pass label only, never bake the
         # arrow into the string.
-        self.expander = Expander("Advanced — watchdogs & auto-camera")
+        self.expander = Expander("Advanced, watchdogs & auto-camera")
         adv_body = QWidget()
         adv_layout = QVBoxLayout(adv_body)
         adv_layout.setContentsMargins(0, 6, 0, 0)
@@ -993,7 +1000,8 @@ class _ConfigSection(Card):
         data = self.monitor_combo.currentData()
         if data is None:
             return
-        self.app.cfg["ai_monitor"] = int(data)
+        from ui.monitor_identity import select_ai
+        select_ai(self.app.cfg, data)
         save_config(self.app.cfg)
 
     def _on_dry_run_changed(self, checked: bool) -> None:
@@ -1007,18 +1015,28 @@ class _ConfigSection(Card):
 
     def _refresh_dry_status(self) -> None:
         on = self.dry_switch.isChecked()
+        runner = getattr(self.app, "bot_runner", None)
+        reason = runner.dry_run_reason() if runner is not None else ""
+        running = runner is not None and runner.is_running()
+        if reason:
+            self.dry_status.setText(reason)
+            self.dry_status.setStyleSheet(f"color: {t.WARN}; font-size: {t.SIZE_SM}px;")
+            return
         if on:
-            self.dry_status.setText("ON — actions logged only, no real input")
+            self.dry_status.setText("ON, actions logged only, no real input")
             self.dry_status.setStyleSheet(
                 f"color: {t.WARN}; font-size: {t.SIZE_SM}px;"
             )
         else:
-            self.dry_status.setText("OFF — clicks & keys ARE firing")
+            self.dry_status.setText("Live input enabled" if running else
+                                   "Live input requested; script may require dry run")
             self.dry_status.setStyleSheet(
                 f"color: {t.TEXT_TERTIARY}; font-size: {t.SIZE_SM}px;"
             )
 
     def _populate_monitors(self) -> None:
+        self.monitor_combo.blockSignals(True)
+        self.monitor_combo.clear()
         # Try mss; fall back to a 0-3 list if it errors.
         try:
             import mss
@@ -1039,21 +1057,26 @@ class _ConfigSection(Card):
                     else "Primary" if i == 1
                     else f"Monitor {i}", i,
                 )
-        saved = int(self.app.cfg.get("ai_monitor", 1))
+        try:
+            saved = self.app.resolved_ai_monitor()
+        except Exception:
+            saved = int(self.app.cfg.get("ai_monitor", 1))
         for i in range(self.monitor_combo.count()):
             if self.monitor_combo.itemData(i) == saved:
                 self.monitor_combo.setCurrentIndex(i)
                 break
 
+        self.monitor_combo.blockSignals(False)
+
 
 class _CalibrationSection(Card):
-    """Awareness-layer ROI calibration — inventory, orbs, minimap.
+    """Awareness-layer ROI calibration, inventory, orbs, minimap.
 
     Each row shows the currently-stored rect (or "not calibrated") and
     a button that opens the fullscreen ZoneDrawer. After a successful
     rect capture, the rect is converted ``(x1, y1, x2, y2) → (x, y,
     w, h)`` and persisted to ``config.json``. The orbs row additionally
-    captures ``max_fill`` per orb at calibration time — assumes the
+    captures ``max_fill`` per orb at calibration time, assumes the
     user is at 100% HP/Prayer/Run/Summoning.
     """
 
@@ -1066,7 +1089,7 @@ class _CalibrationSection(Card):
 
         # Subtitle hint.
         hint = QLabel(
-            "One-time setup — captures where the inventory and orbs "
+            "One-time setup, captures where the inventory and orbs "
             "live on your screen so bots can read them."
         )
         hint.setWordWrap(True)
@@ -1095,7 +1118,7 @@ class _CalibrationSection(Card):
             disabled=False,
             extra_hint=(
                 "Draw a TIGHT box around just the bar strip (exclude icons "
-                "and numbers — they contain colors that look like the bars "
+                "and numbers, they contain colors that look like the bars "
                 "and inflate the readings). Be at 100% HP / Adrenaline / "
                 "Prayer / Summoning before clicking."
             ),
@@ -1148,7 +1171,6 @@ class _CalibrationSection(Card):
             f"font-family: {t.FONT_MONO};"
         )
         setattr(self, caption_attr, caption)
-        rl.addWidget(caption)
         rl.addStretch(1)
 
         btn = QPushButton("Calibrate")
@@ -1159,6 +1181,9 @@ class _CalibrationSection(Card):
         rl.addWidget(btn)
 
         outer.addWidget(row)
+        # The rect readout sits under the label so the row never grows
+        # wider than the editor pane.
+        outer.addWidget(caption)
 
         if extra_hint:
             sub = QLabel(extra_hint)
@@ -1181,7 +1206,7 @@ class _CalibrationSection(Card):
     def _read_rect(self, key: str):
         """Read a rect from the active bundle (preferred) or app.cfg
         (fallback). ``key`` is one of inventory_rect / orbs_rect /
-        minimap_rect — the bundle uses the same keys without the ``ai_``
+        minimap_rect, the bundle uses the same keys without the ``ai_``
         prefix that legacy cfg uses."""
         if self._active_bundle is not None:
             bundle_key = key.removeprefix("ai_")
@@ -1238,7 +1263,7 @@ class _CalibrationSection(Card):
             w, h = int(abs(x2 - x1)), int(abs(y2 - y1))
             if w < 4 or h < 4:
                 self.app.toasts.post(
-                    "⚠ Calibration rect too small — try again", kind="warn",
+                    "Calibration rect too small, try again", kind="warn",
                 )
                 return
             on_rect((x, y, w, h))
@@ -1253,7 +1278,7 @@ class _CalibrationSection(Card):
                 if self._active_bundle is not None else ""
             )
             self.app.toasts.post(
-                f"✓ Inventory ROI captured: {rect[2]}×{rect[3]}{scope}",
+                f"Inventory ROI captured: {rect[2]}×{rect[3]}{scope}",
                 kind="success",
             )
         self._capture_rect(_save)
@@ -1272,7 +1297,7 @@ class _CalibrationSection(Card):
             self._refresh_captions()
             if max_fill:
                 self.app.toasts.post(
-                    "✓ Orbs ROI + max-fill captured "
+                    "Orbs ROI + max-fill captured "
                     f"(hp={max_fill.get('hp',0)}, "
                     f"prayer={max_fill.get('prayer',0)}, "
                     f"sum={max_fill.get('summoning',0)}, "
@@ -1282,7 +1307,7 @@ class _CalibrationSection(Card):
                 )
             else:
                 self.app.toasts.post(
-                    "✓ Orbs ROI captured (max-fill failed — recalibrate to enable %)",
+                    "Orbs ROI captured (max-fill failed, recalibrate to enable %)",
                     kind="warn",
                 )
         self._capture_rect(_save)
@@ -1308,12 +1333,12 @@ class _CalibrationSection(Card):
                     self.app.cfg["ai_orbs_max_fill"] = om
                     save_config(self.app.cfg)
                 self.app.toasts.post(
-                    f"✓ Minimap ROI {rect[2]}×{rect[3]}  ·  run-energy max_fill={max_fill}{scope}",
+                    f"Minimap ROI {rect[2]}×{rect[3]}  ·  run-energy max_fill={max_fill}{scope}",
                     kind="success",
                 )
             else:
                 self.app.toasts.post(
-                    f"✓ Minimap ROI captured — run-energy max_fill = 0, "
+                    f"Minimap ROI captured, run-energy max_fill = 0, "
                     "recalibrate at 100% run for percentages to read.",
                     kind="warn",
                 )
@@ -1331,7 +1356,7 @@ class _CalibrationSection(Card):
             from ai.algorithms.minimap import calibrate_run_energy_max_fill
             with mss.mss() as sct:
                 mons = sct.monitors
-                idx = int(self.app.cfg.get("ai_monitor", 1))
+                idx = self.app.resolved_ai_monitor(sct.monitors)
                 if not (0 <= idx < len(mons)):
                     idx = 1 if len(mons) > 1 else 0
                 raw = sct.grab(mons[idx])
@@ -1346,7 +1371,7 @@ class _CalibrationSection(Card):
             return int(calibrate_run_energy_max_fill(frame, local_rect))
         except Exception as e:
             self.app.toasts.post(
-                f"⚠ Run-energy max-fill capture failed: {type(e).__name__}: {e}",
+                f"Run-energy max-fill capture failed: {type(e).__name__}: {e}",
                 kind="warn",
             )
             return 0
@@ -1359,7 +1384,7 @@ class _CalibrationSection(Card):
             from ai.algorithms import orbs as _orbs
             with mss.mss() as sct:
                 mons = sct.monitors
-                idx = int(self.app.cfg.get("ai_monitor", 1))
+                idx = self.app.resolved_ai_monitor(sct.monitors)
                 if not (0 <= idx < len(mons)):
                     idx = 1 if len(mons) > 1 else 0
                 raw = sct.grab(mons[idx])
@@ -1367,7 +1392,7 @@ class _CalibrationSection(Card):
                     np.asarray(raw, dtype=np.uint8)[:, :, :3]
                 )
             # The captured frame's coordinates are local to the chosen
-            # monitor — but the rect is in absolute virtual-screen
+            # monitor, but the rect is in absolute virtual-screen
             # space. Translate by the monitor's origin.
             mon = mons[idx]
             mx, my = int(mon.get("left", 0)), int(mon.get("top", 0))
@@ -1376,7 +1401,7 @@ class _CalibrationSection(Card):
             return _orbs.calibrate_at_full(frame, local_rect)
         except Exception as e:
             self.app.toasts.post(
-                f"⚠ Orbs max-fill capture failed: {type(e).__name__}: {e}",
+                f"Orbs max-fill capture failed: {type(e).__name__}: {e}",
                 kind="warn",
             )
             return {}
@@ -1468,7 +1493,7 @@ class _LogSection(Card):
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Page body — composes the five sections + wires runner signals
+# Page body, composes the five sections + wires runner signals
 # ─────────────────────────────────────────────────────────────────────────
 
 
@@ -1497,20 +1522,20 @@ class AIPageBody(QWidget):
         self.hero = _HeroSection(app, self)
         outer.addWidget(self.hero)
 
-        # 1b. Authoring — only visible when "Custom Bot (in-GUI)" is picked.
+        # 1b. Authoring, only visible when "Custom Bot (in-GUI)" is picked.
         from .ai_authoring import AIAuthoringSection
         self.authoring = AIAuthoringSection(app)
         # Re-render the dashboard rule list when the user edits steps.
         self.authoring.stepsChanged.connect(self._on_bot_selection_changed)
         outer.addWidget(self.authoring)
 
-        # 1c. Captures — snapshot / record / colour-label, scoped to the
+        # 1c. Captures, snapshot / record / colour-label, scoped to the
         # active bundle. Always visible so users can see what's captured.
         from .ai_captures import AICapturesSection
         self.captures = AICapturesSection(app)
         outer.addWidget(self.captures)
 
-        # 1d. Global capture library — every capture promoted from a
+        # 1d. Global capture library, every capture promoted from a
         # bundle, browsable across bots. Refreshes automatically when
         # the captures card emits ``globalCapturesChanged``.
         from .ai_library import AILibrarySection
@@ -1539,6 +1564,17 @@ class AIPageBody(QWidget):
         outer.addWidget(self.log, 1)
 
         outer.addStretch(0)
+        # Consumer order: pick the bot, set it up, then watch it. Config
+        # is built after Live (it reads runner state) but reads better
+        # above it.
+        outer.removeWidget(self.config)
+        outer.insertWidget(outer.indexOf(self.live), self.config)
+
+        # Consumer view by default: a bot to run, its config and the live
+        # readout. Everything a bot author needs waits behind the AUTHOR
+        # TOOLS switch in the pane header.
+        self._author_tools = bool(app.cfg.get("ai_author_tools", False))
+        self._apply_author_visibility()
 
         self._wire_runner_signals()
         # Activate any bundle that was selected before the previous
@@ -1548,6 +1584,28 @@ class AIPageBody(QWidget):
         if active_slug:
             self._activate_bundle(active_slug)
         self._on_bot_selection_changed()
+
+    # ── Consumer / author views ──────────────────────────────────────────
+    def author_tools(self) -> bool:
+        return self._author_tools
+
+    def set_author_tools(self, on: bool) -> None:
+        on = bool(on)
+        if on != self._author_tools:
+            self._author_tools = on
+            self.app.cfg["ai_author_tools"] = on
+            from ui.config_io import save_config
+            save_config(self.app.cfg)
+        self._apply_author_visibility()
+
+    def _apply_author_visibility(self) -> None:
+        on = self._author_tools
+        for section in (self.captures, self.library, self.rules,
+                        self.calibration, self.log):
+            section.setVisible(on)
+        # The in-GUI authoring section is the custom bot itself, so it
+        # follows the bot picker (see _on_bot_selection_changed), not
+        # the author switch.
 
     # ── Public surface (used by app.py) ─────────────────────────────────
     def refresh_bundles(self) -> None:
@@ -1587,9 +1645,9 @@ class AIPageBody(QWidget):
         idx = self.hero.bot_combo.currentIndex()
         data = self.hero.bot_combo.itemData(idx)
         if data == self.hero.CUSTOM_BOT_DATA:
-            return None  # legacy custom mode — handled by _on_start_ai
+            return None  # legacy custom mode, handled by _on_start_ai
         if isinstance(data, str) and data.startswith(self.hero.BUNDLE_PREFIX):
-            return None  # bundle mode — handled by _on_start_ai
+            return None  # bundle mode, handled by _on_start_ai
         for b in self._bots:
             if b["slug"] == data:
                 return b
@@ -1606,22 +1664,23 @@ class AIPageBody(QWidget):
             return bot
         except Exception as e:
             self.app.toasts.post(
-                f"⚠ Couldn't load bot {meta['slug']}: {type(e).__name__}: {e}",
+                f"Couldn't load bot {meta['slug']}: {type(e).__name__}: {e}",
                 kind="error",
             )
             return None
 
     def tick(self) -> None:
-        """Polled by ``App._tick`` — refreshes the live status board and
+        """Polled by ``App._tick``, refreshes the live status board and
         fades rule highlights."""
         self._update_live()
+        self.config._refresh_dry_status()
         self.rules.tick()
         self._update_bot_overlay()
 
     def _update_bot_overlay(self) -> None:
         """Drive the AI BotOverlay HUD from the runner's current state.
 
-        Shows ROI + ``proc:pc — kind`` badge while the bot is running
+        Shows ROI + ``proc:pc, kind`` badge while the bot is running
         and the global overlay toggle is on. Hides cleanly when the
         bot stops or the toggle is off.
         """
@@ -1649,7 +1708,7 @@ class AIPageBody(QWidget):
         pc = int(info.get("pc") or 0)
         status = f"{proc}:{pc + 1}"
         if kind:
-            status += f" — {kind}"
+            status += f", {kind}"
         ov.set_roi(tuple(roi) if roi else None)
         ov.set_status(status)
         if not ov.isVisible():
@@ -1659,7 +1718,7 @@ class AIPageBody(QWidget):
     def _on_bot_selection_changed(self) -> None:
         use_custom = bool(self.app.cfg.get("ai_use_user_bot", False))
         bundle_active = self._active_bundle is not None
-        # Toggle the authoring surface visibility — show when either
+        # Toggle the authoring surface visibility, show when either
         # the legacy custom mode or a bundle is active.
         self.authoring.setVisible(use_custom or bundle_active)
 
@@ -1697,7 +1756,7 @@ class AIPageBody(QWidget):
             self.rules.set_rules(rules)
             return
 
-        # Library bot path — try to import lazily so the rule list is
+        # Library bot path, try to import lazily so the rule list is
         # populated even before the user hits Start. Failures are silent
         # here; they'll surface loudly on Start via load_current_bot().
         meta = self.current_bot_meta()
@@ -1708,8 +1767,16 @@ class AIPageBody(QWidget):
             bot = _import_bot(meta["bot_ref"], meta["yaml_path"])
             self._loaded_bot = bot
             self.rules.set_rules(bot.rules)
-        except Exception:
+        except Exception as e:
             self.rules.set_rules([])
+            try:
+                self.app.toasts.post(
+                    f"Bot {meta.get('slug', '?')} didn't load: "
+                    f"{type(e).__name__}: {e}",
+                    kind="warn",
+                )
+            except Exception:
+                pass
 
     def _wire_runner_signals(self) -> None:
         runner = getattr(self.app, "bot_runner", None)
@@ -1752,10 +1819,13 @@ class AIPageBody(QWidget):
         if ident.startswith("bot.rule."):
             rule_name = ident.split(".", 2)[-1]
             self.rules.fire(rule_name)
-            # Poor-man's click counter — most rules click. A more accurate
+            # Poor-man's click counter: most rules click. A more accurate
             # count would hook the actuator, but rule-fire is a usable
-            # proxy for "things happened" until then.
-            self._session_clicks += 1
+            # proxy for "things happened" until then. Idle rules (the
+            # runner marks them in outputs) did nothing, so they don't count.
+            outputs = (info or {}).get("outputs") or {}
+            if not (isinstance(outputs, dict) and outputs.get("idle")):
+                self._session_clicks += 1
 
     def _update_live(self) -> None:
         runner = getattr(self.app, "bot_runner", None)
