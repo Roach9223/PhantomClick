@@ -100,22 +100,23 @@ FONT_MONO = "JetBrains Mono, Cascadia Mono, Consolas, monospace"
 FONT_LABEL = FONT_FAMILY
 
 # Type scale (px, whole numbers only: Qt's stylesheet parser drops a
-# fractional ``font-size``). Body sits at 13; uppercase labels are 12 with
-# LABEL_TRACKING letter-spacing. The app font is registered in main.py
+# fractional ``font-size``). Body sits at 14; uppercase labels are 13 with
+# LABEL_TRACKING letter-spacing. (September 2026: one step up across the
+# board after the final review found 12 to 13 px small on the ultrawide.) The app font is registered in main.py
 # with full hinting so stems snap to the pixel grid on a 100 % monitor;
 # nothing goes under SIZE_XS.
-SIZE_XS = 10               # ruler ticks, micro captions
-SIZE_SM = 12               # uppercase labels, hints
-SIZE_BODY = 13             # body
-SIZE_CONTROL = 13          # button and segment captions, row labels
-SIZE_LG = 14               # readouts, row titles that need weight
-SIZE_XL = 18               # large readouts
-SIZE_TITLE = 22            # wordmark (Barlow 700)
+SIZE_XS = 11               # ruler ticks, micro captions
+SIZE_SM = 13               # uppercase labels, hints
+SIZE_BODY = 14             # body
+SIZE_CONTROL = 14          # button and segment captions, row labels
+SIZE_LG = 15               # readouts, row titles that need weight
+SIZE_XL = 19               # large readouts
+SIZE_TITLE = 24            # wordmark (Barlow 700)
 
 LABEL_TRACKING = 1.2       # px letter-spacing on uppercase micro-labels
 CONTROL_TRACKING = 0.8     # px letter-spacing on button / segment captions
 PANEL_HEADER_TRACKING = 1.6
-SIZE_PANEL_HEADER = 12     # panel header label, uppercase 600
+SIZE_PANEL_HEADER = 13     # panel header label, uppercase 600
 FONT_WEIGHT_BODY = 500     # Medium
 FONT_WEIGHT_LABEL = 600    # SemiBold: uppercase labels and buttons
 

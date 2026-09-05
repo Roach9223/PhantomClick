@@ -52,10 +52,13 @@ class EmptyState(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(t.SP_LG, 36, t.SP_LG, 36)
         layout.setSpacing(0)
-        layout.setAlignment(Qt.AlignCenter)
+        # No layout-level AlignCenter: with it Qt hands the wrapped
+        # description its one-line height and clips the last line. Each
+        # widget centres itself instead.
+        layout.addStretch(1)
 
         icon = _EmptyStateIcon()
-        layout.addWidget(icon, 0, Qt.AlignCenter)
+        layout.addWidget(icon, 0, Qt.AlignHCenter)
         layout.addSpacing(12)
 
         title_lbl = QLabel(title)
@@ -63,16 +66,26 @@ class EmptyState(QFrame):
         title_lbl.setStyleSheet(
             f"font-size: {t.SIZE_LG}px; font-weight: 600; color: {t.TEXT_PRIMARY};"
         )
-        layout.addWidget(title_lbl)
+        layout.addWidget(title_lbl, 0, Qt.AlignHCenter)
         layout.addSpacing(4)
 
         desc_lbl = QLabel(description)
         desc_lbl.setAlignment(Qt.AlignCenter)
         desc_lbl.setWordWrap(True)
+        # Fixed width: a centred word-wrapped label otherwise shrinks to
+        # its narrowest hint and wraps into more lines than it has room for.
+        desc_lbl.setFixedWidth(380)
         desc_lbl.setStyleSheet(
-            f"font-size: {t.SIZE_SM}px; color: {t.TEXT_TERTIARY};"
+            f"font-size: {t.SIZE_BODY}px; color: {t.TEXT_TERTIARY};"
         )
-        layout.addWidget(desc_lbl)
+        # A wrapped label inside a stretch-padded column reports its one
+        # line height and Qt clips the rest; measure the wrapped block.
+        from PySide6.QtGui import QFont, QFontMetrics
+        f = QFont(desc_lbl.font())
+        f.setPixelSize(t.SIZE_BODY)
+        wrapped = QFontMetrics(f).boundingRect(0, 0, 380, 1000, Qt.TextWordWrap | Qt.AlignCenter, description)
+        desc_lbl.setFixedHeight(wrapped.height() + 6)
+        layout.addWidget(desc_lbl, 0, Qt.AlignHCenter)
 
         if cta_text and on_cta is not None:
             layout.addSpacing(14)
@@ -82,4 +95,5 @@ class EmptyState(QFrame):
             btn.setMinimumHeight(32)
             btn.setCursor(Qt.PointingHandCursor)
             btn.clicked.connect(on_cta)
-            layout.addWidget(btn, 0, Qt.AlignCenter)
+            layout.addWidget(btn, 0, Qt.AlignHCenter)
+        layout.addStretch(1)

@@ -156,48 +156,39 @@ class _PhaseChip(QLabel):
 
 
 class _StatChip(QFrame):
-    """A label-over-value chip for a single stat. Used in the Live card.
+    """A value-over-caption tile for a single stat. Used in the Live card.
 
-    Layout::
-
-        ┌────────────┐
-        │   142      │  ← value (mono, large)
-        │   TICK     │  ← label (tertiary, tiny, uppercase)
-        └────────────┘
+    One recessed frame; the value and caption are plain labels inside it
+    (nested bordered boxes read as three buttons that do nothing).
     """
 
     def __init__(self, label: str, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setProperty("role", "stat-chip")
         self.setStyleSheet(
-            f"background: {t.SURFACE_PANEL}; "
-            f"border: 1px solid {t.BORDER_SUBTLE}; "
-            f"border-radius: 8px; "
-            f"padding: 6px 10px;"
+            f"QFrame[role=\"stat-chip\"] {{ background: {t.SURFACE_PANEL}; "
+            f"border: 1px solid {t.BORDER}; border-radius: {t.RADIUS_BUTTON}px; }}"
+            "QLabel { background: transparent; border: none; }"
         )
+        self.setMinimumHeight(64)
 
         col = QVBoxLayout(self)
-        col.setContentsMargins(2, 0, 2, 0)
-        col.setSpacing(0)
+        col.setContentsMargins(10, 8, 10, 8)
+        col.setSpacing(2)
         col.setAlignment(Qt.AlignCenter)
 
         self._value = QLabel("··")
-        self._value.setStyleSheet(
-            f"color: {t.TEXT_PRIMARY}; "
-            f"font-family: {t.FONT_MONO}; "
-            f"font-size: 18px; "
-            f"font-weight: 600;"
+        self._value_style = (
+            f"font-family: {t.FONT_MONO}; font-size: {t.SIZE_XL + 3}px; font-weight: 600;"
         )
+        self._value.setStyleSheet(f"color: {t.TEXT_PRIMARY}; {self._value_style}")
         self._value.setAlignment(Qt.AlignCenter)
         col.addWidget(self._value)
 
         self._label = QLabel(label.upper())
         self._label.setStyleSheet(
-            f"color: {t.TEXT_TERTIARY}; "
-            f"font-family: {t.FONT_FAMILY}; "
-            f"font-size: {t.SIZE_SM}px; "
-            f"font-weight: 600; "
-            f"letter-spacing: 0.8px;"
+            f"color: {t.TEXT_TERTIARY}; font-family: {t.FONT_FAMILY}; "
+            f"font-size: {t.SIZE_SM}px; font-weight: 600; letter-spacing: 1px;"
         )
         self._label.setAlignment(Qt.AlignCenter)
         col.addWidget(self._label)
@@ -205,12 +196,7 @@ class _StatChip(QFrame):
     def set_value(self, text: str, color: Optional[str] = None) -> None:
         self._value.setText(text)
         c = color or t.TEXT_PRIMARY
-        self._value.setStyleSheet(
-            f"color: {c}; "
-            f"font-family: {t.FONT_MONO}; "
-            f"font-size: 18px; "
-            f"font-weight: 600;"
-        )
+        self._value.setStyleSheet(f"color: {c}; {self._value_style}")
 
 
 class _RuleRow(QFrame):

@@ -62,10 +62,10 @@ def control_row(label: str, *widgets: QWidget, stretch_last: bool = False,
     row = QHBoxLayout()
     row.setContentsMargins(0, 0, 0, 0)
     row.setSpacing(t.SP_SM)
-    row.addWidget(row_label(label, tip))
+    row.addWidget(row_label(label, tip), 0, Qt.AlignVCenter)
     for i, w in enumerate(widgets):
         last = i == len(widgets) - 1
-        row.addWidget(w, 1 if (stretch_last and last) else 0)
+        row.addWidget(w, 1 if (stretch_last and last) else 0, Qt.AlignVCenter)
     if not stretch_last:
         row.addStretch(1)
     return row
@@ -185,10 +185,10 @@ class ClickZoneCard(Card):
             "On screen",
             "Draw the click zone on your real screen as a blue outline. The "
             "switch shows or hides it; the slider sets how solid the fill is."))
-        overlay_row.addWidget(self.overlay_switch)
+        overlay_row.addWidget(self.overlay_switch, 0, Qt.AlignVCenter)
         overlay_row.addSpacing(t.SP_XS)
-        overlay_row.addWidget(self.opacity_slider, 1)
-        overlay_row.addWidget(self.opacity_value)
+        overlay_row.addWidget(self.opacity_slider, 1, Qt.AlignVCenter)
+        overlay_row.addWidget(self.opacity_value, 0, Qt.AlignVCenter)
         body.addLayout(overlay_row)
 
         self._refresh_preview()

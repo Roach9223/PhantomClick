@@ -200,7 +200,7 @@ class DeckShell(QWidget):
         self.control_scroll.setWidgetResizable(True)
         self.control_scroll.setFrameShape(QFrame.NoFrame)
         self.control_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.control_scroll.setFixedHeight(188)
+        self.control_scroll.setFixedHeight(196)
         self.control_scroll.setWidget(self.control_deck)
         deck_col.addWidget(self.control_scroll)
         self.center.addWidget(self.deck_page)

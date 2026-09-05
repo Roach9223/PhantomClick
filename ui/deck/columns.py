@@ -51,7 +51,7 @@ from ui.config_io import DEFAULTS, save_config
 from . import common as c
 from .zone_map import ZoneMap
 
-COLUMN_W = 268
+COLUMN_W = 292
 
 _MODE_DEFS = (
     ("clicker", "click", "CLICK"),
@@ -78,7 +78,7 @@ class ModeRow(QFrame):
         self.setObjectName("deck-mode-row")
         self.setProperty("active", False)
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedHeight(44)
+        self.setFixedHeight(48)
         self.setStyleSheet(
             f"QFrame#deck-mode-row {{ background: transparent; border: none; "
             f"border-left: 2px solid transparent; border-radius: 4px; }}"
@@ -90,12 +90,13 @@ class ModeRow(QFrame):
         row.setSpacing(10)
         self.icon = QLabel()
         self.icon.setFixedSize(18, 18)
-        row.addWidget(self.icon)
+        row.addWidget(self.icon, 0, Qt.AlignVCenter)
         col = QVBoxLayout()
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(1)
         self.name = QLabel(name)
         self.name.setFont(c.label_font(c.SIZE_BODY, QFont.DemiBold, 0.6))
+        self.name.setFixedHeight(20)
         self.name.setStyleSheet(f"color: {c.TEXT_PRIMARY}; background: transparent;")
         self.state = c.MicroLabel("STANDBY", c.TEXT_MICRO)
         self.state.setMinimumWidth(40)
@@ -279,7 +280,7 @@ class SeqRow(QFrame):
         self._active: Optional[bool] = None
         interactive = spec.toggle or spec.click
         self.setObjectName("deck-seq-row")
-        self.setFixedHeight(22)
+        self.setFixedHeight(24)
         self.setProperty("active", False)
         self.setProperty("interactive", interactive)
         # Hover fill only on rows that do something; state rows keep the
@@ -363,7 +364,7 @@ class SeqRow(QFrame):
 
 # Five 22 px rows plus the 2 px gaps between them, so SEQUENCE and the
 # EVENT LOG never collapse below a readable height when they share space.
-_MIN_LIST_H = 5 * 22 + 4 * 2
+_MIN_LIST_H = 5 * 24 + 4 * 2
 
 _KIND_TAG = {
     KIND_CLICK: "CLICK", KIND_TRACK: "TRACK", KIND_COLOR: "COLOR",
@@ -441,7 +442,7 @@ class SequencePanel(c.Panel):
         # header's dimmed START carries the same text as its tooltip.
         self.footer = QLabel()
         self.footer.setWordWrap(True)
-        self.footer.setProperty("role", "hint")
+        self.footer.setProperty("role", "secondary")
         self.footer.hide()
         self.body_layout().addWidget(self.footer)
         self._rows: list[SeqRow] = []
@@ -565,9 +566,13 @@ class SequencePanel(c.Panel):
                 dot = c.WARN
             else:
                 dot = c.STATUS_IDLE
-            name = c.elide(title or app._zone.lock.title or app._zone.lock.cls, 22).upper()
-            rows.append(RowSpec("target", f"    LOCKED TO  {name}", dot=dot,
-                                tip="The zone follows this window when it moves or resizes."))
+            full = str(title or app._zone.lock.title or app._zone.lock.cls or "")
+            # Window titles run long ("kali-linux-2026.2-virtualbox-amd64
+            # [Running] - Oracle VirtualBox"); keep the head, which names
+            # the app, and let the tooltip carry the rest.
+            name = (full[:15].rstrip() + "…" if len(full) > 16 else full).upper()
+            rows.append(RowSpec("target", f"    FOLLOWS  {name}", dot=dot,
+                                tip=f"The zone follows this window when it moves or resizes: {full}"))
         lo, hi = float(_cfg(app, "min_delay")), float(_cfg(app, "max_delay"))
         rows.append(RowSpec(
             "interval", f"02  WAIT  {c.fmt_secs(lo)} TO {c.fmt_secs(hi)}", checked=True, dot=c.ACCENT,
@@ -942,7 +947,7 @@ class _LogView(QWidget):
     """Painted list of log rows: ``HHMMSSZ  KIND  text``. One widget for
     the whole list, so 200 rows cost one paint, not 200 layouts."""
 
-    ROW_H = 16
+    ROW_H = 18
 
     def __init__(self, app, parent: Optional[QWidget] = None):
         super().__init__(parent)

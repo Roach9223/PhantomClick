@@ -54,12 +54,15 @@ TEXT_DISABLED = tok("TEXT_DISABLED", "#5C6772")
 TEXT_MICRO = tok("TEXT_TERTIARY", "#7C8894")
 STATUS_IDLE = tok("STATUS_IDLE", "#3B4652")
 
-SIZE_XS = tok("SIZE_XS", 10)
-SIZE_SM = tok("SIZE_SM", 12)
-SIZE_BODY = tok("SIZE_BODY", 13)
-SIZE_LG = tok("SIZE_LG", 14)
-SIZE_XL = tok("SIZE_XL", 18)
-SIZE_TITLE = tok("SIZE_TITLE", 22)
+SIZE_XS = tok("SIZE_XS", 11)
+SIZE_SM = tok("SIZE_SM", 13)
+SIZE_BODY = tok("SIZE_BODY", 14)
+SIZE_LG = tok("SIZE_LG", 15)
+SIZE_XL = tok("SIZE_XL", 19)
+SIZE_TITLE = tok("SIZE_TITLE", 24)
+# Captions (panel titles, chip keys, section eyebrows) sit one step under
+# the row text so the value is always the loudest thing on a line.
+SIZE_CAPTION = SIZE_XS - 1
 LABEL_TRACKING = tok("LABEL_TRACKING", 1.2)
 RADIUS_CARD = tok("RADIUS_CARD", 8)
 RADIUS_BUTTON = tok("RADIUS_BUTTON", 6)
@@ -124,8 +127,8 @@ def display_font(size: float = SIZE_TITLE, weight: int = QFont.Bold) -> QFont:
 
 
 def micro_font() -> QFont:
-    """Uppercase tracked label: Barlow SemiBold, LABEL_TRACKING."""
-    return label_font(SIZE_XS, QFont.DemiBold, float(LABEL_TRACKING))
+    """Uppercase tracked caption: Barlow SemiBold, LABEL_TRACKING."""
+    return label_font(SIZE_CAPTION, QFont.DemiBold, float(LABEL_TRACKING))
 
 
 # Engine states as the deck says them. One word per state, everywhere.
@@ -272,7 +275,7 @@ class Panel(QFrame):
             f"border-radius: {RADIUS_CARD}px; }}"
         )
         self._outer = QVBoxLayout(self)
-        self._outer.setContentsMargins(12, 10, 12, 12)
+        self._outer.setContentsMargins(12, 11, 12, 14)
         self._outer.setSpacing(8)
         self.title = MicroLabel(title, TEXT_TERTIARY)
         self.title.setProperty("role", "panel-title")
@@ -321,7 +324,7 @@ class Panel(QFrame):
             return
         self._open = open_
         self.body_widget.setVisible(open_)
-        self._outer.setContentsMargins(12, 10, 12, 12 if open_ else 10)
+        self._outer.setContentsMargins(12, 11, 12, 14 if open_ else 11)
         self._paint_chevron()
 
     def sync_open(self, needed: bool) -> None:

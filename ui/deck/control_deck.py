@@ -33,7 +33,7 @@ from ui.config_io import DEFAULTS, save_config
 
 from . import common as c
 
-DECK_H = 168
+DECK_H = 176
 _DELAY_LO, _DELAY_HI = 0.01, 300.0
 _NUDGE_STEPS = (1, 5, 20)
 
@@ -281,6 +281,9 @@ class ControlDeck(QFrame):
         self.app.locker.register(self.capture_btn)
         self._capture_kind: Optional[str] = None
         self._refresh_capture()
+        # Pin the title to the top like the neighbouring sections; without
+        # the stretch Qt centres the column and ACTIONS sits 20 px low.
+        col.addStretch(1)
         return box
 
     # -- SLIDERS ---------------------------------------------------------------
