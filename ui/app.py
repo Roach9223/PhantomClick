@@ -61,7 +61,7 @@ from .tracker_preview import TrackerPreview
 from .widget_lock import WidgetLocker
 from .widgets.toast import ToastHost
 
-APP_VERSION = "2.1"
+APP_VERSION = "2.2"
 
 # Nav ids that are engine modes rather than config pages. Shared by both
 # shells so a palette command or a card's "go to X" lands the same way.
