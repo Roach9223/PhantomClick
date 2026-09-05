@@ -37,8 +37,8 @@ next to the exe, so put the file in a folder of its own.
 
 The whole app is one screen. Modes and the checklist on the left, the live view
 of your target monitor in the middle, the editor for the active mode on the right,
-and the zone map and telemetry at the far right. The live view is blanked in
-these screenshots.
+and the zone map and telemetry at the far right. The game scene in the live
+view is a stand-in image; the app captures whatever is on your target monitor.
 
 **Click mode.** Draw a zone on your screen, set the wait, test one click, press START. The zone can follow a window, and the LOCK row lists every open window so you can switch targets in one pick.
 
