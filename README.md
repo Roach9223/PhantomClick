@@ -1,7 +1,5 @@
 # PhantomClick
 
-![PhantomClick](docs/media/hero.webp)
-
 A Windows auto-clicker built around one idea: what looks human is human enough.
 The cursor travels along curved paths, dwells, jitters, tires and takes breaks.
 Clicks land at random points inside an area you draw. Timings come from
