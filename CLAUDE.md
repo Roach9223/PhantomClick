@@ -481,13 +481,15 @@ pwsh -File build.ps1                                  # single-exe build
 
 `build.ps1` locates a Python 3.11 (`py -3.11`, then a PATH `python` that reports 3.11), installs `requirements.txt` + `requirements-build.txt` (skip with `-SkipInstall`), warns if `serial` or `interception` are not importable (the exe would silently lack those backends), then runs `pyinstaller PhantomClick.spec --noconfirm --clean`. The spec is the source of truth; what it does:
 
-- `datas`: `ai/tasks/library` (every `*.task.yaml` + companion `.py`, loaded by file path at runtime so static analysis never sees them), `rs3vision` (package source + `templates/*.toml`), and `packaging/phantomclick.ico`.
+- `datas`: `ai/tasks/library` (every `*.task.yaml` + companion `.py`, loaded by file path at runtime so static analysis never sees them), `rs3vision` (package source + `templates/*.toml`), `packaging/phantomclick.ico`, and `packaging/boot` (the boot animation frames).
 - `binaries`: `rs3vision/_rs3vision.pyd` (Python 3.11 only; see `rs3vision/README.md`).
 - `hiddenimports`: `collect_submodules("ai")` + `collect_submodules("pynput")`.
 - `Splash("packaging/splash.png")` shown while the onefile unpacks; dismissed from `ui/app.py` via `pyi_splash`.
 - `icon="packaging/phantomclick.ico"`, `console=False`. `assets/` is gitignored and not part of the build.
 
 Output: `dist\PhantomClick.exe`.
+
+**Mark, icon, splash and boot animation (Blender, September 2026).** The app mark is a 3D "phantom cursor": an ice-glass arrow with a fading ghost trail locking into corner brackets over a slate plate, in the theme palette. `packaging/blender_mark.py` builds the scene and renders it headless (`"C:/Program Files/Blender Foundation/Blender 5.2/blender.exe" -b -P packaging/blender_mark.py -- --still --anim`, `--quick` for half size) into `packaging/render/` (gitignored): `mark_1024.png` (icon variant, bigger cursor) and 48 square frames of the cursor sweeping in and the brackets locking. `packaging/make_icon.py` turns the still into `phantomclick.ico`; `packaging/make_boot.py` composes `splash.png` (480 x 240, the PyInstaller unpack splash) and `packaging/boot/frame_NN.png` (48 frames, 640 x 320: mark left, Barlow wordmark right, tagline and the LOCAL · OFFLINE line fading in). `ui/boot_splash.py` plays those frames at 30 fps in a frameless window centred on the cursor's screen while `App` is built, then `run()` shows the window; a click or key skips it, `boot_animation: false` in config or `PHANTOMCLICK_NO_BOOT=1` disables it, and a missing frames folder means it never shows. The composed PNGs and the .ico are committed, so a build never needs Blender. This is the one place motion is decoration: it runs before the console exists and never again.
 
 ## Known gaps
 

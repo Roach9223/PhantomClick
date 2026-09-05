@@ -200,3 +200,28 @@ def test_viewport_drag_pans_the_zoomed_view(window):
     assert after[0] + after[2] <= mx + mw and after[1] >= my
     vp.set_zoom_index(0)
     assert vp.pan() == (0.0, 0.0)
+
+
+def test_boot_splash_plays_and_skips(monkeypatch):
+    from PySide6.QtCore import QEventLoop, QTimer
+    from PySide6.QtWidgets import QApplication
+    from ui import boot_splash
+    QApplication.instance() or QApplication([])
+    assert boot_splash.available()
+    b = boot_splash.BootSplash()
+    assert b.frame_count() >= 24
+    loop = QEventLoop()
+    b.finished.connect(loop.quit)
+    QTimer.singleShot(5000, loop.quit)   # safety
+    b.start()
+    loop.exec()
+    assert b._done
+    b.close()
+    # A click skips it at once.
+    s = boot_splash.BootSplash()
+    got = []
+    s.finished.connect(lambda: got.append(1))
+    s.start()
+    s.skip()
+    assert got == [1]
+    s.close()

@@ -167,6 +167,8 @@ DEFAULTS: dict = {
     # columns, settings drawer). "classic" rebuilds the TopBar + NavRail
     # shell as a fallback.
     "ui_shell": "deck",
+    # Play the 1.6 s Blender boot animation before the window opens.
+    "boot_animation": True,
     # Deck shell: whether the editor pane (right side of the centre
     # splitter) is open, and the splitter's two sizes in logical px.
     # null means the 62 / 38 default split.

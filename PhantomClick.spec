@@ -30,6 +30,8 @@ datas = [
     ("ai/tasks/library", "ai/tasks/library"),
     ("rs3vision", "rs3vision"),
     ("packaging/phantomclick.ico", "packaging"),
+    # Boot animation frames (packaging/make_boot.py) played by ui/boot_splash.py.
+    ("packaging/boot", "packaging/boot"),
     # Deck theme assets: bundled OFL fonts (JetBrains Mono, Barlow) loaded in
     # main.py via QFontDatabase, and the micrographic SVGs used by ui/icons.py.
     ("ui/fonts", "ui/fonts"),

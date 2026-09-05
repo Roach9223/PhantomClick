@@ -1865,17 +1865,45 @@ def run() -> None:
             app.setWindowIcon(QIcon(str(_ico)))
     except Exception:
         pass
-    # Stylesheet applied lazily inside App.__init__ so each spawned App can
-    # customize before show.
-    window = App()
-    window.show()
-    # Dismiss the PyInstaller onefile splash once the real window is up.
-    # pyi_splash only exists inside the frozen build; a no-op in dev.
-    try:
-        import pyi_splash
-        pyi_splash.close()
-    except Exception:
-        pass
+    def _close_pyi_splash() -> None:
+        # Dismiss the PyInstaller onefile splash once something of ours is
+        # up. pyi_splash only exists inside the frozen build; a no-op in dev.
+        try:
+            import pyi_splash
+            pyi_splash.close()
+        except Exception:
+            pass
+
+    holder: dict = {}
+
+    def _launch() -> None:
+        # Stylesheet applied lazily inside App.__init__ so each spawned App
+        # can customize before show.
+        holder["window"] = App()
+        holder["window"].show()
+        _close_pyi_splash()
+        boot = holder.get("boot")
+        if boot is not None:
+            boot.close()
+
+    # Boot animation: the Blender mark locking in, 1.6 s, skippable, off
+    # with boot_animation=false or PHANTOMCLICK_NO_BOOT=1.
+    import os
+    from . import boot_splash
+    want_boot = (not os.environ.get("PHANTOMCLICK_NO_BOOT")
+                 and bool(load_config().get("boot_animation", True))
+                 and boot_splash.available())
+    if want_boot:
+        try:
+            holder["boot"] = boot_splash.BootSplash()
+            holder["boot"].finished.connect(_launch)
+            holder["boot"].start()
+            _close_pyi_splash()
+        except Exception:
+            holder.pop("boot", None)
+            _launch()
+    else:
+        _launch()
     app.exec()
 
 

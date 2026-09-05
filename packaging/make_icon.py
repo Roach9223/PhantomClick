@@ -1,8 +1,9 @@
-"""Generate ``packaging/phantomclick.ico`` from ``packaging/icon_source.png``.
+"""Generate ``packaging/phantomclick.ico`` from the Blender mark render
+``packaging/render/mark_1024.png`` (see ``blender_mark.py``).
 
 Run once; the .ico is committed and used by ``PhantomClick.spec`` for the
 exe's file icon and as the app's window/taskbar icon (set in
-``ui/app.py`` run()). Source is the 1024x1024 RGBA app icon.
+``ui/app.py`` run()). Source is the 1024x1024 RGBA render.
 
     python packaging/make_icon.py
 
@@ -21,7 +22,7 @@ SIZES = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256
 
 def main() -> None:
     here = Path(__file__).resolve().parent
-    src = here / "icon_source.png"
+    src = here / "render" / "mark_1024.png"
     out = here / "phantomclick.ico"
 
     img = Image.open(src).convert("RGBA")

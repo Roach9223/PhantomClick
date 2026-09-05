@@ -61,3 +61,5 @@ Desktop.ini
 .audit-tests*/
 config.json.bak*
 pytest-tmp/
+# Blender intermediates; the composed splash, icon and boot frames are committed.
+packaging/render/
