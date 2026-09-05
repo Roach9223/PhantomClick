@@ -3,7 +3,11 @@
 Left: MODES (mode switcher), SEQUENCE (per-mode checklist / step list /
 rule log, plus the key timers), EVENT LOG (engine events and clicks)
 and SYSTEM (input, capture, scale, hotkeys, build).
-Right: ENGINE STATUS, ZONE MAP and CADENCE.
+Right: ENGINE STATUS, ZONE MAP, TIMING & TARGETING and MISSION (the
+setup checklist while idle, the run readout while running).
+
+Colour: ACCENT (ice) marks what is selected or targeted, RUN (green)
+marks what is live. See ``ui/theme.py``.
 
 Most of it is read-only against App state. The controls: the mode rows
 (which route through ``App._set_active_mode`` exactly like the old nav),
@@ -88,7 +92,7 @@ class ModeRow(QFrame):
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(1)
         self.name = QLabel(name)
-        self.name.setFont(c.display_font(c.SIZE_BODY, QFont.DemiBold))
+        self.name.setFont(c.label_font(c.SIZE_BODY, QFont.DemiBold, 0.6))
         self.name.setStyleSheet(f"color: {c.TEXT_PRIMARY}; background: transparent;")
         self.state = c.MicroLabel("STANDBY", c.TEXT_MICRO)
         col.addWidget(self.name)
@@ -159,9 +163,11 @@ class ModesPanel(c.Panel):
                 pass
             self.rows["ai"].state.setText(f"ACTIVE · TICK {int(info.get('current_tick', 0) or 0)}")
         else:
-            self.rows["ai"].state.setText(f"STANDBY · {slug or 'NO BOT'}")
+            # Slugs are long ("menaphos_vip_fishing"); the row is 268 px.
+            name = c.elide(slug.replace("_", " "), 11) if slug else "NO BOT"
+            self.rows["ai"].state.setText(f"STANDBY · {name}")
         for mode, row in self.rows.items():
-            row.state.set_color(c.ACCENT if (running and mode == active) else c.TEXT_MICRO)
+            row.state.set_color(c.RUN if (running and mode == active) else c.TEXT_MICRO)
 
 
 # -- SEQUENCE ------------------------------------------------------------------
@@ -189,7 +195,7 @@ class RowSpec:
 
 
 class _CheckSquare(QWidget):
-    """11 px square: lime fill when checked, outline when not, dim outline
+    """11 px square: ice fill when checked, outline when not, dim outline
     for rows with no on / off meaning. Emits ``clicked`` when it is a
     real control."""
 
@@ -463,11 +469,12 @@ class SequencePanel(c.Panel):
             rows.append(RowSpec("target", f"TARGET {name}", dot=dot))
         lo, hi = float(_cfg(app, "min_delay")), float(_cfg(app, "max_delay"))
         rows.append(RowSpec(
-            "interval", f"INTERVAL {lo:0.2f} TO {hi:0.2f} S", checked=True, dot=c.ACCENT,
-            click=True, tip="Click to edit the interval in the editor pane."))
+            "interval", f"WAIT  {c.fmt_secs(lo)} TO {c.fmt_secs(hi)}", checked=True, dot=c.ACCENT,
+            click=True, tip="Wait between clicks, drawn at random from this range. Click to edit."))
         rows.append(RowSpec(
             "engine", "ENGINE RUNNING" if running else "ENGINE STANDBY", checked=running,
-            dot=c.ACCENT if running else c.STATUS_IDLE, active=running))
+            dot=c.RUN if running else c.STATUS_IDLE, active=running,
+            tip="Whether the click engine is running right now. START and STOP are in the header."))
         breaks_on = bool(_cfg(app, "break_bursts_enabled"))
         fat = getattr(clicker, "_fatigue", None)
         if running and fat is not None and fat.enabled and fat.break_bursts:
@@ -527,7 +534,7 @@ class SequencePanel(c.Panel):
                 for i, (combo, secs) in enumerate(pairs):
                     rows.append(RowSpec(
                         f"timer:{i}", f"KEY {str(combo).upper()}  IN {c.format_mmss(float(secs))}",
-                        dot=c.ACCENT, click=True, tip=tip))
+                        dot=c.RUN, click=True, tip=tip))
                 return rows
         for i, kt in enumerate(getattr(app, "_key_timers", []) or []):
             if not getattr(kt, "enabled", False):
@@ -586,7 +593,7 @@ class SequencePanel(c.Panel):
             active = running and (i + 1) == cur
             rows.append(RowSpec(
                 f"step:{s.step_id}", text, checked=enabled,
-                dot=c.ACCENT if active else (c.STATUS_IDLE if enabled else c.TEXT_DISABLED),
+                dot=c.RUN if active else (c.STATUS_IDLE if enabled else c.TEXT_DISABLED),
                 active=active, dim=not enabled, strike=not enabled, toggle=True, click=True,
                 tip=("Square: skip or run this step. Text: open it in the editor."
                      if enabled else "Skipped at run time. Square re-enables it; text opens it.")))
@@ -610,7 +617,8 @@ class SequencePanel(c.Panel):
         # Bots have no break schedule; the tick clock is their cadence.
         hz = float(_cfg(app, "ai_tick_rate_hz"))
         rows.append(RowSpec("ai:tick", f"TICK RATE  {hz:0.1f} HZ",
-                            dot=c.ACCENT if running else c.STATUS_IDLE))
+                            dot=c.RUN if running else c.STATUS_IDLE,
+                            tip="How often the bot looks at the screen and picks a rule. Set it in the BOT pane."))
         dry = bool(_cfg(app, "ai_dry_run"))
         rows.append(RowSpec(
             "ai:dry", "DRY RUN  " + ("ON" if dry else "OFF"), checked=dry,
@@ -628,7 +636,8 @@ class SequencePanel(c.Panel):
         # new firing only changes text, never the row set.
         for i, (tk, name) in enumerate(reversed(self._rule_log)):
             rows.append(RowSpec(f"ai:rule:{i}", f"T{tk:05d}  {name}",
-                                dot=c.ACCENT if i == 0 else c.STATUS_IDLE, active=i == 0))
+                                dot=c.RUN if i == 0 else c.STATUS_IDLE, active=i == 0,
+                                tip="Rules that fired, newest first, with the tick they fired on."))
         if len(rows) == 2:
             rows.append(RowSpec("ai:none", "NO RULES FIRED", dim=True))
         return rows
@@ -806,7 +815,7 @@ def _kind_color(kind: str) -> str:
     if k == "CLK":
         return c.TEXT_PRIMARY
     if k in ("START", "RESUME"):
-        return c.ACCENT
+        return c.RUN
     if "LOST" in k or "WATCHDOG" in k:
         return c.STOP
     if k in ("WANDER", "BREAK", "DISTRACTION", "HOLD") or "MINIMIZED" in k:
@@ -942,7 +951,14 @@ class SystemPanel(c.Panel):
     def __init__(self, app, parent: Optional[QWidget] = None):
         super().__init__("SYSTEM", parent)
         self.app = app
-        self.grid = c.KVGrid(["INPUT", "CAPTURE", "SCALE", "LOCK", "HOTKEYS", "BUILD"])
+        self.grid = c.KVGrid(["INPUT", "CAPTURE", "SCALE", "LOCK", "HOTKEYS", "BUILD"], tips={
+            "INPUT": "How keystrokes are sent (Key steps, key timers, bots). SERIAL_HID is the Arduino path NXT does not filter. Settings > Input.",
+            "CAPTURE": "Where screen frames come from and which monitor the viewport shows.",
+            "SCALE": "Windows display scale of the monitor this window is on. Zones are stored in scaled pixels.",
+            "LOCK": "SCREEN: the zone is fixed screen coordinates. WINDOW: it follows the game window when that moves or resizes.",
+            "HOTKEYS": "Start / Stop / Hold keys. They work even when a fullscreen game has focus. Esc always stops.",
+            "BUILD": "The build this window is running.",
+        })
         self.body_layout().addWidget(self.grid)
         root = Path(__file__).resolve().parent.parent.parent
         self._build, self._build_date = c.build_info(root)
@@ -951,7 +967,7 @@ class SystemPanel(c.Panel):
         self.refresh_lock()
 
     def refresh_lock(self) -> None:
-        """LOCK row: WINDOW (lime while the window is found), SCREEN, or
+        """LOCK row: WINDOW (ice while the window is found), SCREEN, or
         LOST / MINIMIZED in amber. Cheap: the resolver is throttled."""
         zone, status, _title = c.lock_view(self.app)
         if zone is None or status == STATUS_SCREEN:
@@ -1031,19 +1047,48 @@ class LeftColumn(QWidget):
 
 # -- ENGINE STATUS -------------------------------------------------------------
 
+def _hid_summary(full: str, ok: bool, cfg: dict) -> str:
+    """Short value for the HID row. The backend's message is a sentence
+    ("could not open COM8 at 115200 baud: ..."); the row has room for
+    about 14 characters, so say the one thing that matters: which port
+    failed, or that the method is ready."""
+    method = str(cfg.get("key_input_method", "auto") or "auto").upper()
+    port = str(cfg.get("serial_hid_port", "") or "").upper()
+    if ok:
+        return "READY"
+    low = full.lower()
+    if port and port.lower() in low:
+        if "could not open" in low or "not found" in low or "no such" in low:
+            return f"{port} NOT OPEN"
+        return f"{port} FAULT"
+    if "not installed" in low or "no module" in low or "import" in low:
+        return f"{method} MISSING"
+    return full if len(full) <= 14 else "FAULT"
+
+
 class EngineStatusPanel(c.Panel):
     def __init__(self, app, parent: Optional[QWidget] = None):
         super().__init__("ENGINE STATUS", parent)
         self.app = app
-        self.grid = c.KVGrid(["ENGINE", "HUMANIZER", "HID", "HOTKEYS", "MONITOR", "FATIGUE"])
-        self.grid.set_clickable("HID", "Click to re-probe the key input backend now.")
-        self.grid.set_clickable("MONITOR", "Open the Monitor page (LAN stream + phone control).")
+        self.grid = c.KVGrid(["ENGINE", "HUMANIZER", "HID", "HOTKEYS", "MONITOR", "FATIGUE"], tips={
+            "ENGINE": "Click engine state: STANDBY, ARMING (pre-start delay), RUNNING or HOLD.",
+            "HUMANIZER": "Realism dial and the profile it maps to. Higher is slower and more lifelike.",
+            "HOTKEYS": "Whether the global hotkey listener is alive.",
+            "FATIGUE": "Wall-clock fatigue: movement and waits slow down over a long session. Shows the multiplier while running.",
+        })
+        self.grid.set_clickable("HID", "Key input backend. Click to re-probe it now.")
+        self.grid.set_clickable("MONITOR", "LAN monitor server. Click to open the Monitor page.")
         self.grid.rowClicked.connect(self._on_row_clicked)
         self.body_layout().addWidget(self.grid)
         self._n = 0
-        self._hid = ("··", c.TEXT_TERTIARY, "")
+        self._hid = ("··", c.TEXT_TERTIARY, "", True)
         self._hid_at = 0.0
         self._probe_hid()
+
+    def hid_state(self) -> tuple[bool, str]:
+        """``(ok, message)`` from the last probe; the header strip reads it."""
+        _short, _color, full, ok = self._hid
+        return ok, full
 
     def _on_row_clicked(self, key: str) -> None:
         if key == "HID":
@@ -1066,17 +1111,17 @@ class EngineStatusPanel(c.Panel):
         except Exception as e:
             ok, msg = False, str(e)
         full = (msg or ("READY" if ok else "OFF")).upper()
-        # End-elide: the head of a backend message ("COM8 NOT FOUND") is
-        # the part worth keeping; the tooltip carries the rest.
-        short = full if len(full) <= 16 else full[:15] + "…"
-        self._hid = (short, c.ACCENT if ok else c.WARN, full)
+        self._hid = (_hid_summary(full, ok, self.app.cfg), c.RUN if ok else c.STOP, full, bool(ok))
         self._hid_at = time.monotonic()
 
     def _push_hid(self) -> None:
-        text, color, full = self._hid
+        text, color, full, ok = self._hid
         age = int(time.monotonic() - self._hid_at)
-        self.grid.set_value("HID", text, color, tooltip=f"{full}\nProbed {age} s ago. Click to re-probe.",
-                            suffix=f"{age} S AGO")
+        fix = "" if ok else "\nFix the backend or port under Settings > Input."
+        # The age lives in the tooltip; a suffix would push the value
+        # into an ellipsis on a 268 px column.
+        self.grid.set_value("HID", text, color,
+                            tooltip=f"{full}\nProbed {age} s ago. Click to re-probe.{fix}")
 
     def _monitor_row(self) -> tuple[str, str, str]:
         """``(text, color, tooltip)`` for the MONITOR row."""
@@ -1089,13 +1134,13 @@ class EngineStatusPanel(c.Panel):
             except Exception:
                 running = False
         if not running:
-            return "OFF", c.TEXT_TERTIARY, "Monitor server is off. Click to open the Monitor page."
+            return "OFF", c.TEXT_TERTIARY, "LAN monitor server is off. Nothing leaves this PC. Click to open the Monitor page."
         try:
             url = str(server.lan_url())
         except Exception:
             url = ""
         host = url.split("://", 1)[-1].split("/", 1)[0] if url else f":{int(_cfg(self.app, 'monitor_port'))}"
-        return c.elide(host, 20), c.ACCENT, f"{url}\nClick to open the Monitor page."
+        return c.elide(host, 20), c.RUN, f"Streaming at {url}\nClick to open the Monitor page."
 
     def tick(self) -> None:
         self._n += 1
@@ -1104,8 +1149,8 @@ class EngineStatusPanel(c.Panel):
         app = self.app
         state = app._state_str
         running = state != ClickerState.IDLE
-        live, off = c.ACCENT, c.TEXT_TERTIARY
-        self.grid.set_value("ENGINE", str(state).upper(), live if running else off)
+        live, off = c.RUN, c.TEXT_TERTIARY
+        self.grid.set_value("ENGINE", c.state_word(state), live if running else off)
         r = float(_cfg(app, "realism"))
         profile = "HUMAN" if r >= 0.5 else ("LIGHT" if r >= 0.2 else "MINIMAL")
         self.grid.set_value("HUMANIZER", f"{r:0.2f} · {profile}", live if running else off)
@@ -1157,6 +1202,14 @@ class IntervalStrip(QWidget):
     def paintEvent(self, _event):  # noqa: N802 (Qt name)
         p = QPainter(self)
         gaps = self.app.click_ring.intervals(24)
+        if not gaps:
+            p.fillRect(0, self.height() - 2, self.width(), 1, QColor(c.BORDER_STRONG))
+            p.setFont(c.micro_font())
+            p.setPen(QColor(c.TEXT_DISABLED))
+            p.drawText(QRectF(0, 0, self.width(), self.height() - 4),
+                       Qt.AlignRight | Qt.AlignVCenter, "NO CLICKS YET")
+            p.end()
+            return
         n = 24
         slot = self.width() / n
         top = max((gaps or [1.0]))
@@ -1178,11 +1231,13 @@ class CadencePanel(c.Panel):
         self.app = app
         self.setFixedHeight(166)
         body = self.body_layout()
-        self.grid = c.KVGrid(["INTERVAL", "CURVE", "REALISM", "ANTI-CLUSTER"])
+        self.grid = c.KVGrid(["INTERVAL", "CURVE", "REALISM", "ANTI-CLUSTER"], tips={
+            "CURVE": "Shape of the wait distribution. LOG-NORMAL clusters near the short end with a long tail, like real inter-action timing.",
+        })
         self.grid.setFixedHeight(84)
-        for key in ("REALISM", "ANTI-CLUSTER"):
-            self.grid.set_clickable(key, "Open Behavior settings to adjust this value.")
-        self.grid.set_clickable("INTERVAL", "Open the active mode's timing controls.")
+        self.grid.set_clickable("REALISM", "Realism dial (0 to 1). Click to open Behavior settings.")
+        self.grid.set_clickable("ANTI-CLUSTER", "Consecutive clicks are pushed at least this far apart so they never pile up on one spot. Click to open Behavior settings.")
+        self.grid.set_clickable("INTERVAL", "Shortest and longest wait between clicks. Click to edit the timing.")
         self.grid.rowClicked.connect(self._open_settings)
         body.addWidget(self.grid)
         self.strip = IntervalStrip(app)
@@ -1206,10 +1261,10 @@ class CadencePanel(c.Panel):
             steps = app._steps
             if steps and idx < len(steps):
                 lo, hi = steps[idx].delay_min, steps[idx].delay_max
-        interval = f"{lo:g}–{hi:g} s"
+        interval = f"{c.fmt_secs(lo)} TO {c.fmt_secs(hi)}"
         curve = str(app.clicker.delay_curve()).upper()
         if app._active_mode == "ai":
-            interval = f"{float(_cfg(app, 'ai_tick_rate_hz')):g} Hz checks"
+            interval = f"{float(_cfg(app, 'ai_tick_rate_hz')):g} HZ TICKS"
             curve = "RULE-DRIVEN"
         self.grid.set_value("INTERVAL", interval, c.TEXT_SECONDARY)
         self.grid.set_value("CURVE", curve, c.TEXT_SECONDARY)
@@ -1218,60 +1273,199 @@ class CadencePanel(c.Panel):
         on = bool(_cfg(app, "anti_cluster_enabled"))
         radius = int(_cfg(app, "anti_cluster_radius"))
         self.grid.set_value("ANTI-CLUSTER", f"ON · {radius}px" if on else "OFF",
-                            c.ACCENT if on else c.TEXT_TERTIARY,
-                            tooltip="Configured spacing radius. The engine reduces it for small zones.")
+                            c.ACCENT if on else c.TEXT_TERTIARY)
         self.strip.update()
 
 
-class RunProgressPanel(c.Panel):
-    """Useful live progress in the room freed by the former stretched cadence card."""
+class MissionPanel(c.Panel):
+    """Setup checklist while idle, run readout while running.
+
+    Idle rows are the steps a new user takes in order (draw the zone, set
+    the interval, test one click, start), each a live control: the square
+    shows whether the step is done, clicking the row performs it. One
+    line under the rows says what still blocks START; that sentence has
+    no other home on the deck, so it is never repeated.
+    """
+
     def __init__(self, app, parent=None):
-        super().__init__("CURRENT RUN", parent)
+        super().__init__("MISSION", parent)
         self.app = app
-        self.setFixedHeight(154)
+        body = self.body_layout()
+        self._list = QVBoxLayout()
+        self._list.setContentsMargins(0, 0, 0, 0)
+        self._list.setSpacing(2)
+        body.addLayout(self._list)
+        self._rows: list[SeqRow] = []
+        self._shape: Optional[tuple] = None
         self.phase = QLabel()
         self.phase.setWordWrap(True)
-        self.phase.setStyleSheet(f"color: {c.TEXT_PRIMARY};")
-        self.body_layout().addWidget(self.phase)
-        self.grid = c.KVGrid(["PROGRESS", "CLICKS", "RECOVERIES"])
+        self.phase.setProperty("role", "hint")
+        body.addWidget(self.phase)
+        self.grid = c.KVGrid(["PROGRESS", "CLICKS", "RECOVERIES"], tips={
+            "PROGRESS": "Step position in a sequence, or tick count for a bot.",
+            "CLICKS": "Clicks fired this session.",
+            "RECOVERIES": "Times the engine re-found a lost target and carried on.",
+        })
         self.grid.setFixedHeight(62)
-        self.body_layout().addWidget(self.grid)
+        body.addWidget(self.grid)
+        self.grid.hide()
+
+    # -- Rows ---------------------------------------------------------------
+
+    def _rebuild(self, specs: list[RowSpec]) -> None:
+        while self._list.count():
+            item = self._list.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._rows = []
+        for spec in specs:
+            r = SeqRow(spec)
+            r.toggled.connect(self._on_row)
+            r.activated.connect(self._on_row)
+            self._list.addWidget(r)
+            self._rows.append(r)
+
+    def rows(self) -> list[SeqRow]:
+        return list(self._rows)
+
+    def _ready(self) -> str:
+        from ui.readiness import readiness_message
+        try:
+            return readiness_message(self.app)
+        except Exception:
+            return ""
+
+    def _specs(self, message: str) -> list[RowSpec]:
+        app = self.app
+        mode = app._active_mode
+        rows: list[RowSpec] = []
+        ready = not message
+        if mode == "clicker":
+            has_zone = app._zone is not None
+            lo, hi = float(_cfg(app, "min_delay")), float(_cfg(app, "max_delay"))
+            tested = bool(getattr(app, "_checklist_tested", False))
+            rows.append(RowSpec("m:zone", "DRAW ZONE" if not has_zone else "ZONE DRAWN", checked=has_zone,
+                                dot=c.ACCENT if has_zone else c.STATUS_IDLE, click=True,
+                                tip="Where clicks land. Click to draw it on screen."))
+            rows.append(RowSpec("m:interval", f"WAIT  {c.fmt_secs(lo)} TO {c.fmt_secs(hi)}", checked=True,
+                                dot=c.ACCENT, click=True, tip="Wait between clicks. Click to edit."))
+            rows.append(RowSpec("m:test", "TEST ONE CLICK" if not tested else "TESTED", checked=tested,
+                                dot=c.ACCENT if tested else c.STATUS_IDLE, click=True, dim=not has_zone,
+                                tip="Fire one rehearsal click, then stop. Click to run it."))
+        elif mode == "recorder":
+            n = len(app._steps)
+            enabled = sum(bool(getattr(s, "enabled", True)) for s in app._steps)
+            rows.append(RowSpec("m:steps", f"ADD STEPS  {n}" if n else "ADD STEPS", checked=n > 0,
+                                dot=c.ACCENT if n else c.STATUS_IDLE, click=True,
+                                tip="Build the sequence. Click to add a step."))
+            rows.append(RowSpec("m:configure", f"CONFIGURE  {enabled} ENABLED", checked=bool(n) and ready,
+                                dot=c.ACCENT if (n and ready) else c.STATUS_IDLE, click=True, dim=not n,
+                                tip="Every enabled step needs its zone, template, colour or key. Click to open the steps."))
+        else:
+            slug = str(app.cfg.get("ai_active_bundle") or app.cfg.get("ai_bot_slug") or "").strip()
+            dry = bool(_cfg(app, "ai_dry_run"))
+            name = c.elide(slug.replace("_", " "), 14).upper() if slug else ""
+            rows.append(RowSpec("m:bot", f"BOT  {name}" if name else "PICK A BOT", checked=bool(slug),
+                                dot=c.ACCENT if slug else c.STATUS_IDLE, click=True,
+                                tip="Which bot runs. Click to open the BOT pane."))
+            rows.append(RowSpec("m:dry", "DRY RUN  " + ("ON" if dry else "OFF"), checked=dry,
+                                dot=c.WARN if dry else c.STATUS_IDLE, toggle=True,
+                                tip="Dry run logs what the bot would do without touching the mouse. Click to toggle."))
+        rows.append(RowSpec("m:start", "START" if ready else "START  BLOCKED", checked=False,
+                            dot=c.RUN if ready else c.STATUS_IDLE, click=True, dim=not ready,
+                            tip=("Start now. F6 does the same." if ready else f"Blocked: {message}")))
+        return rows
+
+    def _on_row(self, key: str) -> None:
+        app = self.app
+        shell = getattr(app, "deck", None)
+        try:
+            if key == "m:zone":
+                app.click_page.zone_card._on_draw()
+            elif key == "m:interval":
+                if shell is not None:
+                    shell.set_editor_open(True)
+                app.click_page.reveal_timing()
+                _reveal(app.click_page.timing_card)
+            elif key == "m:test":
+                app._test_click_once()
+            elif key == "m:steps":
+                if shell is not None:
+                    shell.set_editor_open(True)
+                app.record_mode_tab.show_add_menu(QCursor.pos())
+            elif key in ("m:configure", "m:bot"):
+                if shell is not None:
+                    shell.set_editor_open(True)
+            elif key == "m:dry":
+                app.cfg["ai_dry_run"] = not bool(_cfg(app, "ai_dry_run"))
+                save_config(app.cfg)
+                card = getattr(app, "ai_card", None)
+                switch = getattr(getattr(card, "config", None), "dry_switch", None)
+                if switch is not None and switch.isChecked() != bool(app.cfg["ai_dry_run"]):
+                    switch.setChecked(bool(app.cfg["ai_dry_run"]))
+            elif key == "m:start":
+                app._on_start()
+        except Exception:
+            app.log.exception("mission row failed: %s", key)
+        self.tick()
+
+    # -- Tick ---------------------------------------------------------------
 
     def tick(self):
         app = self.app
         running = app._state_str != ClickerState.IDLE
+        self.title.setText("CURRENT RUN" if running else "MISSION")
+        if not running:
+            message = self._ready()
+            specs = self._specs(message)
+            shape = tuple(sp.shape() for sp in specs)
+            if shape != self._shape:
+                self._shape = shape
+                self._rebuild(specs)
+            else:
+                for r, sp in zip(self._rows, specs):
+                    r.apply(sp)
+            for r in self._rows:
+                if not r.isVisible():
+                    r.show()
+            self.phase.setText(message or "Ready. START runs it, F6 does the same.")
+            if not self.grid.isHidden():
+                self.grid.hide()
+            return
+        for r in self._rows:
+            if r.isVisible():
+                r.hide()
+        if self.grid.isHidden():
+            self.grid.show()
         if app._active_mode == "ai":
             snap = app.bot_runner.last_fired() if app.bot_runner else {}
             phase = snap.get("last_fired_rule") or "Waiting for a matching rule"
             progress = f"Tick {snap.get('current_tick', 0)}"
             clicks = snap.get("click_count", 0)
-            recovery = "—"
+            recovery = "··"
         else:
-            phase = app.clicker.phase_label or "Ready"
+            phase = app.clicker.phase_label or "Running"
             idx, total = app.clicker.current_step_index
             progress = f"Step {idx}/{total}" if total else "Repeat clicks"
             clicks = app.stats.snapshot().get("total", 0)
             recovery = str(app.clicker.recovery_count)
-        self.title.setText("CURRENT RUN" if running else "RUN READINESS")
-        if not running:
-            from ui.readiness import readiness_message
-            message = readiness_message(app)
-            phase = message.removeprefix("⚠ ") if message else "Ready to start."
-            progress = "Setup needed" if message else "Ready"
-            if app._active_mode == "recorder":
-                enabled = sum(bool(s.enabled) for s in app._steps)
-                phase += f" {enabled} enabled steps."
         self.phase.setText(str(phase))
         self.grid.set_value("PROGRESS", progress, c.TEXT_SECONDARY)
         self.grid.set_value("CLICKS", str(clicks), c.TEXT_SECONDARY)
         self.grid.set_value("RECOVERIES", recovery, c.TEXT_SECONDARY)
 
 
+# Old name, kept for anything that imported it.
+RunProgressPanel = MissionPanel
+
+
 # -- CORNER ABORT FOOTER ---------------------------------------------------------
 
 class CornerAbortFooter(QFrame):
     """Zone-map footer: dot + label reporting the corner watchdog, and a
-    click target that toggles ``corner_abort_enabled``."""
+    click target that toggles ``corner_abort_enabled``. The config key
+    keeps its name; the deck says CORNER STOP, like every other stop."""
 
     def __init__(self, app, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -1284,7 +1478,7 @@ class CornerAbortFooter(QFrame):
         row.setSpacing(8)
         self.dot = c.Dot(c.TEXT_TERTIARY, 6)
         row.addWidget(self.dot)
-        self.label = c.MicroLabel("CORNER ABORT", c.TEXT_TERTIARY)
+        self.label = c.MicroLabel("CORNER STOP", c.TEXT_TERTIARY)
         row.addWidget(self.label, 1)
         self.tick()
 
@@ -1318,11 +1512,11 @@ class CornerAbortFooter(QFrame):
                 armed = None
         if not running:
             color = c.TEXT_TERTIARY
-            text = "CORNER ABORT AT START" if enabled else "CORNER ABORT OFF"
+            text = "CORNER STOP AT START" if enabled else "CORNER STOP OFF"
         else:
             live = armed if armed is not None else enabled
-            color = c.ACCENT if live else c.STATUS_IDLE
-            text = "CORNER ABORT ARMED" if live else "CORNER ABORT DISARMED"
+            color = c.RUN if live else c.STATUS_IDLE
+            text = "CORNER STOP ARMED" if live else "CORNER STOP DISARMED"
         self.dot.set_color(color)
         self.label.set_color(color)
         self.label.setText(text)
@@ -1353,7 +1547,7 @@ class RightColumn(QWidget):
 
         self.cadence = CadencePanel(app)
         col.addWidget(self.cadence)
-        self.progress = RunProgressPanel(app)
+        self.progress = MissionPanel(app)
         col.addWidget(self.progress)
         col.addStretch(1)
 
@@ -1367,4 +1561,6 @@ class RightColumn(QWidget):
                 panel.tick()
             except Exception:
                 pass
-        self.zone_map.update()
+        self.zone_map.sync_sweep()
+        if not self.zone_map.sweep_active():
+            self.zone_map.update()

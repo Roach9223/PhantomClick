@@ -721,6 +721,8 @@ class App(QMainWindow):
         self.clicker.stop_after_clicks = 1
         self.clicker.click_mode = "single"
         self.clicker.key_timers = []
+        # The deck's MISSION checklist ticks its TEST row off this flag.
+        self._checklist_tested = True
         self._begin_session()
         self.clicker.start()
 
@@ -1194,7 +1196,7 @@ class App(QMainWindow):
             except Exception:
                 pass
         if new_val == "auto":
-            text = "Target monitor: auto (follows the click area)"
+            text = "Target monitor: auto (follows the click zone)"
         else:
             text = f"Target monitor: MON{int(new_val) + 1}"
         try:

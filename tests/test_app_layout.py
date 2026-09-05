@@ -53,7 +53,7 @@ def test_editors_fit_at_supported_sizes(window, tmp_path, width, height, mode):
         assert not window.click_page.timing_expander.is_open()
     if deck.deck_page.isVisible():
         controls = deck.control_deck
-        for widget in (controls.loop_btn, controls.hold_btn, controls.min_slider,
+        for widget in (controls.test_btn, controls.hold_btn, controls.capture_btn, controls.min_slider,
                        controls.max_slider, controls.realism_slider):
             pos = widget.mapTo(controls, QPoint(0, 0))
             assert 0 <= pos.x() and pos.x() + widget.width() <= controls.width()
@@ -105,7 +105,12 @@ def test_cancelled_asset_start_never_launches_a_bot(window, monkeypatch):
     pump_until(lambda: bool(completed))
     assert not started
     assert not window._ai_preparing
-    assert window.start_btn.isEnabled()
+    # START is no longer held by the cancelled preparation. It may still
+    # be dimmed by readiness (the default config has no zone), but then
+    # the tooltip names that reason, not the asset job.
+    window.deck.tick()
+    assert "Preparing" not in window.start_btn.toolTip()
+    assert window.start_btn.isEnabled() == (not window.deck.readiness())
 
 
 def test_closing_waits_for_bot_worker(window, monkeypatch):
@@ -122,7 +127,7 @@ def test_closing_waits_for_bot_worker(window, monkeypatch):
 
 def test_compact_timing_panel_has_real_anti_cluster_state(window, tmp_path):
     from PySide6.QtWidgets import QLabel
-    from ui.deck.columns import CadencePanel, RunProgressPanel
+    from ui.deck.columns import CadencePanel, MissionPanel
     window.resize(1920, 1080)
     window.show_page("click")
     QTest.qWait(250)
@@ -134,7 +139,7 @@ def test_compact_timing_panel_has_real_anti_cluster_state(window, tmp_path):
     assert panel.height() == 166
     text = " ".join(label.text() for label in panel.findChildren(QLabel))
     assert "ANTI-CLUSTER" in text and "17px" in text
-    assert window.findChild(RunProgressPanel).isVisible()
+    assert window.findChild(MissionPanel).isVisible()
     window.grab().save(str(tmp_path / "compact-timing.png"))
 
 
@@ -147,11 +152,17 @@ def test_wide_short_window_stays_within_requested_size(window):
 
 
 def test_idle_run_card_and_explicit_timing(window):
-    from ui.deck.columns import RunProgressPanel
-    panel = window.findChild(RunProgressPanel)
+    from ui.deck.columns import MissionPanel
+    panel = window.findChild(MissionPanel)
     panel.tick()
-    assert panel.title.text() == "RUN READINESS"
+    assert panel.title.text() == "MISSION"
     assert "Draw" in panel.phase.text() or "draw" in panel.phase.text()
+    keys = [r.key for r in panel.rows()]
+    assert keys[0] == "m:zone" and keys[-1] == "m:start"
+    # START is dimmed while the zone is missing and says why.
+    window.deck.tick()
+    assert not window.start_btn.isEnabled()
+    assert "zone" in window.start_btn.toolTip().lower()
     assert not window.click_page.timing_expander.is_open()
     window.click_page.reveal_timing()
     QTest.qWait(250)

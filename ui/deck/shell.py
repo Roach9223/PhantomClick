@@ -1,7 +1,8 @@
 """``DeckShell``: the command-deck main surface.
 
-Header on top, then three columns: the left status column, the centre
-splitter and the right telemetry column. The centre splitter holds the
+A hairline trust band on top (LOCAL · OFFLINE · NO TELEMETRY), then the
+header, then three columns: the left status column, the centre splitter
+and the right telemetry column. The centre splitter holds the
 viewport over the control deck on its left and the EDITOR PANE on its
 right: the active mode's full editor page (Click page, Record tab, AI
 page; each already scrolls on its own), so clicks and steps are edited
@@ -22,7 +23,7 @@ from typing import Optional
 from PySide6.QtCore import QEvent, QObject, QRect, Qt, Signal
 from PySide6.QtGui import QCursor, QGuiApplication
 from PySide6.QtWidgets import (
-    QLabel, QPushButton, QFrame, QHBoxLayout, QScrollArea, QSplitter, QStackedWidget, QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QScrollArea, QSplitter, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from modules.clicker import ClickerState
@@ -105,6 +106,49 @@ class NavShim(QObject):
         return self._current
 
 
+class TrustBand(QFrame):
+    """18 px hairline band above the header, in the place a classified
+    console carries its marking. Here it carries the one promise the app
+    makes: everything stays on this PC. The middle word changes when the
+    user turns the LAN monitor on, so the band is never a lie."""
+
+    H = 18
+
+    def __init__(self, app, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.app = app
+        self.setObjectName("deck-trust-band")
+        self.setFixedHeight(self.H)
+        self.setStyleSheet(
+            f"QFrame#deck-trust-band {{ background: {c.SURFACE}; "
+            f"border-bottom: 1px solid {c.BORDER}; }}")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(14, 0, 14, 0)
+        self.label = c.MicroLabel("", c.TEXT_TERTIARY)
+        self.label.setAlignment(Qt.AlignCenter)
+        row.addWidget(self.label, 1)
+        self._lan: Optional[bool] = None
+        self.setToolTip(
+            "No telemetry, no updates, no analytics. The only network feature is the "
+            "opt-in LAN monitor on the Monitor page, and this band says when it is on.")
+        self.refresh()
+
+    def refresh(self) -> None:
+        server = getattr(self.app, "monitor_server", None)
+        lan = False
+        if server is not None:
+            probe = getattr(server, "is_running", False)
+            try:
+                lan = bool(probe() if callable(probe) else probe)
+            except Exception:
+                lan = False
+        if lan != self._lan:
+            self._lan = lan
+            self.label.setText("LOCAL · LAN MONITOR ON · NO TELEMETRY" if lan
+                               else "LOCAL · OFFLINE · NO TELEMETRY")
+            self.label.set_color(c.WARN if lan else c.TEXT_TERTIARY)
+
+
 class DeckShell(QWidget):
     def __init__(self, app, mode_pages: dict[str, QWidget],
                  config_pages: dict[str, QWidget], parent: Optional[QWidget] = None):
@@ -118,22 +162,14 @@ class DeckShell(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
+        self.trust_band = TrustBand(app)
+        root.addWidget(self.trust_band)
+        # The header's subsystem strip reads right.engine_status and the
+        # viewport at tick time, never at construction, so build order
+        # does not matter.
         self.header = DeckHeader(app, self)
         self.header.editorToggled.connect(self.set_editor_open)
         root.addWidget(self.header)
-
-        self.readiness_bar = QWidget()
-        readiness_row = QHBoxLayout(self.readiness_bar)
-        readiness_row.setContentsMargins(14, 4, 14, 4)
-        self.readiness_label = QLabel()
-        self.readiness_label.setWordWrap(True)
-        self.readiness_label.setStyleSheet(f"color: {c.TEXT_SECONDARY};")
-        readiness_row.addWidget(self.readiness_label, 1)
-        self.setup_btn = QPushButton("Open setup")
-        self.setup_btn.clicked.connect(lambda: self.show_page(_PAGE_BY_MODE[self.app._active_mode]))
-        readiness_row.addWidget(self.setup_btn)
-        root.addWidget(self.readiness_bar)
-        self.readiness_bar.hide()
 
         body = QHBoxLayout()
         body.setContentsMargins(10, 10, 10, 10)
@@ -330,8 +366,8 @@ class DeckShell(QWidget):
 
     def _pane_needed(self, mode: str) -> bool:
         """True when the mode cannot do anything until the pane is used:
-        Record with no steps, AI with no bot picked. Click never needs it;
-        the deck's REDRAW ZONE and NO ZONE row cover an empty click mode."""
+        Record with no steps, AI with no bot picked, Click with no zone
+        (the pane's DRAW ZONE is the primary way to draw one)."""
         app = self.app
         if mode == "recorder":
             return not app._steps
@@ -387,15 +423,24 @@ class DeckShell(QWidget):
         super().hideEvent(event)
         self.viewport.stop()
 
-    def tick(self) -> None:
+    def readiness(self) -> str:
+        """Why START is blocked right now; empty when it may start."""
         from ui.readiness import readiness_message
-        message = readiness_message(self.app) if self.app._state_str == ClickerState.IDLE else ""
         if getattr(self.app, "_ai_preparing", False):
-            message = "Preparing bot images. Stop cancels startup."
-        self.readiness_label.setText(message)
-        self.readiness_bar.setVisible(bool(message))
-        self.setup_btn.setVisible(not getattr(self.app, "_ai_preparing", False))
-        self.header.start_btn.setToolTip(message or "Start the configured automation")
+            return "Preparing bot images. Stop cancels startup."
+        if self.app._state_str != ClickerState.IDLE:
+            return ""
+        return readiness_message(self.app)
+
+    def tick(self) -> None:
+        # START dims while setup is incomplete and carries the reason as
+        # its tooltip; the MISSION panel shows the same sentence. Those
+        # two are the message's only homes.
+        self.header.set_start_blocked(self.readiness())
+        try:
+            self.trust_band.refresh()
+        except Exception:
+            pass
         for part in (self.header, self.left, self.right, self.control_deck):
             try:
                 part.tick()
@@ -416,7 +461,7 @@ class DeckShell(QWidget):
 
 
 __all__ = [
-    "DeckShell", "NavShim", "initial_geometry",
+    "DeckShell", "NavShim", "TrustBand", "initial_geometry",
     "WINDOW_W_DEFAULT", "WINDOW_H_DEFAULT", "WINDOW_W_MIN", "WINDOW_H_MIN",
     "VIEWPORT_MIN_W", "EDITOR_PANE_MIN_W",
 ]

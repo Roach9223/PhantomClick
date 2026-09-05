@@ -200,7 +200,8 @@ class TrackerPreview:
             label = (f"Preview · {score_pct}% match" if snap.is_locked
                      else f"Searching… last {score_pct}%")
         elif snap.is_locked:
-            color = t.ZONE_DEFAULT_COLOR
+            # Green: the engine is live on this target.
+            color = t.RUN
             label = f"Tracking · {score_pct}% match"
         else:
             color = t.WARN

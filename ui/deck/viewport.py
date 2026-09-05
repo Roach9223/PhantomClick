@@ -18,6 +18,13 @@ monitor instead of being shrunk to 1024 wide and stretched back up.
 Zoom (1x, 1.5x, 2x, 3x) shrinks the worker's target rect around the
 active zone, so a zoomed frame costs less to grab, not more. Nothing
 about zoom is persisted; it is a look, not a setting.
+
+Fit: the frame is letterboxed to its aspect when the bands would be
+small. When the viewport is much taller than the frame (editor pane
+open on a wide monitor) the frame covers the area instead: scaled to
+the height and cropped left and right around the zone, so the centre
+of the screen shows the game, not empty grid. Rulers, clicks and the
+reticle all clip to the visible part.
 """
 
 from __future__ import annotations
@@ -35,6 +42,7 @@ from modules.clicker import ClickerState
 from modules.zone_lock import HOLD_STATUSES, STATUS_SCREEN
 
 from . import common as c
+from .zone_map import _brackets
 
 
 # Device-pixel ceiling on an emitted frame. A 4K monitor at 1x is the
@@ -44,6 +52,9 @@ _RULER = 20
 _ZOOM_RAIL_W = 26
 _ZOOM_LEVELS = (1.0, 1.5, 2.0, 3.0)
 _RAIL_HIT_H = 24   # px at each end of the rail that act as + / -
+# Letterbox bands taller than this share of the area switch the fit to
+# cover (cropped), so a pane-narrowed viewport still shows the game.
+_FILL_THRESHOLD = 0.25
 
 
 def _hairline(color: str) -> QPen:
@@ -168,6 +179,10 @@ class Viewport(QWidget):
         self.app = app
         self.setObjectName("deck-viewport")
         self.setMinimumSize(320, 200)
+        self.setToolTip(
+            "Live view of the target monitor with the click zone and recent clicks. "
+            "Wheel or the + / - rail zooms around the zone; double-click toggles 2x; "
+            "right-click for zone, monitor and pane actions.")
         c.fill_policy(self)
         self._worker: Optional[CaptureWorker] = None
         self._frame: Optional[QImage] = None
@@ -259,11 +274,17 @@ class Viewport(QWidget):
     def _push_output_size(self) -> None:
         """Tell the worker how many device pixels the image area spans so
         it scales the grab to that once. Re-sent on resize, zoom and a
-        DPR change (window dragged to another monitor)."""
+        DPR change (window dragged to another monitor). In cover mode
+        the budget is the covering frame, wider than the area, so the
+        crop is not an upscale."""
         avail = self._avail_rect()
         dpr = self._dpr()
-        out = (max(1, int(round(avail.width() * dpr))),
-               max(1, int(round(avail.height() * dpr))), dpr)
+        _x, _y, fw, fh = self._frame_rect
+        out_w, out_h = avail.width(), avail.height()
+        if self._cover(avail) and fh > 0:
+            out_w = int(round(out_h * fw / fh))
+        out = (max(1, int(round(out_w * dpr))),
+               max(1, int(round(out_h * dpr))), dpr)
         self._requested_out = out
         w = self._worker
         if w is None:
@@ -377,18 +398,55 @@ class Viewport(QWidget):
         return QRect(_RULER, _RULER,
                      self.width() - _RULER - _ZOOM_RAIL_W, self.height() - _RULER)
 
-    def _image_rect(self) -> QRect:
-        """Where the frame paints: inside the rulers and left of the zoom
-        rail, letterboxed to the captured rect's aspect ratio."""
-        avail = self._avail_rect()
+    def _cover(self, avail: Optional[QRect] = None) -> bool:
+        """True when letterboxing would waste more than _FILL_THRESHOLD of
+        the height, so the frame covers the area and crops instead."""
+        avail = avail or self._avail_rect()
         _x, _y, fw, fh = self._frame_rect
         if fw <= 0 or fh <= 0 or avail.width() <= 0 or avail.height() <= 0:
+            return False
+        fit_h = avail.width() * fh / fw
+        return fit_h < avail.height() * (1.0 - _FILL_THRESHOLD)
+
+    def cover_mode(self) -> bool:
+        """Whether the frame is currently cropped to cover the area (tests)."""
+        return self._cover()
+
+    def _image_rect(self) -> QRect:
+        """Where the frame paints: inside the rulers and left of the zoom
+        rail. Letterboxed to the captured rect's aspect ratio, or when
+        the bands would be large, scaled to cover the area and centred
+        on the zone (the rect then overhangs the area and is clipped)."""
+        avail = self._avail_rect()
+        fx, fy, fw, fh = self._frame_rect
+        if fw <= 0 or fh <= 0 or avail.width() <= 0 or avail.height() <= 0:
             return avail
+        if self._cover(avail):
+            scale = max(avail.width() / fw, avail.height() / fh)
+            w = int(fw * scale)
+            h = int(fh * scale)
+            # Centre the crop on the zone when there is one, else the frame.
+            zone = self._active_zone()
+            cx, cy = fx + fw / 2, fy + fh / 2
+            if zone is not None:
+                try:
+                    cx, cy = zone.centroid()
+                except Exception:
+                    pass
+            left = avail.left() + avail.width() // 2 - int((cx - fx) * scale)
+            top = avail.top() + avail.height() // 2 - int((cy - fy) * scale)
+            left = int(c.clamp(left, avail.right() - w + 1, avail.left()))
+            top = int(c.clamp(top, avail.bottom() - h + 1, avail.top()))
+            return QRect(left, top, w, h)
         scale = min(avail.width() / fw, avail.height() / fh)
         w = int(fw * scale)
         h = int(fh * scale)
         return QRect(avail.left() + (avail.width() - w) // 2,
                      avail.top() + (avail.height() - h) // 2, w, h)
+
+    def _visible_rect(self) -> QRect:
+        """The part of the image rect that is actually on screen."""
+        return self._image_rect().intersected(self._avail_rect())
 
     def _to_px(self, x: float, y: float, img: QRect) -> tuple[float, float]:
         fx, fy, fw, fh = self._frame_rect
@@ -400,7 +458,7 @@ class Viewport(QWidget):
         """Screen DIP under a widget point, or None when the point is
         outside the painted frame."""
         img = self._image_rect()
-        if not img.contains(pos) or not self.has_frame():
+        if not self._visible_rect().contains(pos) or not self.has_frame():
             return None
         fx, fy, fw, fh = self._frame_rect
         sx = img.width() / max(1, fw)
@@ -513,20 +571,35 @@ class Viewport(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         p.fillRect(self.rect(), QColor(c.SURFACE_PANEL))
         img = self._image_rect()
+        avail = self._avail_rect()
+        vis = img.intersected(avail)
         self._paint_letterbox(p, img)
         if self._frame is None:
-            self._paint_no_capture(p, img)
+            self._paint_no_capture(p, vis)
         else:
+            p.save()
+            p.setClipRect(avail)
             p.drawImage(img, self._frame)
-            # Slight darkening keeps the lime overlays legible on a bright game.
+            # Slight darkening keeps the overlays legible on a bright game.
             p.fillRect(img, QColor(0, 0, 0, 70))
+            p.restore()
         self._paint_rulers(p, img)
         self._paint_zoom_rail(p)
-        self._paint_chips(p, img)
-        self._paint_clicks(p, img)
-        self._paint_reticle(p, img)
-        self._paint_readouts(p, img)
+        self._paint_frame(p, vis)
+        self._paint_chips(p, vis)
+        self._paint_clicks(p, img, vis)
+        self._paint_reticle(p, img, vis)
+        self._paint_readouts(p, img, vis)
         p.end()
+
+    def _paint_frame(self, p: QPainter, vis: QRect) -> None:
+        """Corner brackets on the visible frame: green while the engine
+        runs, quiet otherwise. Same marks as the zone map."""
+        if vis.width() <= 0:
+            return
+        running = self.app._state_str != ClickerState.IDLE
+        r = QRectF(vis).adjusted(1.5, 1.5, -1.5, -1.5)
+        _brackets(p, r, c.RUN if running else c.TEXT_TERTIARY, arm=18.0, width=1.5)
 
     def _paint_grid(self, p: QPainter, area: QRect, step: int = 32) -> None:
         p.save()
@@ -543,7 +616,7 @@ class Viewport(QWidget):
         hairline grid the no-capture state uses, so the frame reads as
         sitting on the deck instead of floating in black."""
         avail = self._avail_rect()
-        if avail == img or avail.width() <= 0:
+        if avail == img or avail.width() <= 0 or img.contains(avail):
             return
         p.save()
         p.setClipRegion(QRegion(avail).subtracted(QRegion(img)))
@@ -591,10 +664,11 @@ class Viewport(QWidget):
         # zoomed frame starting at x=640 shows 640 at its left edge.
         v0 = int(math.floor((fx - mx) / step)) * step
         v1 = int(fx - mx + fw)
+        vis = img.intersected(self._avail_rect())
         for v in range(v0, v1 + 1, step):
             x, _ = self._to_px(mx + v, my, img)
-            # Clip to the image extent so ticks never run into the bands.
-            if x < img.left() or x > img.right():
+            # Clip to the visible extent so ticks never run into the bands.
+            if x < vis.left() or x > vis.right():
                 continue
             major = v % major_every == 0
             p.setPen(tick_pen)
@@ -606,7 +680,7 @@ class Viewport(QWidget):
         v1 = int(fy - my + fh)
         for v in range(v0, v1 + 1, step):
             _, y = self._to_px(mx, my + v, img)
-            if y < img.top() or y > img.bottom():
+            if y < vis.top() or y > vis.bottom():
                 continue
             major = v % major_every == 0
             p.setPen(tick_pen)
@@ -639,7 +713,7 @@ class Viewport(QWidget):
         p.drawText(QRect(rail.left(), rail.top() + 6, rail.width(), 14), Qt.AlignCenter, "+")
         p.setPen(QColor(c.TEXT_DISABLED if at_min else c.TEXT_SECONDARY))
         p.drawText(QRect(rail.left(), rail.bottom() - 20, rail.width(), 14), Qt.AlignCenter, "-")
-        # Level stops along the track, current one filled in lime.
+        # Level stops along the track, current one filled in ice.
         n = len(_ZOOM_LEVELS)
         span = max(1, bottom - top)
         for i in range(n):
@@ -681,7 +755,7 @@ class Viewport(QWidget):
 
     def _track_chip(self) -> Optional[tuple[str, str]]:
         """``(text, color)`` for the TRK confidence chip, or None when no
-        Track step is in play. Lime at or above the step's threshold,
+        Track step is in play. Green at or above the step's threshold,
         amber below, red when the engine runs a Track step and the
         tracker reports nothing."""
         app = self.app
@@ -701,22 +775,22 @@ class Viewport(QWidget):
             return None
         conf = float(conf)
         thr = float(getattr(step, "tracker_threshold", 0.65) or 0.65)
-        return f"TRK {conf:0.2f}", (c.ACCENT if conf >= thr else c.WARN)
+        return f"TRK {conf:0.2f}", (c.RUN if conf >= thr else c.WARN)
 
     def _paint_chips(self, p: QPainter, img: QRect) -> None:
         live = self._frame is not None
-        dot = c.ACCENT if live else c.STATUS_IDLE
-        r = self._chip(p, img.left() + 8, img.top() + 8,
+        dot = c.RUN if live else c.STATUS_IDLE
+        r = self._chip(p, img.left() + 12, img.top() + 12,
                        f"{'LIVE' if live else 'OFFLINE'} · MON{self._monitor_index()}",
                        c.TEXT_PRIMARY, dot=dot)
         trk = self._track_chip()
         if trk is not None:
-            self._chip(p, img.left() + 8, r.bottom() + 4, trk[0], trk[1])
-        right = img.right() - 8
-        r = self._chip(p, right, img.top() + 8, c.format_clock(), c.TEXT_PRIMARY, align_right=True)
+            self._chip(p, img.left() + 12, r.bottom() + 4, trk[0], trk[1])
+        right = img.right() - 12
+        r = self._chip(p, right, img.top() + 12, c.format_clock(), c.TEXT_PRIMARY, align_right=True)
         self._chip(p, right, r.bottom() + 4, c.format_dtg(), c.TEXT_TERTIARY, align_right=True)
 
-    def _paint_clicks(self, p: QPainter, img: QRect) -> None:
+    def _paint_clicks(self, p: QPainter, img: QRect, vis: QRect) -> None:
         pts = self.app.click_ring.last(10)
         if not pts:
             return
@@ -724,7 +798,7 @@ class Viewport(QWidget):
         p.setPen(Qt.NoPen)
         for i, (t0, x, y) in enumerate(pts):
             px, py = self._to_px(x, y, img)
-            if not img.contains(int(px), int(py)):
+            if not vis.contains(int(px), int(py)):
                 continue
             # Newest dot is solid; older ones fade both by rank and by age.
             rank = (i + 1) / len(pts)
@@ -735,7 +809,7 @@ class Viewport(QWidget):
             p.setBrush(col)
             p.drawEllipse(QRectF(px - 1.5, py - 1.5, 3, 3))
 
-    def _paint_reticle(self, p: QPainter, img: QRect) -> None:
+    def _paint_reticle(self, p: QPainter, img: QRect, vis: QRect) -> None:
         zone, status, title = c.lock_view(self.app)
         if zone is None:
             return
@@ -748,8 +822,8 @@ class Viewport(QWidget):
         bx, by = self._to_px(x2, y2, img)
         r = QRectF(ax, ay, max(2.0, bx - ax), max(2.0, by - ay))
         p.save()
-        # A zoomed frame can put part of the zone outside the image.
-        p.setClipRect(img)
+        # A zoomed or cropped frame can put part of the zone off screen.
+        p.setClipRect(vis)
         pen = QPen(QColor(color))
         pen.setWidthF(1.5)
         p.setPen(pen)
@@ -763,21 +837,22 @@ class Viewport(QWidget):
             p.drawLine(QRectF(cx, cy, 0, 0).topLeft(), QRectF(cx, cy + dy * arm, 0, 0).topLeft())
         pm = c.icon_pixmap("mg85", 26, color)
         p.drawPixmap(int(r.center().x() - 13), int(r.center().y() - 13), pm)
-        p.setFont(c.mono_font(c.SIZE_XS, QFont.DemiBold))
+        p.setFont(c.label_font(c.SIZE_XS, QFont.DemiBold, 0.8))
         p.setPen(QColor(c.WARN if holding else c.TEXT_SECONDARY))
         anchor = c.elide(title, 24).upper() if (status != STATUS_SCREEN and title) else "SCREEN"
         label = f"TARGET  ZONE-01 · MON{self._zone_monitor_index(zone)} · {anchor}"
         ty = int(r.bottom() + 16)
-        if ty > img.bottom() - 4:
+        if ty > vis.bottom() - 4:
             ty = int(r.top() - 6)
         p.drawText(int(r.left()), ty, label)
         p.restore()
 
-    def _paint_readouts(self, p: QPainter, img: QRect) -> None:
+    def _paint_readouts(self, p: QPainter, img: QRect, vis: QRect) -> None:
         app = self.app
         snap = app.stats.snapshot()
         cpm = snap.get("cpm", 0.0) or 0.0
         secs = self._next_seconds()
+        img = vis
         x = img.left() + 10
         y = img.top() + img.height() // 2 - 26
         # Backing plate so the readouts stay legible over a busy frame.
@@ -787,17 +862,17 @@ class Viewport(QWidget):
         plate_col.setAlpha(215)
         p.setBrush(plate_col)
         p.drawRoundedRect(plate, 4, 4)
-        p.setFont(c.mono_font(c.SIZE_XS, QFont.DemiBold))
+        p.setFont(c.label_font(c.SIZE_XS, QFont.DemiBold, 1.0))
         p.setPen(QColor(c.TEXT_MICRO))
         p.drawText(x, y, "CPM")
         p.setPen(QColor(c.TEXT_PRIMARY))
         p.setFont(c.mono_font(c.SIZE_XL, QFont.DemiBold))
         p.drawText(x, y + 22, f"{cpm:0.1f}")
         y2 = y + 46
-        p.setFont(c.mono_font(c.SIZE_XS, QFont.DemiBold))
+        p.setFont(c.label_font(c.SIZE_XS, QFont.DemiBold, 1.0))
         p.setPen(QColor(c.TEXT_MICRO))
         p.drawText(x, y2, "NEXT TICK" if app._active_mode == "ai" else "NEXT")
-        p.setPen(QColor(c.ACCENT if secs is not None else c.TEXT_TERTIARY))
+        p.setPen(QColor(c.RUN if secs is not None else c.TEXT_TERTIARY))
         p.setFont(c.mono_font(c.SIZE_XL, QFont.DemiBold))
         next_text = f"{secs:0.1f}S" if secs is not None else "··"
         p.drawText(x, y2 + 22, next_text)
@@ -807,7 +882,7 @@ class Viewport(QWidget):
         if secs is not None and self._wait_total > 0:
             frac = c.clamp(1.0 - secs / self._wait_total, 0.0, 1.0)
         dial_x = x + p.fontMetrics().horizontalAdvance(next_text) + 10
-        pm = c.icon_pixmap("mg63", 22, c.ACCENT if secs is not None else c.TEXT_TERTIARY,
+        pm = c.icon_pixmap("mg63", 22, c.RUN if secs is not None else c.TEXT_TERTIARY,
                            degrees=frac * 360.0)
         p.drawPixmap(dial_x, y2 + 4, pm)
 
@@ -816,7 +891,7 @@ class Viewport(QWidget):
             last_text = f"LAST CLICK  X {int(last[0]):04d} · Y {int(last[1]):04d} PX"
         else:
             last_text = "LAST CLICK  ··"
-        self._chip(p, img.left() + 8, img.bottom() - 26, last_text, c.TEXT_SECONDARY)
+        self._chip(p, img.left() + 12, img.bottom() - 30, last_text, c.TEXT_SECONDARY)
         mode = {"clicker": "CLICK", "recorder": "RECORD", "ai": "AI"}.get(app._active_mode, "CLICK")
-        self._chip(p, img.right() - 8, img.bottom() - 26, f"MODE  {mode}", c.TEXT_SECONDARY,
+        self._chip(p, img.right() - 12, img.bottom() - 30, f"MODE  {mode}", c.TEXT_SECONDARY,
                    align_right=True)

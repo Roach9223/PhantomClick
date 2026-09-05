@@ -32,28 +32,31 @@ def tok(name: str, fallback):
 
 
 # -- Palette (contract names, contract fallbacks) ---------------------------
+# ACCENT (ice blue) = selected / focused / target / primary control.
+# RUN (green) = live / running / nominal. See ui/theme.py.
 
-BG = tok("BG", "#0B0D0C")
-SURFACE = tok("SURFACE", "#111413")
-SURFACE_HIGH = tok("SURFACE_HIGH", "#161A18")
-SURFACE_PRESS = tok("SURFACE_PRESS", "#1C2220")
-SURFACE_PANEL = tok("SURFACE_PANEL", "#0E100F")
-BORDER = tok("BORDER", "#1F2422")
-BORDER_STRONG = tok("BORDER_STRONG", "#2A2F2C")
-ACCENT = tok("ACCENT", "#9BE15D")
+BG = tok("BG", "#0E1116")
+SURFACE = tok("SURFACE", "#151A21")
+SURFACE_HIGH = tok("SURFACE_HIGH", "#1B222B")
+SURFACE_PRESS = tok("SURFACE_PRESS", "#222B36")
+SURFACE_PANEL = tok("SURFACE_PANEL", "#11161C")
+BORDER = tok("BORDER", "#26303B")
+BORDER_STRONG = tok("BORDER_STRONG", "#34414F")
+ACCENT = tok("ACCENT", "#7CC4F2")
+RUN = tok("RUN", ACCENT)
 STOP = tok("STOP", "#E5484D")
 DANGER = tok("DANGER", "#E5484D")
 WARN = tok("WARN", "#E0A83A")
-TEXT_PRIMARY = tok("TEXT_PRIMARY", "#E6E4DF")
-TEXT_SECONDARY = tok("TEXT_SECONDARY", "#C9C8C2")
-TEXT_TERTIARY = tok("TEXT_TERTIARY", "#8A8D87")
-TEXT_DISABLED = tok("TEXT_DISABLED", "#6B6E68")
-TEXT_MICRO = tok("TEXT_TERTIARY", "#8A8D87")
-STATUS_IDLE = tok("STATUS_IDLE", "#3A3F3C")
+TEXT_PRIMARY = tok("TEXT_PRIMARY", "#DCE3EA")
+TEXT_SECONDARY = tok("TEXT_SECONDARY", "#B4BEC9")
+TEXT_TERTIARY = tok("TEXT_TERTIARY", "#7C8894")
+TEXT_DISABLED = tok("TEXT_DISABLED", "#5C6772")
+TEXT_MICRO = tok("TEXT_TERTIARY", "#7C8894")
+STATUS_IDLE = tok("STATUS_IDLE", "#3B4652")
 
-SIZE_XS = tok("SIZE_XS", 9)
-SIZE_SM = tok("SIZE_SM", 10.5)
-SIZE_BODY = tok("SIZE_BODY", 12)
+SIZE_XS = tok("SIZE_XS", 10)
+SIZE_SM = tok("SIZE_SM", 12)
+SIZE_BODY = tok("SIZE_BODY", 13)
 SIZE_LG = tok("SIZE_LG", 14)
 SIZE_XL = tok("SIZE_XL", 18)
 SIZE_TITLE = tok("SIZE_TITLE", 22)
@@ -62,10 +65,10 @@ RADIUS_CARD = tok("RADIUS_CARD", 8)
 RADIUS_BUTTON = tok("RADIUS_BUTTON", 6)
 BUTTON_H = tok("BUTTON_H", 30)
 DUR_NORMAL = tok("DUR_NORMAL", 120)
+SWEEP_PERIOD_MS = tok("SWEEP_PERIOD_MS", 4000)
 
-# The contract's FONT_FAMILY is already a mono stack. On the old theme
-# FONT_FAMILY is Segoe UI, so prefer its explicit mono token there.
-_FONT_MONO_STACK = tok("FONT_MONO", None) or tok("FONT_FAMILY", "JetBrains Mono, Consolas, monospace")
+_FONT_MONO_STACK = tok("FONT_MONO", "JetBrains Mono, Consolas, monospace")
+_FONT_LABEL_STACK = tok("FONT_LABEL", None) or tok("FONT_FAMILY", "Barlow, Segoe UI, sans-serif")
 _FONT_DISPLAY_STACK = tok("FONT_DISPLAY", "Barlow, Segoe UI, sans-serif")
 
 
@@ -74,6 +77,7 @@ def _first_family(stack: str) -> str:
 
 
 FONT_MONO_FAMILY = _first_family(_FONT_MONO_STACK)
+FONT_LABEL_FAMILY = _first_family(_FONT_LABEL_STACK)
 FONT_DISPLAY_FAMILY = _first_family(_FONT_DISPLAY_STACK)
 
 
@@ -93,9 +97,22 @@ def _crisp(f: QFont) -> QFont:
 
 
 def mono_font(size: float = SIZE_BODY, weight: int = QFont.Normal) -> QFont:
+    """Value face: numbers, coordinates, times, keys, the log."""
     f = QFont(FONT_MONO_FAMILY)
     f.setPixelSize(_px(size))
     f.setWeight(weight)
+    return _crisp(f)
+
+
+def label_font(size: float = SIZE_SM, weight: int = QFont.DemiBold,
+               tracking: float = 0.0) -> QFont:
+    """Label face: panel titles, row keys, buttons, captions. Barlow at
+    the same 4/3 scale as the mono face so the two sit on one baseline."""
+    f = QFont(FONT_LABEL_FAMILY)
+    f.setPixelSize(_px(size))
+    f.setWeight(weight)
+    if tracking:
+        f.setLetterSpacing(QFont.AbsoluteSpacing, float(tracking))
     return _crisp(f)
 
 
@@ -107,9 +124,25 @@ def display_font(size: float = SIZE_TITLE, weight: int = QFont.Bold) -> QFont:
 
 
 def micro_font() -> QFont:
-    f = mono_font(SIZE_XS, QFont.DemiBold)
-    f.setLetterSpacing(QFont.AbsoluteSpacing, float(LABEL_TRACKING))
-    return f
+    """Uppercase tracked label: Barlow SemiBold, LABEL_TRACKING."""
+    return label_font(SIZE_XS, QFont.DemiBold, float(LABEL_TRACKING))
+
+
+# Engine states as the deck says them. One word per state, everywhere.
+_STATE_WORDS = {
+    "idle": "STANDBY",
+    "starting": "ARMING",
+    "active": "RUNNING",
+    "paused": "HOLD",
+    "stopping": "STOPPING",
+}
+
+
+def state_word(state) -> str:
+    """``ClickerState`` (or its string) as the deck vocabulary: STANDBY,
+    ARMING, RUNNING, HOLD. Unknown states pass through uppercased."""
+    key = str(getattr(state, "value", state) or "").strip().lower()
+    return _STATE_WORDS.get(key, key.upper() or "STANDBY")
 
 
 # -- Icons -----------------------------------------------------------------
@@ -253,14 +286,17 @@ class Panel(QFrame):
 
 
 class KVGrid(QWidget):
-    """Two-column key / value grid in mono. ``set_value`` recolors the
-    value so callers can flag live (lime) vs off (tertiary). A row can
-    carry a micro suffix (probe age, unit) and be made clickable;
-    ``rowClicked`` then fires with the row key."""
+    """Two-column key / value grid: Barlow keys, mono values.
+    ``set_value`` recolors the value so callers can flag live (green) vs
+    off (tertiary). A row can carry a micro suffix (probe age, unit) and
+    be made clickable; ``rowClicked`` then fires with the row key.
+    ``tips`` maps a key to the tooltip both its cells show, so every row
+    can say what it measures."""
 
     rowClicked = Signal(str)
 
-    def __init__(self, keys: list[str], parent: Optional[QWidget] = None):
+    def __init__(self, keys: list[str], parent: Optional[QWidget] = None,
+                 tips: Optional[dict[str, str]] = None):
         super().__init__(parent)
         grid = QGridLayout(self)
         grid.setContentsMargins(0, 0, 0, 0)
@@ -281,7 +317,7 @@ class KVGrid(QWidget):
             h.setContentsMargins(0, 0, 0, 0)
             h.setSpacing(6)
             h.addStretch(1)
-            v = MonoLabel("··", TEXT_TERTIARY, SIZE_SM)
+            v = MonoLabel("··", TEXT_TERTIARY, SIZE_XS)
             v.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             h.addWidget(v)
             sfx = MicroLabel("", TEXT_MICRO)
@@ -293,6 +329,16 @@ class KVGrid(QWidget):
             self._suffixes[key] = sfx
             self._keys[key] = k
             self._cells[key] = cell
+            tip = (tips or {}).get(key)
+            if tip:
+                k.setToolTip(tip)
+                cell.setToolTip(tip)
+
+    def set_tip(self, key: str, tip: str) -> None:
+        """Tooltip for a whole row (key cell and value cell)."""
+        for w in (self._keys.get(key), self._cells.get(key)):
+            if w is not None and w.toolTip() != tip:
+                w.setToolTip(tip)
 
     def set_value(self, key: str, text: str, color: Optional[str] = None,
                   tooltip: Optional[str] = None, suffix: Optional[str] = None) -> None:
@@ -306,8 +352,8 @@ class KVGrid(QWidget):
         self._apply_elide(key)
         if color is not None:
             lbl.set_color(color)
-        if tooltip is not None and lbl.toolTip() != tooltip:
-            lbl.setToolTip(tooltip)
+        if tooltip is not None:
+            self.set_tip(key, tooltip)
         sfx = self._suffixes[key]
         if suffix:
             if sfx.text() != suffix.upper():
@@ -330,8 +376,13 @@ class KVGrid(QWidget):
             shown = QFontMetrics(lbl.font()).elidedText(full, Qt.ElideRight, avail)
         if lbl.text() != shown:
             lbl.setText(shown)
-            if lbl.toolTip() in ("", full) or shown != full:
-                lbl.setToolTip(full if shown != full else "")
+        # An elided value carries its full text on the cell so a hover
+        # always reveals it; a row tooltip set by the caller wins.
+        cell = self._cells[key]
+        if shown != full and not cell.toolTip():
+            lbl.setToolTip(full)
+        elif shown == full and lbl.toolTip() == full:
+            lbl.setToolTip("")
 
     def resizeEvent(self, event):  # noqa: N802 (Qt name)
         super().resizeEvent(event)
@@ -525,6 +576,16 @@ def lock_view(app):
             status = e_status
             title = e_title or title
     return res.zone, status, title
+
+
+def fmt_secs(v: float) -> str:
+    """Compact seconds for deck readouts: ``75MS``, ``1.50S``, ``12.5S``."""
+    v = float(v)
+    if v < 1.0:
+        return f"{v * 1000:0.0f}MS"
+    if v < 10.0:
+        return f"{v:0.2f}S"
+    return f"{v:0.1f}S"
 
 
 def format_mmss(seconds: float) -> str:

@@ -138,7 +138,7 @@ def preflight_failures(app) -> list[str]:
                 )
     else:
         if app._zone is None:
-            failures.append("⚠ Click mode has no zone. Press 'Draw area' first.")
+            failures.append("⚠ Click mode has no zone. Draw one first.")
         else:
             # Sanity: zone AABB intersects the virtual desktop at all.
             # Uses the union of every screen (origin may be negative)

@@ -3,7 +3,7 @@
 
 Built for the deck's editor pane, which is 480 to 700 px wide and sits
 beside the live viewport: one column, every row reads label on the left
-and control on the right, and the one primary action (DRAW AREA) is the
+and control on the right, and the one primary action (DRAW ZONE) is the
 widest thing on the card. Nothing here needs more than the pane's minimum
 width, so the pane never clips.
 
@@ -74,7 +74,7 @@ def control_row(label: str, *widgets: QWidget, stretch_last: bool = False,
 def zone_summary(zone) -> str:
     """One line describing ``zone``: size, position and screen."""
     if zone is None:
-        return "No area yet. Draw one on screen; clicks land at random points inside it."
+        return "No zone yet. Draw one on screen; clicks land at random points inside it."
     label, _size, _origin = zone_screen_info(zone)
     screen = label.split(" · ")[0]
     if zone.shape == "rect":
@@ -90,7 +90,7 @@ def zone_summary(zone) -> str:
 
 class ClickZoneCard(Card):
     def __init__(self, app):
-        super().__init__("Click area")
+        super().__init__("Click zone")
         self.app = app
 
         self.pill = StatePill("Not set", tone="neutral")
@@ -107,18 +107,18 @@ class ClickZoneCard(Card):
         self.summary.setWordWrap(True)
         body.addWidget(self.summary)
 
-        # 3) The action row. DRAW is the one primary button on the card.
+        # 2) The action row. DRAW is the one primary button on the card.
         actions = QHBoxLayout()
         actions.setContentsMargins(0, 0, 0, 0)
         actions.setSpacing(t.SP_SM)
 
-        self.draw_btn = app.locker.register(QPushButton("Draw area"))
+        self.draw_btn = app.locker.register(QPushButton("Draw zone"))
         self.draw_btn.setIcon(icons.icon("redraw", 16, t.TEXT_ON_ACCENT))
         self.draw_btn.setProperty("variant", "primary")
         self.draw_btn.setMinimumHeight(t.BUTTON_H_HERO)
         self.draw_btn.setCursor(Qt.PointingHandCursor)
         self.draw_btn.setToolTip(tooltip(
-            "Open a fullscreen overlay and drag the area to click in. "
+            "Open a fullscreen overlay and drag the zone to click in. "
             "Esc cancels.",
             shortcut="Ctrl+D",
         ))
@@ -129,14 +129,14 @@ class ClickZoneCard(Card):
         self.clear_btn.setProperty("variant", "ghost")
         self.clear_btn.setMinimumHeight(t.BUTTON_H_HERO)
         self.clear_btn.setCursor(Qt.PointingHandCursor)
-        self.clear_btn.setToolTip("Remove the current area.")
+        self.clear_btn.setToolTip("Remove the current zone.")
         self.clear_btn.clicked.connect(self._on_clear)
         actions.addWidget(self.clear_btn)
         body.addLayout(actions)
 
         body.addSpacing(t.SP_XS)
 
-        # 4) Settings rows: shape, lock, on-screen outline.
+        # 3) Settings rows: shape, lock, on-screen outline.
         self._shape = SegmentedControl(
             [("rect", "Rect"), ("circle", "Circle"), ("polygon", "Custom")],
             value=app._zone_shape,
@@ -149,7 +149,7 @@ class ClickZoneCard(Card):
         self._shape.valueChanged.connect(self._on_shape)
         body.addLayout(control_row(
             "Shape", self._shape,
-            tip="The shape the next DRAW AREA uses. Changing it does not alter the current area."))
+            tip="The shape the next DRAW ZONE uses. Changing it does not alter the current zone."))
 
         self.lock_ctl = ZoneLockControl()
         self.lock_ctl.modeChanged.connect(self._on_lock_mode)
@@ -158,7 +158,7 @@ class ClickZoneCard(Card):
 
         self.overlay_switch = IOSSwitch()
         self.overlay_switch.setToolTip(
-            "Show the area as a lime outline on your real screen so you can "
+            "Show the zone as a blue outline on your real screen so you can "
             "see where clicks will land. Same as the eye button in the "
             "header and Ctrl+H. The outline never blocks clicks; the engine "
             "clicks straight through it."
@@ -182,7 +182,7 @@ class ClickZoneCard(Card):
         overlay_row.setSpacing(t.SP_SM)
         overlay_row.addWidget(row_label(
             "On screen",
-            "Draw the click area on your real screen as a lime outline. The "
+            "Draw the click zone on your real screen as a blue outline. The "
             "switch shows or hides it; the slider sets how solid the fill is."))
         overlay_row.addWidget(self.overlay_switch)
         overlay_row.addSpacing(t.SP_XS)
@@ -198,7 +198,7 @@ class ClickZoneCard(Card):
         zone = self.app._zone
         self.lock_ctl.set_zone(zone)
         self.summary.setText(zone_summary(zone))
-        self.draw_btn.setText("Redraw area" if zone is not None else "Draw area")
+        self.draw_btn.setText("Redraw zone" if zone is not None else "Draw zone")
         self.clear_btn.setEnabled(zone is not None)
         self._refresh_pill()
 
@@ -272,8 +272,8 @@ class ClickZoneCard(Card):
         if self.app._zone is None:
             return
         if QMessageBox.question(
-            self, "Clear click area",
-            "Remove the current area?",
+            self, "Clear click zone",
+            "Remove the current zone?",
         ) != QMessageBox.Yes:
             return
         self.app._zone = None

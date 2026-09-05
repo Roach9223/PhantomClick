@@ -130,7 +130,7 @@ class HelpPage(QWidget):
         self._kv("Color",
                  "Eyedropper picks a target color; click several shades "
                  "to accept all of them. The engine clicks any matching "
-                 "pixel on the monitor you picked from. “Set click area” "
+                 "pixel on the monitor you picked from. “Set click zone” "
                  "restricts matches to a drawn zone, which matters when "
                  "the HUD shares the color.")
         self._kv("Key",

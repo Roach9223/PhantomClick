@@ -80,17 +80,20 @@ def apply_app_font(qt_app, families: list[str]) -> None:
     """Install the UI face as the application font.
 
     Widgets inherit family, size, weight and, importantly, the hinting
-    preference from here; the stylesheet only overrides family, size and
-    weight per rule. Full hinting snaps stems to whole pixels, which is
-    what keeps 11 to 13 px mono text sharp on a 100 % monitor instead of
-    the soft grey DirectWrite renders with no hinting.
+    preference from here; the stylesheet overrides family, size and
+    weight only per role, never on the universal QWidget selector (a
+    stylesheet font beats setFont, so a universal rule would flatten
+    every custom-sized label). Full hinting snaps stems to whole pixels,
+    which is what keeps 12 to 13 px text sharp on a 100 % monitor instead
+    of the soft grey DirectWrite renders with no hinting.
     """
     from PySide6.QtGui import QFont
     from ui import theme as t
 
-    # Bundled face when it registered, else the Windows-shipped mono that
-    # the stylesheet stack also names; Qt substitutes if that is missing.
-    family = "JetBrains Mono" if "JetBrains Mono" in families else "Cascadia Mono"
+    # Barlow is the UI face (labels, buttons, prose); JetBrains Mono is
+    # set per widget for values. Segoe UI is the Windows fallback when the
+    # bundled file did not register.
+    family = "Barlow" if "Barlow" in families else "Segoe UI"
     font = QFont(family)
     font.setPixelSize(int(t.SIZE_BODY))
     font.setWeight(QFont.Weight(int(t.FONT_WEIGHT_BODY)))

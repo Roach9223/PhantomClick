@@ -43,7 +43,7 @@ class ClickPage(QWidget):
 
         self.header = EditorHeader(
             "Click setup",
-            "1. Draw an area → 2. Choose an interval → 3. Test once → Start.",
+            "1. Draw a zone. 2. Set the interval. 3. Test one click. 4. Start.",
         )
         page.addWidget(self.header)
 
@@ -63,12 +63,8 @@ class ClickPage(QWidget):
         self.timing_expander.set_open(False)
         page.addWidget(self.timing_expander)
 
-        self.readiness = QLabel()
-        self.readiness.setWordWrap(True)
-        self.readiness.setProperty("role", "body")
-        page.addWidget(self.readiness)
         self.test_btn = QPushButton("Test one click")
-        self.test_btn.setToolTip("After the start countdown, click once in the area and stop. F7 cancels.")
+        self.test_btn.setToolTip("After the start countdown, click once in the zone and stop. F7 cancels.")
         self.test_btn.clicked.connect(app._test_click_once)
         app.locker.register(self.test_btn)
         page.addWidget(self.test_btn)
@@ -83,8 +79,12 @@ class ClickPage(QWidget):
         message = readiness_message(self.app) if self.app._active_mode == "clicker" else ""
         ready = self.app._zone is not None and not message
         self.test_btn.setEnabled(ready and self.app._state_str == "idle")
-        self.readiness.setText("Ready. Test one click, then use Start to repeat."
-                               if ready else message or "Draw an area to enable the one-click test.")
+        # The reason a test is blocked lives on the button; the MISSION
+        # panel and the START tooltip say the same thing, so no extra line.
+        tip = ("After the start countdown, click once in the zone and stop. F7 cancels."
+               if ready else (message or "Draw a zone to enable the one-click test."))
+        if self.test_btn.toolTip() != tip:
+            self.test_btn.setToolTip(tip)
 
     def reveal_timing(self) -> None:
         """Open the timing details (the deck's INTERVAL row lands here)."""

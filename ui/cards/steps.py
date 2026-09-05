@@ -660,12 +660,12 @@ class StepRowBuilder:
         target_section = Section("Click target")
         if step.zone is None:
             empty = QHBoxLayout()
-            prompt = QLabel("No click area set")
+            prompt = QLabel("No click zone set")
             prompt.setProperty("role", "hint")
             empty.addWidget(prompt)
             empty.addStretch(1)
             pick_btn = self.app.locker.register(
-                QPushButton("Pick click area")
+                QPushButton("Pick click zone")
             )
             pick_btn.setProperty("variant", "primary")
             pick_btn.setMinimumHeight(t.BUTTON_H_PRIMARY)
@@ -956,10 +956,10 @@ class StepRowBuilder:
                 target_section.addLayout(srow)
         layout.addWidget(target_section)
 
-        # CLICK AREA. Optional zone that limits where matches count, for
+        # CLICK ZONE. Optional zone that limits where matches count, for
         # colors that also appear on the HUD. Same drawer as Click steps.
         area_section = Section(
-            "Click area",
+            "Click zone",
             hint="optional; only matches inside it are clicked",
         )
         if step.zone is None:
@@ -968,7 +968,7 @@ class StepRowBuilder:
             aprompt.setProperty("role", "hint")
             arow.addWidget(aprompt)
             arow.addStretch(1)
-            set_btn = self.app.locker.register(QPushButton("Set click area"))
+            set_btn = self.app.locker.register(QPushButton("Set click zone"))
             set_btn.setProperty("variant", "ghost")
             set_btn.setMinimumHeight(t.BUTTON_H)
             set_btn.setCursor(Qt.PointingHandCursor)
@@ -1373,7 +1373,7 @@ class StepRowBuilder:
             return ""
         if step.kind == KIND_CLICK:
             if step.zone is None:
-                return "No click area, tap Pick click area."
+                return "No click zone, tap Pick click zone."
             return ""
         if step.kind == KIND_KEY:
             if not step.key_combo:
@@ -1398,15 +1398,15 @@ class StepRowBuilder:
 
     def _zone_summary(self, step: RecorderStep) -> str:
         if step.zone is None:
-            return "No click area picked yet, tap “Pick click area” above"
+            return "No click zone picked yet, tap “Pick click zone” above"
         z = step.zone
         if z.shape == "rect":
             x1, y1, x2, y2 = z.rect
-            return f"Click area: {x2-x1}×{y2-y1} at ({x1},{y1})"
+            return f"Click zone: {x2-x1}×{y2-y1} at ({x1},{y1})"
         if z.shape == "circle":
             cx, cy, r = z.circle
-            return f"Click area: circle r={r} at ({cx},{cy})"
-        return f"Click area: custom shape ({len(z.vertices)} corners)"
+            return f"Click zone: circle r={r} at ({cx},{cy})"
+        return f"Click zone: custom shape ({len(z.vertices)} corners)"
 
     def _track_info_text(self, step: RecorderStep) -> str:
         if not step.template_path:
@@ -1929,7 +1929,7 @@ class StepRowBuilder:
         new_zone = apply_lock_mode(step.zone, mode)
         if mode == "window" and new_zone.lock is None:
             self.app.toasts.post(
-                "No window under the click area centre, so it stays screen-locked.",
+                "No window under the click zone centre, so it stays screen-locked.",
                 kind="warn",
             )
         step.zone = new_zone

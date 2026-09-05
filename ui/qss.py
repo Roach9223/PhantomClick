@@ -7,10 +7,16 @@ every widget that rides it.
 Rules of the deck, enforced here:
 
 - Every panel has a full 1 px BORDER and an 8 px radius. No shadows.
-- Monospace everywhere. Barlow appears only on the wordmark
-  (``role="title"``).
-- Lime (ACCENT) means live / armed / selected / focused. Section eyebrows
-  and group headers are TEXT_TERTIARY, never lime.
+- Barlow (FONT_FAMILY) on labels, buttons, headings and prose; JetBrains
+  Mono (FONT_MONO) on values, inputs and readouts.
+- No font rule on the universal ``QWidget`` selector. A stylesheet font
+  beats ``QWidget.setFont`` on every widget it matches, so a universal
+  rule would flatten the wordmark, the mode names and every painted
+  label to one size. The application font (main.apply_app_font) is the
+  base; roles set sizes where a role needs one.
+- ACCENT (ice blue) means selected / focused / target / primary control.
+  RUN (green) means live / running / nominal. Section eyebrows and group
+  headers are TEXT_TERTIARY, never an accent.
 - Red is stop and fault, amber is caution.
 - Nothing here animates; state flips are instant.
 
@@ -30,15 +36,11 @@ def build_stylesheet() -> str:
     QMainWindow, QWidget {{
         background: {t.BG};
         color: {t.TEXT_PRIMARY};
-        font-family: {t.FONT_FAMILY};
-        font-size: {t.SIZE_BODY}px;
-        font-weight: {t.FONT_WEIGHT_BODY};
     }}
 
     QLabel {{
         background: transparent;
         color: {t.TEXT_PRIMARY};
-        font-size: {t.SIZE_BODY}px;
     }}
 
     /* Color roles. */
@@ -47,7 +49,7 @@ def build_stylesheet() -> str:
     QLabel[role="muted"]     {{ color: {t.TEXT_DISABLED}; }}
     QLabel[role="accent"]    {{ color: {t.ACCENT}; }}
     QLabel[role="warn"]      {{ color: {t.WARN}; }}
-    QLabel[role="success"]   {{ color: {t.START}; }}
+    QLabel[role="success"]   {{ color: {t.RUN}; }}
     QLabel[role="info"]      {{ color: {t.INFO}; }}
     QLabel[role="error"]     {{ color: {t.DANGER}; }}
 
@@ -77,16 +79,17 @@ def build_stylesheet() -> str:
         color: {t.TEXT_TERTIARY};
     }}
     QLabel[role="caption"] {{
-        font-size: {t.SIZE_XS}px;
+        font-size: {t.SIZE_SM}px;
         color: {t.TEXT_TERTIARY};
         letter-spacing: {t.LABEL_TRACKING}px;
     }}
-    /* Panel header label: uppercase 11 px mono, 600, tracked. The Card
+    /* Panel header label: uppercase 12 px Barlow, 600, tracked. The Card
        widget pre-uppercases the text and sets QFont letter-spacing. */
     QLabel[role="card-header"] {{
         color: {t.TEXT_PRIMARY};
+        font-family: {t.FONT_LABEL};
         font-size: {t.SIZE_PANEL_HEADER}px;
-        font-weight: 600;
+        font-weight: {t.FONT_WEIGHT_LABEL};
         letter-spacing: {t.PANEL_HEADER_TRACKING}px;
     }}
     QLabel[role="value"], QLabel[role="mono"] {{
@@ -111,21 +114,22 @@ def build_stylesheet() -> str:
         color: {t.TEXT_TERTIARY};
     }}
 
-    /* Section eyebrow: uppercase 10.5 px mono, tertiary. Lime is reserved
-       for state, so a heading never gets it. */
+    /* Section eyebrow: uppercase 12 px Barlow, tertiary. Accents are
+       reserved for state, so a heading never gets one. */
     QLabel[role="section-label"] {{
-        font-size: {t.SIZE_CONTROL}px;
-        font-weight: 600;
+        font-family: {t.FONT_LABEL};
+        font-size: {t.SIZE_SM}px;
+        font-weight: {t.FONT_WEIGHT_LABEL};
         color: {t.TEXT_TERTIARY};
         letter-spacing: {t.LABEL_TRACKING}px;
     }}
 
     /* Card-state chip in a title row: "Configured" / "Not set". Rectangular
-       6 px radius; lime text only for the accent tone (something is set
-       or live). */
+       6 px radius; ice text only for the accent tone (something is set). */
     QLabel[role="state-pill"] {{
+        font-family: {t.FONT_LABEL};
         font-size: {t.SIZE_SM}px;
-        font-weight: 600;
+        font-weight: {t.FONT_WEIGHT_LABEL};
         color: {t.ACCENT_TEXT};
         background: {t.ACCENT_DIM};
         border: 1px solid {t.BORDER};
@@ -161,7 +165,7 @@ def build_stylesheet() -> str:
         font-size: {t.SIZE_BODY}px;
     }}
 
-    /* Preset card: two-line button in TimingCard. Selected = lime border. */
+    /* Preset card: two-line button in TimingCard. Selected = ice border. */
     QPushButton#preset-card {{
         background: {t.SURFACE_PANEL};
         border: 1px solid {t.BORDER};
@@ -187,9 +191,9 @@ def build_stylesheet() -> str:
         border-radius: {t.RADIUS_CARD}px;
     }}
     /* Live-state stripe: a card representing a running service (Monitor
-       when streaming) gets a 2 px lime left rule. */
+       when streaming) gets a 2 px green left rule. */
     QFrame#card[listening="true"] {{
-        border-left: 2px solid {t.ACCENT};
+        border-left: 2px solid {t.RUN};
     }}
     QFrame#card-inner {{
         background: transparent;
@@ -222,8 +226,9 @@ def build_stylesheet() -> str:
     }}
 
     QLabel[role="group-header"] {{
+        font-family: {t.FONT_LABEL};
         font-size: {t.SIZE_SM}px;
-        font-weight: 600;
+        font-weight: {t.FONT_WEIGHT_LABEL};
         color: {t.GROUP_HEADER_COLOR};
         letter-spacing: {t.LABEL_TRACKING}px;
     }}
@@ -236,15 +241,16 @@ def build_stylesheet() -> str:
         color: {t.TEXT_TERTIARY};
     }}
 
-    /* Quiet tinted lime button (form pages). */
+    /* Quiet tinted ice button (form pages). */
     QPushButton[role="quiet-accent"] {{
         background: {t.ACCENT_TINT_BG};
         color: {t.ACCENT_TINT_TEXT};
         border: 1px solid {t.BORDER};
         padding: 4px 12px;
         border-radius: {t.RADIUS_BUTTON}px;
+        font-family: {t.FONT_LABEL};
         font-size: {t.SIZE_SM}px;
-        font-weight: 600;
+        font-weight: {t.FONT_WEIGHT_LABEL};
         letter-spacing: 1px;
     }}
     QPushButton[role="quiet-accent"]:hover {{
@@ -290,18 +296,19 @@ def build_stylesheet() -> str:
 
     /* Step rows in Record. Full 1 px border like every other panel; the
        resting left border is BORDER so toggling the active rule does not
-       shift content. Active / expanded = 2 px lime left rule. */
+       shift content. Expanded = 2 px ice rule (selected); active = 2 px
+       green rule (the engine is on this step). */
     QFrame#step-card {{
         background: {t.SURFACE_HIGH};
         border: 1px solid {t.BORDER};
         border-left: 2px solid {t.BORDER};
         border-radius: {t.RADIUS_CARD}px;
     }}
-    QFrame#step-card[active="true"] {{
-        border-left: 2px solid {t.ACCENT};
-    }}
     QFrame#step-card[expanded="true"] {{
         border-left: 2px solid {t.ACCENT};
+    }}
+    QFrame#step-card[active="true"] {{
+        border-left: 2px solid {t.RUN};
     }}
     QFrame[role="row-divider"] {{
         background: {t.DIVIDER};
@@ -317,7 +324,7 @@ def build_stylesheet() -> str:
 
     /* -- Buttons ------------------------------------------------------- */
     /* Default = secondary: SURFACE_PANEL fill, BORDER, secondary text.
-       Uppercase 10.5 px mono with 1 px tracking. No shadows anywhere. */
+       Barlow 13 px SemiBold with 0.8 px tracking. No shadows anywhere. */
     QPushButton {{
         background: {t.SURFACE_PANEL};
         color: {t.TEXT_SECONDARY};
@@ -325,8 +332,9 @@ def build_stylesheet() -> str:
         border-radius: {t.RADIUS_BUTTON}px;
         padding: 5px 12px;
         min-height: {t.BUTTON_H - 12}px;
+        font-family: {t.FONT_LABEL};
         font-size: {t.SIZE_CONTROL}px;
-        font-weight: 600;
+        font-weight: {t.FONT_WEIGHT_LABEL};
         letter-spacing: {t.CONTROL_TRACKING}px;
     }}
     QPushButton:hover    {{ background: {t.SURFACE_HIGH}; border-color: {t.BORDER_STRONG}; color: {t.TEXT_PRIMARY}; }}
@@ -341,21 +349,34 @@ def build_stylesheet() -> str:
         border: 1px solid {t.BORDER};
     }}
 
-    /* Primary / success: lime fill, near-black text. */
-    QPushButton[variant="primary"], QPushButton[variant="success"] {{
+    /* Primary: ice fill, near-black text. Success: green fill. */
+    QPushButton[variant="primary"] {{
         background: {t.ACCENT};
         color: {t.TEXT_ON_ACCENT};
         border: 1px solid {t.ACCENT};
-        font-weight: 600;
     }}
-    QPushButton[variant="primary"]:hover, QPushButton[variant="success"]:hover {{
+    QPushButton[variant="success"] {{
+        background: {t.RUN};
+        color: {t.TEXT_ON_RUN};
+        border: 1px solid {t.RUN};
+    }}
+    QPushButton[variant="primary"]:hover {{
         background: {t.ACCENT_HOVER};
         border-color: {t.ACCENT_HOVER};
         color: {t.TEXT_ON_ACCENT};
     }}
-    QPushButton[variant="primary"]:pressed, QPushButton[variant="success"]:pressed {{
+    QPushButton[variant="primary"]:pressed {{
         background: {t.ACCENT_PRESSED};
         border-color: {t.ACCENT_PRESSED};
+    }}
+    QPushButton[variant="success"]:hover {{
+        background: {t.RUN_HOVER};
+        border-color: {t.RUN_HOVER};
+        color: {t.TEXT_ON_RUN};
+    }}
+    QPushButton[variant="success"]:pressed {{
+        background: {t.RUN_PRESSED};
+        border-color: {t.RUN_PRESSED};
     }}
     QPushButton[variant="primary"]:disabled, QPushButton[variant="success"]:disabled {{
         background: {t.SURFACE_PANEL};
@@ -416,7 +437,7 @@ def build_stylesheet() -> str:
         border-color: {t.BORDER_SUBTLE};
     }}
 
-    /* Primary-quiet: panel fill, lime text, lime border on hover. Kept for
+    /* Primary-quiet: panel fill, ice text, ice border on hover. Kept for
        Draw / Add buttons that should read as the actionable element. */
     QPushButton[variant="primary-quiet"] {{
         background: {t.SURFACE_PANEL};
@@ -437,7 +458,7 @@ def build_stylesheet() -> str:
         border-color: {t.BORDER_SUBTLE};
     }}
 
-    /* pill-accent: legacy name, now a rectangular lime-outline chip. */
+    /* pill-accent: legacy name, now a rectangular ice-outline chip. */
     QPushButton[variant="pill-accent"] {{
         background: transparent;
         color: {t.ACCENT};
@@ -445,7 +466,6 @@ def build_stylesheet() -> str:
         border-radius: {t.RADIUS_PILL}px;
         padding: 3px 10px;
         font-size: {t.SIZE_SM}px;
-        font-weight: 600;
     }}
     QPushButton[variant="pill-accent"]:hover {{
         background: {t.ACCENT_DIM};
@@ -484,6 +504,8 @@ def build_stylesheet() -> str:
         border: 1px solid transparent;
         border-radius: {t.RADIUS_BUTTON}px;
         padding: 2px;
+        font-family: {t.FONT_LABEL};
+        font-weight: {t.FONT_WEIGHT_LABEL};
     }}
     QToolButton:hover {{
         color: {t.TEXT_PRIMARY};
@@ -492,7 +514,7 @@ def build_stylesheet() -> str:
 
     /* -- Inputs -------------------------------------------------------- */
     /* Recessed wells: SURFACE_PANEL fill, 1 px BORDER, mono text. Focus
-       border is lime, error border is red. */
+       border is ice, error border is red. */
     QLineEdit, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QTextEdit {{
         background: {t.SURFACE_PANEL};
         color: {t.TEXT_PRIMARY};
@@ -536,7 +558,7 @@ def build_stylesheet() -> str:
 
     /* -- CheckBox / RadioButton --------------------------------------- */
     /* Checkboxes render as a 30 x 14 rectangular switch: BORDER frame,
-       12 x 10 square knob. Knob is lime when on, STATUS_IDLE when off.
+       12 x 10 square knob. Knob is ACCENT when on, STATUS_IDLE when off.
        The knob jumps; there is no animation. */
     QCheckBox, QRadioButton {{
         color: {t.TEXT_PRIMARY};
@@ -574,7 +596,7 @@ def build_stylesheet() -> str:
     }}
 
     /* -- Native QSlider -------------------------------------------------- */
-    /* 1 px track, 3 px lime fill, 10 px round knob. */
+    /* 1 px track, 3 px ice fill, 10 px round knob. */
     QSlider {{ outline: none; background: transparent; }}
     QSlider:focus {{ outline: none; }}
     QSlider::groove:horizontal {{
@@ -668,7 +690,7 @@ def build_stylesheet() -> str:
 
     /* -- SegmentedControl --------------------------------------------- */
     /* Connected cells with 1 px dividers. 6 px radius on the group only.
-       Selected cell: SURFACE_PRESS with a 2 px lime rule on the top edge
+       Selected cell: SURFACE_PRESS with a 2 px ice rule on the top edge
        (horizontal) or the left edge (vertical). */
     QFrame#segmented-frame {{
         background: {t.SURFACE_PANEL};
@@ -684,8 +706,9 @@ def build_stylesheet() -> str:
         border-top: 2px solid transparent;
         border-radius: 0;
         padding: 4px 12px;
+        font-family: {t.FONT_LABEL};
         font-size: {t.SIZE_CONTROL}px;
-        font-weight: 600;
+        font-weight: {t.FONT_WEIGHT_LABEL};
         letter-spacing: {t.CONTROL_TRACKING}px;
     }}
     QPushButton#segmented-btn[first="true"] {{
@@ -731,7 +754,7 @@ def build_stylesheet() -> str:
         border: none;
         border-right: 1px solid {t.BORDER};
     }}
-    /* Nav items: active = SURFACE_HIGH fill, 2 px lime left rule, primary
+    /* Nav items: active = SURFACE_HIGH fill, 2 px ice left rule, primary
        text. Idle = secondary text. The transparent left border on idle
        items keeps text from shifting when the rule appears. */
     QPushButton#nav-item {{
@@ -748,8 +771,9 @@ def build_stylesheet() -> str:
     QPushButton#nav-item QLabel {{
         background: transparent;
         color: {t.TEXT_SECONDARY};
+        font-family: {t.FONT_LABEL};
         font-size: {t.SIZE_SM}px;
-        font-weight: 600;
+        font-weight: {t.FONT_WEIGHT_LABEL};
         letter-spacing: {t.LABEL_TRACKING}px;
     }}
     QPushButton#nav-item:hover {{
@@ -833,6 +857,7 @@ def build_stylesheet() -> str:
         border-bottom: 1px solid {t.BORDER};
         border-radius: 0;
         padding: 10px 8px;
+        font-family: {t.FONT_FAMILY};
         font-size: {t.SIZE_LG}px;
         color: {t.TEXT_PRIMARY};
     }}
@@ -871,8 +896,8 @@ def build_stylesheet() -> str:
         border: 1px solid {t.BORDER_STRONG};
         border-radius: {t.RADIUS_BUTTON}px;
         padding: 5px 8px;
-        font-family: {t.FONT_MONO};
-        font-size: {t.SIZE_SM}px;
+        font-family: {t.FONT_FAMILY};
+        font-size: {t.SIZE_BODY}px;
     }}
     """
 

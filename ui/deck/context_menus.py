@@ -19,7 +19,7 @@ from modules.zone_selector import Zone
 
 from ui import icons, theme as t
 
-# Side of the square area the "put a click area here" verb creates.
+# Side of the square zone the "put a click zone here" verb creates.
 QUICK_AREA_PX = 60
 
 
@@ -46,7 +46,7 @@ def _quick_zone(app, x: int, y: int) -> Zone:
 
 def place_click_area(app, x: int, y: int) -> None:
     """Put a QUICK_AREA_PX square centred on DIP (x, y). Click mode: it
-    becomes the click area. Record mode: it goes on the selected (else
+    becomes the click zone. Record mode: it goes on the selected (else
     expanded, else first) Click step, or a new Click step is appended."""
     from ui.config_io import save_config
     zone = _quick_zone(app, x, y)
@@ -110,7 +110,7 @@ def add_monitor_menu(menu: QMenu, app) -> None:
     sub = menu.addMenu("Target monitor")
     idx = app._explicit_target_screen_index()
     cur = "auto" if idx is None else str(idx)
-    auto = QAction("Auto (follow the click area)", sub)
+    auto = QAction("Auto (follow the click zone)", sub)
     auto.setCheckable(True)
     auto.setChecked(cur == "auto")
     auto.triggered.connect(lambda: app.set_target_monitor("auto"))
@@ -140,12 +140,12 @@ def viewport_menu(app, viewport, dip: Optional[tuple[int, int]],
     if dip is not None:
         x, y = dip
         here = QAction(icons.icon("target"),
-                       f"Put a {QUICK_AREA_PX} x {QUICK_AREA_PX} click area here  ({x}, {y})", menu)
+                       f"Put a {QUICK_AREA_PX} x {QUICK_AREA_PX} click zone here  ({x}, {y})", menu)
         here.setEnabled(idle)
         here.triggered.connect(lambda: place_click_area(app, x, y))
         menu.addAction(here)
 
-    draw = QAction(icons.icon("redraw"), "Draw click area on screen", menu)
+    draw = QAction(icons.icon("redraw"), "Draw click zone on screen", menu)
     draw.setEnabled(idle)
 
     def _draw():

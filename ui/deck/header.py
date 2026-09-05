@@ -1,11 +1,16 @@
-"""Deck header: wordmark, session / status chips, the EDITOR pane toggle,
-utility icon buttons, START / STOP and the ESC ABORT reminder.
+"""Deck header: wordmark, session / status chips, the pane toggle, the
+subsystem strip, utility icon buttons, START / STOP and the ESC reminder.
 
 Exposes the same surface ``TopBar`` did so engine_bridge, the Hotkeys
 card and commands keep working: ``start_btn``, ``stop_btn``, ``pill``
 (a hidden :class:`StatusPill` whose ``tick()`` still runs so its
 tooltip / labels stay current for anything that reads them),
 ``refresh_hint()``, ``on_toggle_overlay()`` and ``tick()``.
+
+The subsystem strip (:class:`SubsystemStrip`) is the at-a-glance health
+row: HID, CAP, HOT, LAN as coloured squares. Green is nominal, amber is
+degraded, red is a fault, grey is off by design. Each square opens the
+page where it is fixed.
 """
 
 from __future__ import annotations
@@ -36,7 +41,7 @@ HEADER_H = 52
 # Click pane is one-time setup, the Record pane is the step list, the AI
 # pane is the bot picker.
 PANE_LABELS = {
-    "clicker": ("SETUP", "Click area shape, window lock, on-screen outline and timing details."),
+    "clicker": ("SETUP", "Click zone shape, window lock, on-screen outline and timing details."),
     "recorder": ("STEPS", "Add, order and configure the steps of the sequence."),
     "ai": ("BOT", "Pick a bot, set its tick rate and dry run; author tools live here too."),
 }
@@ -44,8 +49,8 @@ PANE_LABELS = {
 
 class EditorToggle(QToolButton):
     """Checkable pane button: pencil icon plus a mode-specific label
-    (SETUP / STEPS / BOT). Checked means the pane is open; lime border
-    and text, since open is a state."""
+    (SETUP / STEPS / BOT). Checked means the pane is open; ice border
+    and text, since open is a selection."""
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -109,6 +114,149 @@ class Chip(QFrame):
         row.addWidget(self.value)
 
 
+# Subsystem levels and the colour each paints.
+LEVEL_COLORS = {
+    "ok": c.RUN,
+    "warn": c.WARN,
+    "fault": c.STOP,
+    "off": c.STATUS_IDLE,
+}
+
+
+class _SubsystemCell(QFrame):
+    clicked = Signal(str)
+
+    def __init__(self, key: str, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.key = key
+        self.setObjectName("deck-subsys")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setStyleSheet(
+            "QFrame#deck-subsys { background: transparent; border: none; border-radius: 3px; }"
+            f"QFrame#deck-subsys:hover {{ background: {c.SURFACE_HIGH}; }}"
+        )
+        row = QHBoxLayout(self)
+        row.setContentsMargins(5, 2, 6, 2)
+        row.setSpacing(5)
+        self.dot = c.Dot(c.STATUS_IDLE, 7)
+        row.addWidget(self.dot)
+        self.label = c.MicroLabel(key, c.TEXT_TERTIARY)
+        row.addWidget(self.label)
+        self._level = "off"
+
+    def set_state(self, level: str, tip: str) -> None:
+        color = LEVEL_COLORS.get(level, c.STATUS_IDLE)
+        if level != self._level:
+            self._level = level
+            self.dot.set_color(color)
+            self.label.set_color(c.TEXT_SECONDARY if level == "ok" else
+                                 (color if level in ("warn", "fault") else c.TEXT_TERTIARY))
+        if self.toolTip() != tip:
+            self.setToolTip(tip)
+
+    def level(self) -> str:
+        return self._level
+
+    def mousePressEvent(self, event):  # noqa: N802 (Qt name)
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit(self.key)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
+class SubsystemStrip(QFrame):
+    """``HID · CAP · HOT · LAN`` health squares. The shell's tick feeds
+    :meth:`refresh`; a click routes to the page that fixes the subsystem."""
+
+    KEYS = ("HID", "CAP", "HOT", "LAN")
+
+    def __init__(self, app, shell, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.app = app
+        self.shell = shell
+        self.setObjectName("deck-subsys-strip")
+        self.setStyleSheet(
+            f"QFrame#deck-subsys-strip {{ background: {c.SURFACE}; border: 1px solid {c.BORDER}; "
+            f"border-radius: 4px; }}"
+        )
+        row = QHBoxLayout(self)
+        row.setContentsMargins(3, 1, 3, 1)
+        row.setSpacing(2)
+        self.cells: dict[str, _SubsystemCell] = {}
+        for key in self.KEYS:
+            cell = _SubsystemCell(key)
+            cell.clicked.connect(self._on_click)
+            row.addWidget(cell)
+            self.cells[key] = cell
+
+    def _on_click(self, key: str) -> None:
+        page = {"HID": "settings", "CAP": "settings", "HOT": "hotkeys", "LAN": "monitor"}.get(key)
+        if page:
+            try:
+                self.shell.show_page(page)
+            except Exception:
+                pass
+
+    def states(self) -> dict[str, str]:
+        return {k: cell.level() for k, cell in self.cells.items()}
+
+    def refresh(self) -> None:
+        app = self.app
+        # HID: the cached probe on the ENGINE STATUS panel, so the serial
+        # port is not reopened every tick.
+        ok, message = True, ""
+        try:
+            ok, message = self.shell.right.engine_status.hid_state()
+        except Exception:
+            pass
+        method = str(app.cfg.get("key_input_method", "auto") or "auto").upper()
+        if ok:
+            self.cells["HID"].set_state("ok", f"Key input: {method}. {message or 'Ready.'}\nClick to open Settings.")
+        else:
+            self.cells["HID"].set_state("fault", f"Key input {method} is not available: {message}\n"
+                                        "Click to open Settings and fix the backend or port.")
+        # CAP: the viewport's capture worker.
+        vp = getattr(self.shell, "viewport", None)
+        if vp is None or not vp.is_capturing():
+            self.cells["CAP"].set_state("off", "Screen capture is idle (viewport hidden).\nClick to open Settings.")
+        elif getattr(vp, "_no_capture", False):
+            self.cells["CAP"].set_state("fault", f"Screen capture failed: {getattr(vp, '_fail_reason', '') or 'no frames'}.\n"
+                                        "Click to open Settings and check the target monitor.")
+        elif vp.has_frame() and time.monotonic() - getattr(vp, "_last_frame_at", 0.0) < 3.0:
+            self.cells["CAP"].set_state("ok", "Screen capture is live.\nClick to open Settings.")
+        else:
+            self.cells["CAP"].set_state("warn", "Screen capture is starting or stalled.\nClick to open Settings.")
+        # HOT: the global hotkey listener thread.
+        try:
+            alive = bool(app.hotkeys.is_alive())
+        except Exception:
+            alive = False
+        keys = " / ".join(name_to_display(str(app.cfg.get(k, ""))).upper()
+                          for k in ("hotkey_start", "hotkey_stop", "hotkey_pause"))
+        if alive:
+            self.cells["HOT"].set_state("ok", f"Global hotkeys armed: {keys}. Esc always stops.\nClick to rebind.")
+        else:
+            self.cells["HOT"].set_state("fault", "Hotkey listener is not running. Restart the app if this persists.\nClick to open Hotkeys.")
+        # LAN: the opt-in monitor server. Off is the normal state.
+        server = getattr(app, "monitor_server", None)
+        running = False
+        if server is not None:
+            probe = getattr(server, "is_running", False)
+            try:
+                running = bool(probe() if callable(probe) else probe)
+            except Exception:
+                running = False
+        if running:
+            try:
+                url = str(server.lan_url())
+            except Exception:
+                url = ""
+            self.cells["LAN"].set_state("ok", f"LAN monitor is streaming at {url}.\nClick to open the Monitor page.")
+        else:
+            self.cells["LAN"].set_state("off", "LAN monitor is off. Nothing leaves this PC.\nClick to open the Monitor page.")
+
+
 class DeckHeader(QFrame):
     editorToggled = Signal(bool)   # True = open the editor pane
 
@@ -133,10 +281,10 @@ class DeckHeader(QFrame):
         row.addWidget(self.wordmark)
         self.subtitle = QWidget()
         sub = QVBoxLayout(self.subtitle)
-        sub.setContentsMargins(0, 2, 0, 2)
+        sub.setContentsMargins(0, 3, 0, 3)
         sub.setSpacing(0)
         sub.addWidget(c.MicroLabel("HUMAN-LIKE CLICK ENGINE", c.TEXT_MICRO))
-        sub.addWidget(c.MicroLabel(f"v{APP_VERSION} · OPERATIONAL", c.TEXT_MICRO))
+        sub.addWidget(c.MicroLabel(f"v{APP_VERSION}", c.TEXT_MICRO))
         row.addWidget(self.subtitle)
 
         self.mode_picker = QComboBox()
@@ -149,7 +297,7 @@ class DeckHeader(QFrame):
 
         row.addStretch(1)
 
-        # -- Center chips + view switch -----------------------------------
+        # -- Center chips + pane switch -----------------------------------
         self.session_chip = Chip("SESSION", getattr(app, "session_id", None) or c.session_id())
         row.addWidget(self.session_chip)
         self.editor_btn = EditorToggle()
@@ -160,7 +308,9 @@ class DeckHeader(QFrame):
 
         row.addStretch(1)
 
-        # -- Icon buttons -------------------------------------------------
+        # -- Subsystem strip + icon buttons ---------------------------------
+        self.subsystems = SubsystemStrip(app, shell)
+        row.addWidget(self.subsystems)
         self.monitor_btn = c.IconButton("monitor", tooltip=tooltip(
             "Open the Monitor page (LAN stream + phone control).", shortcut="Ctrl+4"))
         self.monitor_btn.clicked.connect(lambda: shell.show_page("monitor"))
@@ -177,11 +327,11 @@ class DeckHeader(QFrame):
         self._sync_overlay_icon()
 
         # -- START / STOP -----------------------------------------------------
+        # Fonts come from the stylesheet's QPushButton rule (Barlow).
         self.start_btn = QPushButton("START")
         self.start_btn.setProperty("variant", "primary")
         self.start_btn.setFixedHeight(c.BUTTON_H)
         self.start_btn.setMinimumWidth(92)
-        self.start_btn.setFont(c.mono_font(c.SIZE_SM, QFont.Bold))
         self.start_btn.setCursor(Qt.PointingHandCursor)
         self.start_btn.clicked.connect(app._on_start)
         row.addWidget(self.start_btn)
@@ -190,15 +340,15 @@ class DeckHeader(QFrame):
         self.stop_btn.setProperty("variant", "danger")
         self.stop_btn.setFixedHeight(c.BUTTON_H)
         self.stop_btn.setMinimumWidth(92)
-        self.stop_btn.setFont(c.mono_font(c.SIZE_SM, QFont.Bold))
         self.stop_btn.setCursor(Qt.PointingHandCursor)
         self.stop_btn.clicked.connect(app._on_stop)
         row.addWidget(self.stop_btn)
+        self._start_tip = ""
         self.refresh_hint()
 
-        self.esc_hint = c.MicroLabel("ESC ABORT", c.TEXT_TERTIARY)
+        self.esc_hint = c.MicroLabel("ESC STOPS", c.TEXT_TERTIARY)
         self.esc_hint.setToolTip(
-            "Esc always emergency-stops, regardless of state. Hard-locked; cannot be rebound.")
+            "Esc always stops everything, in any state. Hard-locked; cannot be rebound.")
         row.addWidget(self.esc_hint)
 
         # Hidden status pill keeps ticking for anything that reads it.
@@ -214,16 +364,27 @@ class DeckHeader(QFrame):
 
     def refresh_hint(self) -> None:
         cfg = self.app.cfg
-        self.start_btn.setToolTip(tooltip(
+        self._start_tip = tooltip(
             "Begin clicking. Waits for the Pre-start delay so you can "
             "alt-tab into the target window before the first click.",
             shortcut=name_to_display(cfg.get("hotkey_start", "f6")),
-        ))
+        )
+        self.start_btn.setToolTip(self._start_tip)
         self.stop_btn.setToolTip(tooltip(
-            "Halt clicking immediately. Escape always emergency-stops "
-            "regardless of state.",
+            "Stop now. Esc always stops, in any state.",
             shortcut=name_to_display(cfg.get("hotkey_stop", "f7")),
         ))
+
+    def set_start_blocked(self, reason: str) -> None:
+        """Dim START and put the reason on it while setup is incomplete;
+        clear both once the engine may start."""
+        idle = self.app._state_str == ClickerState.IDLE
+        enabled = idle and not reason
+        if self.start_btn.isEnabled() != enabled:
+            self.start_btn.setEnabled(enabled)
+        tip = f"Blocked: {reason}" if (reason and idle) else self._start_tip
+        if self.start_btn.toolTip() != tip:
+            self.start_btn.setToolTip(tip)
 
     def _sync_overlay_icon(self) -> None:
         on = bool(self.app.cfg.get("show_zone_overlay", True))
@@ -295,8 +456,13 @@ class DeckHeader(QFrame):
         elif state == ClickerState.STARTING:
             text, color = "ARMING", c.WARN
         else:
-            text, color = "ACTIVE", c.ACCENT
+            text, color = "RUNNING", c.RUN
         if self.status_chip.value.text() != text:
             self.status_chip.value.setText(text)
+            self.status_chip.value.set_color(c.RUN if text == "RUNNING" else c.TEXT_PRIMARY)
         if self.status_chip.dot is not None:
             self.status_chip.dot.set_color(color)
+        try:
+            self.subsystems.refresh()
+        except Exception:
+            pass

@@ -181,7 +181,7 @@ class _StatChip(QFrame):
         col.setSpacing(0)
         col.setAlignment(Qt.AlignCenter)
 
-        self._value = QLabel(", ")
+        self._value = QLabel("··")
         self._value.setStyleSheet(
             f"color: {t.TEXT_PRIMARY}; "
             f"font-family: {t.FONT_MONO}; "
@@ -195,7 +195,7 @@ class _StatChip(QFrame):
         self._label.setStyleSheet(
             f"color: {t.TEXT_TERTIARY}; "
             f"font-family: {t.FONT_FAMILY}; "
-            f"font-size: 9px; "
+            f"font-size: {t.SIZE_SM}px; "
             f"font-weight: 600; "
             f"letter-spacing: 0.8px;"
         )
@@ -736,7 +736,7 @@ class _LiveSection(Card):
         head_row.setSpacing(t.SP_SM)
         self.dot = StatusDot(self, size=14)
         head_row.addWidget(self.dot)
-        self.state_label = QLabel("IDLE")
+        self.state_label = QLabel("STANDBY")
         self.state_label.setStyleSheet(
             f"color: {t.TEXT_PRIMARY}; "
             f"font-family: {t.FONT_MONO}; "
@@ -813,7 +813,7 @@ class _LiveSection(Card):
             )
         else:
             self.dot.set_state("idle")
-            self.state_label.setText("IDLE")
+            self.state_label.setText("STANDBY")
             self.state_label.setStyleSheet(
                 f"color: {t.TEXT_PRIMARY}; "
                 f"font-family: {t.FONT_MONO}; "
@@ -829,8 +829,8 @@ class _LiveSection(Card):
 
         self.chip_tick.set_value(f"{tick}")
         self.chip_clicks.set_value(f"{clicks}")
-        self.chip_cpm.set_value(f"{cpm:.0f}" if cpm > 0 else ", ")
-        self.chip_phase.set_value(phase or ", ",
+        self.chip_cpm.set_value(f"{cpm:.0f}" if cpm > 0 else "··")
+        self.chip_phase.set_value(phase or "··",
                                    color=_phase_color(phase) if phase else None)
 
         # Watchdog colors: green when far from limit, amber close, red at.

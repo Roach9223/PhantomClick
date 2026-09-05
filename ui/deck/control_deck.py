@@ -1,8 +1,14 @@
 """Control deck: the 168 px strip under the viewport.
 
-Left to right: NUDGE ZONE (3x3 arrow grid), ACTIONS (start / hold /
-redraw / abort), MIN / MAX / REALISM vertical sliders, the L / R / M
-button selector, the round ENGINE button and the CAPTURE button.
+Left to right: NUDGE ZONE (3x3 arrow grid), ACTIONS (hold / test / the
+screen action), MIN / MAX / REALISM vertical sliders and the L / R / M
+button selector.
+
+START and STOP live in the header only. The deck does not repeat them:
+one primary pair, one place. HOLD pauses whatever runs, TEST fires a
+single rehearsal click in Click mode, and the screen action is
+mode-aware (DRAW ZONE in Click mode; CAPTURE / PICK COLOR / DRAW ZONE
+for the step in play in Record mode).
 
 Every control writes through the same paths the classic cards use
 (``TimingCard.range_slider.set_values``, ``BehaviorCard.apply_realism_preset``,
@@ -14,11 +20,10 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPolygonF
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QAbstractButton, QButtonGroup, QFrame, QGridLayout, QHBoxLayout,
-    QPushButton, QSlider, QVBoxLayout, QWidget,
+    QButtonGroup, QFrame, QGridLayout, QHBoxLayout, QPushButton, QSlider,
+    QVBoxLayout, QWidget,
 )
 
 from modules.clicker import ClickerState
@@ -31,7 +36,6 @@ from . import common as c
 DECK_H = 168
 _DELAY_LO, _DELAY_HI = 0.01, 300.0
 _NUDGE_STEPS = (1, 5, 20)
-_RUN_LABELS = {"clicker": "RUN CLICKS", "recorder": "RUN SEQUENCE", "ai": "RUN BOT"}
 
 
 def shift_zone(zone: Zone, dx: int, dy: int) -> Optional[Zone]:
@@ -47,49 +51,13 @@ def shift_zone(zone: Zone, dx: int, dy: int) -> Optional[Zone]:
     return Zone.from_json(d)
 
 
-class EngineButton(QAbstractButton):
-    """64 px round start / stop. Lime play triangle idle, red square live."""
-
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.setFixedSize(64, 64)
-        self.setCursor(Qt.PointingHandCursor)
-        self._running = False
-
-    def set_running(self, running: bool) -> None:
-        if running != self._running:
-            self._running = running
-            self.setToolTip("Stop the engine" if running else "Start the engine")
-            self.update()
-
-    def paintEvent(self, _event):  # noqa: N802 (Qt name)
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        r = QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5)
-        fill = c.SURFACE_PRESS if self.isDown() else (c.SURFACE_HIGH if self.underMouse() else c.SURFACE)
-        p.setBrush(QColor(fill))
-        ring = QPen(QColor(c.STOP if self._running else c.BORDER_STRONG))
-        ring.setWidthF(1.5)
-        p.setPen(ring)
-        p.drawEllipse(r)
-        p.setPen(Qt.NoPen)
-        cx, cy = r.center().x(), r.center().y()
-        if self._running:
-            p.setBrush(QColor(c.STOP))
-            p.drawRoundedRect(QRectF(cx - 11, cy - 11, 22, 22), 2, 2)
-        else:
-            p.setBrush(QColor(c.ACCENT if self.isEnabled() else c.TEXT_DISABLED))
-            tri = QPolygonF([QPointF(cx - 8, cy - 11), QPointF(cx + 12, cy), QPointF(cx - 8, cy + 11)])
-            p.drawPolygon(tri)
-        p.end()
-
-
 class VSlider(QWidget):
     """Micro title over a vertical slider over a mono value readout."""
 
     valueChanged = Signal(int)
 
-    def __init__(self, title: str, steps: int = 1000, parent: Optional[QWidget] = None):
+    def __init__(self, title: str, steps: int = 1000, tip: str = "",
+                 parent: Optional[QWidget] = None):
         super().__init__(parent)
         col = QVBoxLayout(self)
         col.setContentsMargins(0, 0, 0, 0)
@@ -106,6 +74,9 @@ class VSlider(QWidget):
         self.value.setAlignment(Qt.AlignHCenter)
         self.value.setMinimumWidth(44)
         col.addWidget(self.value)
+        if tip:
+            for w in (self, self.slider, self.title, self.value):
+                w.setToolTip(tip)
 
     def set_position(self, pos: int) -> None:
         if self.slider.isSliderDown():
@@ -140,20 +111,17 @@ class ControlDeck(QFrame):
         row.addWidget(self._vrule())
         row.addWidget(self._build_button_seg())
         row.addStretch(1)
-        self.engine_section = self._build_engine()
-        self.capture_section = self._build_capture()
-        row.addWidget(self.engine_section)
-        row.addWidget(self.capture_section)
         self.set_compact(True)
 
     def set_compact(self, compact: bool) -> None:
-        # Start/Stop remain in the header; F9 and the editor own capture.
-        for widget in (self.nudge_section, self.nudge_rule, self.engine_section, self.capture_section):
+        # The nudge pad is the first thing to go when the strip is narrow;
+        # the editor pane's zone card covers the same job.
+        for widget in (self.nudge_section, self.nudge_rule):
             widget.setVisible(not compact)
 
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
-        self.set_compact(self.width() < 760)
+        self.set_compact(self.width() < 640)
 
     def _vrule(self) -> QFrame:
         f = QFrame()
@@ -210,7 +178,6 @@ class ControlDeck(QFrame):
         self.nudge_step_btn = QPushButton("1 PX")
         self.nudge_step_btn.setProperty("variant", "ghost")
         self.nudge_step_btn.setFixedHeight(18)
-        self.nudge_step_btn.setFont(c.mono_font(c.SIZE_XS))
         self.nudge_step_btn.setCursor(Qt.PointingHandCursor)
         self.nudge_step_btn.setStyleSheet("QPushButton { padding: 0 6px; }")
         self.nudge_step_btn.clicked.connect(self._cycle_nudge_step)
@@ -231,7 +198,7 @@ class ControlDeck(QFrame):
         self.nudge_step_btn.setText(f"{step} PX")
         self.nudge_step_btn.setToolTip(f"Nudge step: {step} px. Click to cycle 1 / 5 / 20.")
         for btn, word in self._nudge_btns:
-            btn.setToolTip(f"Nudge zone {word} {step} px")
+            btn.setToolTip(f"Nudge the zone {word} {step} px")
 
     def _nudge_target(self):
         """``(zone, step_or_None)`` the pad moves: the Click zone in Click
@@ -297,28 +264,24 @@ class ControlDeck(QFrame):
             b.setFixedHeight(c.BUTTON_H)
             b.setMinimumWidth(124)
             b.setCursor(Qt.PointingHandCursor)
-            b.setFont(c.mono_font(c.SIZE_XS, QFont.DemiBold))
             b.setToolTip(tip)
             col.addWidget(b)
             return b
 
-        self.loop_btn = mk("RUN CLICKS", "secondary", "Start the engine in the active mode.")
-        self.loop_btn.clicked.connect(self.app._on_start)
         self.hold_btn = mk("HOLD", "secondary",
-                           "Pause or resume whatever is running: the click engine or a bot.")
+                           "Pause or resume whatever is running: the click engine or a bot. F8 does the same.")
         self.hold_btn.clicked.connect(self.app._toggle_pause)
-        self.redraw_btn = mk("REDRAW ZONE", "secondary", "Draw the click zone on screen.")
-        self.redraw_btn.clicked.connect(self._redraw)
-        self.app.locker.register(self.redraw_btn)
-        self.abort_btn = mk("ABORT · ESC", "danger", "Stop everything now. Esc does the same.")
-        self.abort_btn.clicked.connect(self.app._on_stop)
+        self.test_btn = mk("TEST CLICK", "secondary",
+                           "Fire one rehearsal click in the zone after the start countdown, then stop.")
+        self.test_btn.clicked.connect(self.app._test_click_once)
+        self.app.locker.register(self.test_btn)
+        # The screen action: DRAW ZONE / CAPTURE / PICK COLOR by mode and step.
+        self.capture_btn = mk("DRAW ZONE", "primary-quiet", "Draw the click zone on screen.")
+        self.capture_btn.clicked.connect(self._on_capture)
+        self.app.locker.register(self.capture_btn)
+        self._capture_kind: Optional[str] = None
+        self._refresh_capture()
         return box
-
-    def _redraw(self) -> None:
-        try:
-            self.app.click_page.zone_card._on_draw()
-        except Exception:
-            self.app.log.exception("deck redraw failed")
 
     # -- SLIDERS ---------------------------------------------------------------
 
@@ -327,9 +290,14 @@ class ControlDeck(QFrame):
         row = QHBoxLayout(box)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(10)
-        self.min_slider = VSlider("MIN")
-        self.max_slider = VSlider("MAX")
-        self.realism_slider = VSlider("REALISM", steps=100)
+        self.min_slider = VSlider(
+            "MIN", tip="Shortest wait between two clicks. Same setting as the pane's interval slider.")
+        self.max_slider = VSlider(
+            "MAX", tip="Longest wait between two clicks. Each wait is a random draw between MIN and MAX, weighted low.")
+        self.realism_slider = VSlider(
+            "REALISM", steps=100,
+            tip="How human the cursor behaves: curved paths, jitter, overshoot, breaks. "
+                "0 is fast and mechanical, 1 is slow and lifelike. Details on the Behavior page.")
         for s in (self.min_slider, self.max_slider, self.realism_slider):
             row.addWidget(s)
         self.min_slider.valueChanged.connect(lambda v: self._on_delay(v, is_min=True))
@@ -376,8 +344,8 @@ class ControlDeck(QFrame):
             self.min_slider.set_position(c.log_to_slider(lo, _DELAY_LO, _DELAY_HI))
             self.max_slider.set_position(c.log_to_slider(hi, _DELAY_LO, _DELAY_HI))
             self.realism_slider.set_position(int(round(r * 100)))
-        self.min_slider.value.setText(_fmt_secs(lo))
-        self.max_slider.value.setText(_fmt_secs(hi))
+        self.min_slider.value.setText(c.fmt_secs(lo))
+        self.max_slider.value.setText(c.fmt_secs(hi))
         self.realism_slider.value.setText(f"{r:0.2f}")
 
     # -- L / R / M ----------------------------------------------------------------
@@ -387,7 +355,9 @@ class ControlDeck(QFrame):
         col = QVBoxLayout(box)
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(2)
-        col.addWidget(self._section_title("BTN"))
+        title = self._section_title("BTN")
+        title.setToolTip("Which mouse button each click uses.")
+        col.addWidget(title)
         self._btn_group = QButtonGroup(self)
         self._btn_group.setExclusive(True)
         self._seg_btns: dict[str, QPushButton] = {}
@@ -399,7 +369,6 @@ class ControlDeck(QFrame):
             # The app stylesheet pads buttons for text labels; at 30 px
             # that padding clips a single glyph.
             b.setStyleSheet("QPushButton { padding: 0px; }")
-            b.setFont(c.mono_font(c.SIZE_SM, QFont.DemiBold))
             b.setCursor(Qt.PointingHandCursor)
             b.setToolTip(f"Click with the {key} mouse button.")
             b.clicked.connect(lambda _=False, k=key: self._on_click_type(k))
@@ -428,54 +397,13 @@ class ControlDeck(QFrame):
         if b is not None and not b.isChecked():
             b.setChecked(True)
 
-    # -- ENGINE / CAPTURE ---------------------------------------------------
+    # -- Screen action --------------------------------------------------------
 
-    def _build_engine(self) -> QWidget:
-        box = self._section()
-        col = QVBoxLayout(box)
-        col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(4)
-        self.engine_btn = EngineButton()
-        self.engine_btn.setToolTip("Start the engine")
-        self.engine_btn.clicked.connect(self._on_engine)
-        col.addStretch(1)
-        col.addWidget(self.engine_btn, 0, Qt.AlignHCenter)
-        self.engine_lbl = c.MicroLabel("ENGINE", c.TEXT_MICRO)
-        self.engine_lbl.setAlignment(Qt.AlignHCenter)
-        col.addWidget(self.engine_lbl)
-        col.addStretch(1)
-        return box
-
-    def _on_engine(self) -> None:
-        if self.app._state_str == ClickerState.IDLE:
-            self.app._on_start()
-        else:
-            self.app._on_stop()
-
-    def _build_capture(self) -> QWidget:
-        box = self._section()
-        col = QVBoxLayout(box)
-        col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(4)
-        self.capture_btn = c.IconButton("camera", size=40, icon_px=20, color=c.TEXT_SECONDARY)
-        self.capture_btn.setProperty("variant", "secondary")
-        self.capture_btn.clicked.connect(self._on_capture)
-        self.app.locker.register(self.capture_btn)
-        col.addStretch(1)
-        col.addWidget(self.capture_btn, 0, Qt.AlignHCenter)
-        self.capture_lbl = c.MicroLabel("CAPTURE", c.TEXT_MICRO)
-        self.capture_lbl.setAlignment(Qt.AlignHCenter)
-        col.addWidget(self.capture_lbl)
-        col.addStretch(1)
-        self._capture_kind: Optional[str] = None
-        self._refresh_capture()
-        return box
-
-    # (icon, label, tooltip verb) per step kind the screen action serves.
+    # (label, tooltip) per step kind the screen action serves.
     _CAPTURE_META = {
-        KIND_TRACK: ("camera", "CAPTURE", "Capture the template for Track step {n}."),
-        KIND_COLOR: ("target", "PICK COLOR", "Pick the target colour for Color step {n}."),
-        KIND_CLICK: ("redraw", "DRAW AREA", "Draw the click area for Click step {n}."),
+        KIND_TRACK: ("CAPTURE", "Capture the template for Track step {n}."),
+        KIND_COLOR: ("PICK COLOR", "Pick the target colour for Color step {n}."),
+        KIND_CLICK: ("DRAW ZONE", "Draw the click zone for Click step {n}."),
     }
 
     def _capture_target(self) -> tuple[Optional[int], Optional[str]]:
@@ -483,7 +411,7 @@ class ControlDeck(QFrame):
         Record mode: the step picked from the SEQUENCE panel, else the
         expanded one, else the first that needs the screen (Track, Color
         or Click). ``(None, "zone")`` in Click mode, where the button
-        draws the click area. ``(None, None)`` when nothing applies."""
+        draws the click zone. ``(None, None)`` when nothing applies."""
         app = self.app
         if app._active_mode == "clicker":
             return None, "zone"
@@ -514,19 +442,20 @@ class ControlDeck(QFrame):
         idx, kind = self._capture_target()
         enabled = kind is not None and self.app._state_str == ClickerState.IDLE
         if kind == "zone":
-            icon, label, tip = "redraw", "DRAW AREA", "Draw the click area on screen."
+            label = "REDRAW ZONE" if self.app._zone is not None else "DRAW ZONE"
+            tip = "Draw the click zone on screen. Esc cancels."
         elif kind is not None:
-            icon, label, tip = self._CAPTURE_META[kind]
+            label, tip = self._CAPTURE_META[kind]
             tip = tip.format(n=idx + 1)
         else:
-            icon, label = "camera", "CAPTURE"
-            tip = "Needs a Track, Color or Click step to act on."
+            label = "CAPTURE"
+            tip = ("Bots place their own clicks; nothing to draw here." if self.app._active_mode == "ai"
+                   else "Add a Track, Color or Click step to capture for.")
         if self.capture_btn.isEnabled() != enabled:
             self.capture_btn.setEnabled(enabled)
-        if kind != self._capture_kind or self.capture_btn.isEnabled() != enabled:
-            self._capture_kind = kind
-            self.capture_btn.set_icon(icon, c.TEXT_SECONDARY if enabled else c.TEXT_DISABLED)
-            self.capture_lbl.setText(label)
+        if self.capture_btn.text() != label:
+            self.capture_btn.setText(label)
+        self._capture_kind = kind
         if self.capture_btn.toolTip() != tip:
             self.capture_btn.setToolTip(tip)
 
@@ -551,29 +480,25 @@ class ControlDeck(QFrame):
     # -- Tick --------------------------------------------------------------------
 
     def tick(self) -> None:
-        state = self.app._state_str
+        app = self.app
+        state = app._state_str
         running = state != ClickerState.IDLE
-        self.engine_btn.set_running(running)
-        self.engine_lbl.set_color(c.ACCENT if running else c.TEXT_MICRO)
-        self.engine_lbl.setText("LIVE" if running else "ENGINE")
-        # ABORT is the stop while running; the run button just reports.
-        run_text = "RUNNING" if running else _RUN_LABELS.get(self.app._active_mode, "RUN CLICKS")
-        if self.loop_btn.text() != run_text:
-            self.loop_btn.setText(run_text)
-        self.loop_btn.setEnabled(not running)
-        self.abort_btn.setEnabled(running)
         self.hold_btn.setEnabled(running)
-        hold_text = "RESUME" if (running and c.engine_paused(self.app)) else "HOLD"
+        hold_text = "RESUME" if (running and c.engine_paused(app)) else "HOLD"
         if self.hold_btn.text() != hold_text:
             self.hold_btn.setText(hold_text)
+        # TEST is a Click-mode rehearsal; elsewhere it stays visible but
+        # says why it is off, so the column never jumps.
+        click_mode = app._active_mode == "clicker"
+        test_ok = click_mode and not running and app._zone is not None
+        if self.test_btn.isEnabled() != test_ok:
+            self.test_btn.setEnabled(test_ok)
+        test_tip = ("Fire one rehearsal click in the zone after the start countdown, then stop."
+                    if click_mode else "Test click is a Click-mode action. Steps have their own Test button.")
+        if click_mode and app._zone is None:
+            test_tip = "Draw a zone first, then test one click."
+        if self.test_btn.toolTip() != test_tip:
+            self.test_btn.setToolTip(test_tip)
         self._sync_sliders()
         self._sync_click_type()
         self._refresh_capture()
-
-
-def _fmt_secs(v: float) -> str:
-    if v < 1.0:
-        return f"{v * 1000:0.0f}MS"
-    if v < 10.0:
-        return f"{v:0.2f}S"
-    return f"{v:0.1f}S"
