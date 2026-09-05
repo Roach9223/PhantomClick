@@ -1917,7 +1917,22 @@ class StepRowBuilder:
         ctl = self.app.locker.register(ZoneLockControl())
         ctl.set_zone(step.zone)
         ctl.modeChanged.connect(lambda m, i=idx: self._on_step_lock_mode(i, m))
+        ctl.windowChosen.connect(lambda info, i=idx: self._on_step_lock_window(i, info))
         return ctl
+
+    def _on_step_lock_window(self, idx: int, info) -> None:
+        if not (0 <= idx < len(self.app._steps)):
+            return
+        step = self.app._steps[idx]
+        if step.zone is None or info is None:
+            return
+        from modules.zone_lock import retarget_lock
+        step.zone = retarget_lock(step.zone, info)
+        self.app.zone_locks.forget(step.step_id)
+        self.app._save_steps()
+        self.app.record_mode_tab.render_all()
+        self.app.overlay_manager.refresh_step_overlays()
+        self.app.toasts.post(f"Step {idx + 1} zone now follows {info.title or info.cls}.", kind="info")
 
     def _on_step_lock_mode(self, idx: int, mode: str) -> None:
         if not (0 <= idx < len(self.app._steps)):

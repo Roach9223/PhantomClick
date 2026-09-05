@@ -284,3 +284,24 @@ def test_apply_lock_mode_screen_pins_current_position(monkeypatch):
     out = zone_lock.apply_lock_mode(z, "screen")
     assert out.lock is None
     assert out.rect == (500, 420, 600, 520)
+
+
+def test_retarget_lock_keeps_relative_place_and_switches_window():
+    from types import SimpleNamespace
+    from modules.zone_lock import retarget_lock
+    from modules.zone_selector import WindowLock, Zone
+    # Zone at the top-left quarter of a 1000 x 500 window at (0, 0).
+    zone = Zone.make_rect(100, 50, 300, 150).with_lock(
+        WindowLock(title="VirtualBox", cls="QWidget", anchor_rect=(0, 0, 1000, 500)))
+    rs = SimpleNamespace(title="RuneScape", cls="JagWindow", rect_dip=(2000, 100, 500, 250))
+    moved = retarget_lock(zone, rs)
+    assert moved.lock.title == "RuneScape" and moved.lock.cls == "JagWindow"
+    assert moved.lock.anchor_rect == (2000, 100, 500, 250)
+    # Half the size, shifted: same corner of the new window.
+    assert moved.rect == (2050, 125, 2150, 175)
+    # An unlocked zone keeps its screen position and just gains the lock.
+    flat = Zone.make_rect(10, 10, 20, 20)
+    locked = retarget_lock(flat, rs)
+    assert locked.rect == (10, 10, 20, 20) and locked.lock.title == "RuneScape"
+    # A bad rect leaves the zone alone.
+    assert retarget_lock(zone, SimpleNamespace(title="x", cls="y", rect_dip=(0, 0, 0, 0))) is zone

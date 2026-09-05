@@ -153,6 +153,7 @@ class ClickZoneCard(Card):
 
         self.lock_ctl = ZoneLockControl()
         self.lock_ctl.modeChanged.connect(self._on_lock_mode)
+        self.lock_ctl.windowChosen.connect(self._on_lock_window)
         app.locker.register(self.lock_ctl)
         body.addWidget(self.lock_ctl)
 
@@ -245,6 +246,23 @@ class ClickZoneCard(Card):
         self._refresh_preview()
         self.app._push_config_to_clicker()
         self.app.overlay_manager.apply_visibility()
+
+    def _on_lock_window(self, info) -> None:
+        """The user picked another window from the LOCK list: move the
+        zone onto it, keeping its place relative to the window."""
+        zone = self.app._zone
+        if zone is None or info is None:
+            return
+        from modules.zone_lock import retarget_lock
+        new_zone = retarget_lock(zone, info)
+        self.app._zone = new_zone
+        self.app.cfg["zone"] = new_zone.to_json()
+        save_config(self.app.cfg)
+        self.app.zone_locks.forget("main")
+        self._refresh_preview()
+        self.app._push_config_to_clicker()
+        self.app.overlay_manager.apply_visibility()
+        self.app.toasts.post(f"Zone now follows {info.title or info.cls}.", kind="info")
 
     def _on_draw(self) -> None:
         from modules.clicker import ClickerState

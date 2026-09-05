@@ -142,6 +142,39 @@ class WindowInfo:
     cls: str
     pid: int
     rect_dip: tuple[int, int, int, int]   # (x, y, w, h)
+    exe: str = ""                          # process image name, e.g. "rs2client.exe"
+    minimized: bool = False
+
+    @property
+    def label(self) -> str:
+        """``Title  ·  exe`` for pickers; the title alone when the exe is
+        unknown; a minimised window says so."""
+        title = self.title or self.cls or "(untitled window)"
+        out = f"{title}  ·  {self.exe}" if self.exe else title
+        return out + "  ·  minimised" if self.minimized else out
+
+
+_kernel32 = ctypes.windll.kernel32
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+def process_name(pid: int) -> str:
+    """Image file name of ``pid`` ("rs2client.exe"), or "" when the
+    process cannot be opened (elevated, gone)."""
+    try:
+        h = _kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not h:
+            return ""
+        try:
+            size = wintypes.DWORD(1024)
+            buf = ctypes.create_unicode_buffer(size.value)
+            if _kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                return os.path.basename(buf.value)
+            return ""
+        finally:
+            _kernel32.CloseHandle(h)
+    except Exception:
+        return ""
 
 
 def _class_name(hwnd: int) -> str:
@@ -194,6 +227,33 @@ def _physical_rect(hwnd: int) -> Optional[tuple[int, int, int, int]]:
     return (r.left, r.top, r.right, r.bottom)
 
 
+class _WINDOWPLACEMENT(ctypes.Structure):
+    _fields_ = [("length", wintypes.UINT), ("flags", wintypes.UINT),
+                ("showCmd", wintypes.UINT), ("ptMinPosition", _POINT),
+                ("ptMaxPosition", _POINT), ("rcNormalPosition", _RECT)]
+
+
+def normal_rect_dip(hwnd: int) -> Optional[tuple[int, int, int, int]]:
+    """``(x, y, w, h)`` in DIPs of where the window sits when restored.
+    A minimised window's live rect is an off-screen placeholder, so a
+    lock anchored there would be useless; this is what the anchor uses
+    instead."""
+    try:
+        wp = _WINDOWPLACEMENT()
+        wp.length = ctypes.sizeof(wp)
+        if not _user32.GetWindowPlacement(int(hwnd), ctypes.byref(wp)):
+            return None
+        r = wp.rcNormalPosition
+        if r.right <= r.left or r.bottom <= r.top:
+            return None
+        from . import dpi_cursor
+        x1, y1 = dpi_cursor.physical_to_dip(r.left, r.top)
+        x2, y2 = dpi_cursor.physical_to_dip(r.right, r.bottom)
+        return (int(x1), int(y1), int(x2 - x1), int(y2 - y1))
+    except Exception:
+        return None
+
+
 def window_rect_dip(hwnd: int) -> Optional[tuple[int, int, int, int]]:
     """``(x, y, w, h)`` of the window in DIPs, or None on any failure."""
     try:
@@ -234,17 +294,46 @@ def is_window(hwnd: int) -> bool:
         return False
 
 
-def window_info(hwnd: int) -> Optional[WindowInfo]:
-    """Snapshot of one top-level window, or None if it is gone."""
+def window_info(hwnd: int, *, with_exe: bool = False) -> Optional[WindowInfo]:
+    """Snapshot of one top-level window, or None if it is gone. The exe
+    name costs an OpenProcess, so it is only filled in on request."""
     try:
         hwnd = int(hwnd)
         if not _user32.IsWindow(hwnd):
             return None
         rect = window_rect_dip(hwnd) or (0, 0, 0, 0)
+        pid = _pid_of(hwnd)
         return WindowInfo(hwnd=hwnd, title=_window_title(hwnd), cls=_class_name(hwnd),
-                          pid=_pid_of(hwnd), rect_dip=rect)
+                          pid=pid, rect_dip=rect, exe=process_name(pid) if with_exe else "")
     except Exception:
         return None
+
+
+def list_lock_targets() -> list[WindowInfo]:
+    """Every window a zone could lock to, in z-order (front first): visible,
+    titled, not ours, not the shell, not a cloaked ghost. Minimised windows
+    are included so a user can pick a game they have tucked away; the lock
+    holds until it comes back."""
+    out: list[WindowInfo] = []
+    try:
+        h = _user32.GetTopWindow(None)
+        guard = 0
+        while h and guard < 4096:
+            guard += 1
+            if _acceptable_lock_target(h) and _window_title(h):
+                info = window_info(int(h), with_exe=True)
+                if info is not None and is_minimized(int(h)):
+                    rect = normal_rect_dip(int(h))
+                    if rect is not None:
+                        info = WindowInfo(hwnd=info.hwnd, title=info.title, cls=info.cls,
+                                          pid=info.pid, rect_dip=rect, exe=info.exe,
+                                          minimized=True)
+                if info is not None and info.rect_dip and info.rect_dip[2] > 0:
+                    out.append(info)
+            h = _user32.GetWindow(h, _GW_HWNDNEXT)
+    except Exception:
+        pass
+    return out
 
 
 def _acceptable_lock_target(hwnd: int) -> bool:

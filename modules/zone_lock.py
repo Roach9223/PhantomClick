@@ -182,6 +182,29 @@ def attach_window_lock(zone: Zone) -> Zone:
     ))
 
 
+def retarget_lock(zone: Zone, info) -> Zone:
+    """Lock ``zone`` to the window ``info`` describes (anything with
+    ``title``, ``cls`` and ``rect_dip``).
+
+    A zone already locked to another window keeps its place *relative to
+    that window*: it is scaled and translated from the old anchor into
+    the new window's rect, so switching from one game client to another
+    lands the clicks on the same corner of the new one. An unlocked zone
+    keeps its screen position and simply gains the new anchor.
+    """
+    if zone is None or info is None:
+        return zone
+    rect = tuple(int(v) for v in (getattr(info, "rect_dip", None) or ()))
+    if len(rect) != 4 or rect[2] <= 0 or rect[3] <= 0:
+        return zone
+    lock = WindowLock(title=str(getattr(info, "title", "") or ""),
+                      cls=str(getattr(info, "cls", "") or ""),
+                      anchor_rect=rect)  # type: ignore[arg-type]
+    if zone.lock is not None:
+        return zone.rebased(rect).with_lock(lock)
+    return zone.with_lock(lock)
+
+
 def apply_lock_mode(zone: Zone, mode: str) -> Zone:
     """Switch a zone between screen and window lock.
 
